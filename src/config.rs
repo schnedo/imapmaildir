@@ -2,6 +2,7 @@ use ::std::env;
 use std::{
     fs::{create_dir, read_to_string},
     path::PathBuf,
+    process::Command,
     str::FromStr,
 };
 
@@ -31,5 +32,23 @@ impl Config {
 
         let config_contents = read_to_string(config_dir).expect("config file should be readable");
         toml::from_str(&config_contents).expect("config should be parseable")
+    }
+
+    pub fn password(self) -> String {
+        let mut cmd_parts = self.password_cmd.split(' ');
+        let mut cmd = Command::new(
+            cmd_parts
+                .next()
+                .expect("password_cmd should specify a program"),
+        );
+        for part in cmd_parts {
+            cmd.arg(part);
+        }
+        let output = cmd.output().expect("password_cmd should be executable");
+
+        String::from_utf8(output.stdout)
+            .expect("password_cmd should evaluate to password")
+            .trim_end()
+            .to_string()
     }
 }
