@@ -10,8 +10,10 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct Config {
-    username: String,
+    user: String,
     password_cmd: String,
+    host: String,
+    pub port: u16,
 }
 
 impl Config {
@@ -34,7 +36,7 @@ impl Config {
         toml::from_str(&config_contents).expect("config should be parseable")
     }
 
-    pub fn password(self) -> String {
+    pub fn password(&self) -> String {
         let mut cmd_parts = self.password_cmd.split(' ');
         let mut cmd = Command::new(
             cmd_parts
@@ -50,5 +52,13 @@ impl Config {
             .expect("password_cmd should evaluate to password")
             .trim_end()
             .to_string()
+    }
+
+    pub fn host(&self) -> &str {
+        self.host.as_str()
+    }
+
+    pub fn user(&self) -> &str {
+        self.user.as_str()
     }
 }

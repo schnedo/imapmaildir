@@ -209,6 +209,7 @@ name = "imapmaildir"
 version = "0.1.0"
 dependencies = [
  "imap",
+ "native-tls",
  "serde",
  "toml",
 ]
