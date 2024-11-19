@@ -6,6 +6,7 @@ use std::{
 };
 
 use native_tls::TlsConnector;
+use parser::parse_greeting;
 
 use crate::config::Config;
 
@@ -25,7 +26,9 @@ impl Client {
         reader
             .read_line(&mut res)
             .expect("greeting should be readable");
-        dbg!(res);
+        dbg!(&res);
+        let greeting_response = parse_greeting(&res).expect("greeting should bee parseable");
+        dbg!(greeting_response);
 
         Client {}
     }

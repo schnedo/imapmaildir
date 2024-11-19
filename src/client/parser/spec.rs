@@ -77,7 +77,7 @@ fn literal(input: &str) -> IResult<&str, &str> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct Tag<'a>(&'a str);
+pub struct Tag<'a>(&'a str);
 fn imap_tag(input: &str) -> IResult<&str, Tag> {
     map(take_while1(is_astring_char_without_plus), |raw| Tag(raw))(input)
 }
@@ -119,7 +119,7 @@ fn astring(input: &str) -> IResult<&str, &str> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum Revision {
+pub enum Revision {
     FourRev1,
 }
 fn revision(input: &str) -> IResult<&str, Revision> {
@@ -130,19 +130,12 @@ fn atom(input: &str) -> IResult<&str, &str> {
     take_while1(is_atom_char)(input)
 }
 
-pub(super) struct AuthType<'a>(&'a str);
+pub struct AuthType<'a>(&'a str);
 fn auth_type(input: &str) -> IResult<&str, AuthType> {
     // defined by https://datatracker.ietf.org/doc/html/rfc3501#ref-SASL
     map(atom, |auth| AuthType(auth))(input)
 }
 
-#[derive(Debug, PartialEq)]
-pub(super) enum Capability<'a> {
-    AuthType(&'a str),
-    Custom(&'a str),
-    // technically not a capability as defined in bakus-naur, but easier to type this way
-    Revision(Revision),
-}
 fn capability(input: &str) -> IResult<&str, Capability> {
     // New capabilities MUST begin with "X" or be
     // registered with IANA as standard or
@@ -183,7 +176,7 @@ fn flag_extension(input: &str) -> IResult<&str, Flag> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum Flag<'a> {
+pub enum Flag<'a> {
     Answered,
     Flagged,
     Deleted,
@@ -209,7 +202,7 @@ fn flag(input: &str) -> IResult<&str, Flag> {
 }
 
 #[derive(Debug, PartialEq)]
-enum ResponseTextCode<'a> {
+pub enum ResponseTextCode<'a> {
     Alert,
     BadCharset(Option<Vec<&'a str>>),
     Capability(Vec<Capability<'a>>),
@@ -264,9 +257,9 @@ fn resp_text_code<'a>(input: &'a str) -> IResult<&str, ResponseTextCode<'a>> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct ResponseText<'a> {
-    code: Option<ResponseTextCode<'a>>,
-    text: &'a str,
+pub struct ResponseText<'a> {
+    pub code: Option<ResponseTextCode<'a>>,
+    pub text: &'a str,
 }
 fn resp_text(input: &str) -> IResult<&str, ResponseText> {
     map(
@@ -282,13 +275,13 @@ fn resp_text(input: &str) -> IResult<&str, ResponseText> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum Status {
+pub enum Status {
     Ok,
     Bad,
     No,
 }
 #[derive(Debug, PartialEq)]
-pub(super) struct ResponseCondState<'a> {
+pub struct ResponseCondState<'a> {
     status: Status,
     text: ResponseText<'a>,
 }
@@ -325,7 +318,7 @@ fn response_fatal(input: &str) -> IResult<&str, ResponseText> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) struct TaggedResponse<'a> {
+pub struct TaggedResponse<'a> {
     tag: Tag<'a>,
     state: ResponseCondState<'a>,
 }
@@ -336,7 +329,7 @@ fn response_tagged(input: &str) -> IResult<&str, TaggedResponse> {
     )(input)
 }
 
-pub(super) fn greeting(input: &str) -> IResult<&str, ResponseText> {
+pub fn greeting(input: &str) -> IResult<&str, ResponseText> {
     delimited(
         pair(tag("*"), space),
         alt((resp_cond_auth, resp_cond_bye)),
@@ -345,15 +338,23 @@ pub(super) fn greeting(input: &str) -> IResult<&str, ResponseText> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum ResponseDone<'a> {
+pub enum ResponseDone<'a> {
     Tagged(TaggedResponse<'a>),
     Fatal(ResponseText<'a>),
 }
-pub(super) fn response_done(input: &str) -> IResult<&str, ResponseDone> {
+pub fn response_done(input: &str) -> IResult<&str, ResponseDone> {
     alt((
         map(response_tagged, |tagged| ResponseDone::Tagged(tagged)),
         map(response_fatal, |fatal| ResponseDone::Fatal(fatal)),
     ))(input)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Capability<'a> {
+    AuthType(&'a str),
+    Custom(&'a str),
+    // technically not a capability as defined in bakus-naur, but easier to type this way
+    Revision(Revision),
 }
 
 #[cfg(test)]
