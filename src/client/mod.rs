@@ -1,3 +1,5 @@
+mod parser;
+
 use std::{
     io::{BufRead, BufReader},
     net::TcpStream,
