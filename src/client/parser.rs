@@ -78,7 +78,7 @@ fn literal(input: &str) -> IResult<&str, &str> {
 
 #[derive(Debug, PartialEq)]
 pub(super) struct Tag<'a>(&'a str);
-pub(super) fn imap_tag(input: &str) -> IResult<&str, Tag> {
+fn imap_tag(input: &str) -> IResult<&str, Tag> {
     map(take_while1(is_astring_char_without_plus), |raw| Tag(raw))(input)
 }
 
