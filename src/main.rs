@@ -4,7 +4,8 @@ use config::Config;
 mod client;
 mod config;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let config = Config::load_from_file();
-    Client::new(&config);
+    Client::new(&config).await;
 }
