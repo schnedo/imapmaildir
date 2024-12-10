@@ -79,7 +79,7 @@ fn literal(input: &str) -> IResult<&str, &str> {
 #[derive(Debug, PartialEq)]
 pub struct Tag<'a>(&'a str);
 fn imap_tag(input: &str) -> IResult<&str, Tag> {
-    map(take_while1(is_astring_char_without_plus), |raw| Tag(raw))(input)
+    map(take_while1(is_astring_char_without_plus), Tag)(input)
 }
 
 fn text(input: &str) -> IResult<&str, &str> {
@@ -133,7 +133,7 @@ fn atom(input: &str) -> IResult<&str, &str> {
 pub struct AuthType<'a>(&'a str);
 fn auth_type(input: &str) -> IResult<&str, AuthType> {
     // defined by https://datatracker.ietf.org/doc/html/rfc3501#ref-SASL
-    map(atom, |auth| AuthType(auth))(input)
+    map(atom, AuthType)(input)
 }
 
 fn capability(input: &str) -> IResult<&str, Capability> {
@@ -144,8 +144,8 @@ fn capability(input: &str) -> IResult<&str, Capability> {
         map(preceded(tag("AUTH="), auth_type), |auth| {
             Capability::AuthType(auth.0)
         }),
-        map(revision, |r| Capability::Revision(r)),
-        map(atom, |a| Capability::Custom(a)),
+        map(revision, Capability::Revision),
+        map(atom, Capability::Custom),
     ))(input)
 }
 
@@ -162,7 +162,7 @@ fn nz_number(input: &str) -> IResult<&str, u32> {
 }
 
 fn flag_keyword(input: &str) -> IResult<&str, Flag> {
-    map(atom, |a| Flag::Keyword(a))(input)
+    map(atom, Flag::Keyword)(input)
 }
 
 fn flag_extension(input: &str) -> IResult<&str, Flag> {
@@ -172,7 +172,7 @@ fn flag_extension(input: &str) -> IResult<&str, Flag> {
     //; flag-extension flags except as defined by
     //; future standard or standards-track
     //; revisions of this specification.
-    map(preceded(char('\\'), atom), |a| Flag::Extension(a))(input)
+    map(preceded(char('\\'), atom), Flag::Extension)(input)
 }
 
 #[derive(Debug, PartialEq)]
@@ -217,7 +217,7 @@ pub enum ResponseTextCode<'a> {
     Custom(&'a str, Option<&'a str>),
 }
 
-fn resp_text_code<'a>(input: &'a str) -> IResult<&str, ResponseTextCode<'a>> {
+fn resp_text_code(input: &str) -> IResult<&str, ResponseTextCode<'_>> {
     alt((
         tag("ALERT").map(|_| ResponseTextCode::Alert),
         preceded(
@@ -227,15 +227,15 @@ fn resp_text_code<'a>(input: &'a str) -> IResult<&str, ResponseTextCode<'a>> {
                 delimited(char('('), separated_list1(space, astring), char(')')),
             )),
         )
-        .map(|charsets| ResponseTextCode::BadCharset(charsets)),
-        capability_data.map(|capabilities| ResponseTextCode::Capability(capabilities)),
+        .map(ResponseTextCode::BadCharset),
+        capability_data.map(ResponseTextCode::Capability),
         tag("PARSE").map(|_| ResponseTextCode::Alert),
         delimited(
             separated_pair(tag("PERMANENTFLAGS"), space, char('(')),
             many0(flag),
             char(')'),
         )
-        .map(|flags| ResponseTextCode::PermanentFlags(flags)),
+        .map(ResponseTextCode::PermanentFlags),
         tag("READ-ONLY").map(|_| ResponseTextCode::Alert),
         tag("READ-WRITE").map(|_| ResponseTextCode::Alert),
         tag("TRYCREATE").map(|_| ResponseTextCode::Alert),
@@ -344,8 +344,8 @@ pub enum ResponseDone<'a> {
 }
 pub fn response_done(input: &str) -> IResult<&str, ResponseDone> {
     alt((
-        map(response_tagged, |tagged| ResponseDone::Tagged(tagged)),
-        map(response_fatal, |fatal| ResponseDone::Fatal(fatal)),
+        map(response_tagged, ResponseDone::Tagged),
+        map(response_fatal, ResponseDone::Fatal),
     ))(input)
 }
 
