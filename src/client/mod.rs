@@ -2,7 +2,7 @@ mod parser;
 
 use parser::parse_greeting;
 use tokio::{
-    io::{split, AsyncBufReadExt, BufReader, BufWriter, ReadHalf, WriteHalf},
+    io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, ReadHalf, WriteHalf},
     net::TcpStream,
 };
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
@@ -28,16 +28,27 @@ impl Client {
 
         let (reader, writer) = split(stream);
         let mut reader = BufReader::new(reader);
-        let writer = BufWriter::new(writer);
+        let mut writer = BufWriter::new(writer);
 
         let mut res = String::new();
         (reader.read_line(&mut res).await).expect("greeting should be readable");
         dbg!(&res);
         let greeting_response = parse_greeting(&res).expect("greeting should be parseable");
         dbg!(greeting_response);
+        get_capabilities(&mut reader, &mut writer).await;
 
         Client { reader, writer }
     }
 }
 
-fn get_capabilities(reader: &Reader, writer: &Writer) {}
+async fn get_capabilities(reader: &mut Reader, writer: &mut Writer) {
+    (writer.write_all(b"abcd CAPABILITY\r\n"))
+        .await
+        .expect("writing capability command to buffer should succeed");
+    (writer.flush())
+        .await
+        .expect("sending capability command should succeed");
+    let mut res = String::new();
+    (reader.read_line(&mut res).await).expect("greeting should be readable");
+    dbg!(&res);
+}
