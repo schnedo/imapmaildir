@@ -1,7 +1,10 @@
 use nom::{
     branch::alt,
     bytes::complete::{escaped, tag, take_while, take_while1},
-    character::complete::{char, crlf, digit1, one_of},
+    character::{
+        complete::{char, crlf, digit1, one_of},
+        streaming::char,
+    },
     combinator::{map, opt},
     error::Error,
     multi::{many0, separated_list1},
@@ -315,6 +318,24 @@ fn resp_cond_bye(input: &str) -> IResult<&str, ResponseText> {
 fn response_fatal(input: &str) -> IResult<&str, ResponseText> {
     // Server closes connection immediately
     delimited(tag("*"), resp_cond_bye, crlf)(input)
+}
+
+fn msg_att_dynamic(input: &str) -> IResult<&str, &str> {}
+
+fn msg_att(input: &str) -> IResult<&str, &str> {
+    delimited(
+        char('('),
+        separated_list1(space, alt((msg_att_dynamic, msg_att_static))),
+        char(')'),
+    )(input)
+}
+
+fn message_data(input: &str) -> IResult<&str, &str> {
+    separated_pair(
+        nz_number,
+        space,
+        alt((tag("EXPUNGE"), separated_pair(tag("FETCH"), space, msg_att))),
+    )(input)
 }
 
 #[derive(Debug, PartialEq)]
