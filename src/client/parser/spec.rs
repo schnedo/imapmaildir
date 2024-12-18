@@ -338,15 +338,30 @@ pub fn greeting(input: &str) -> IResult<&str, ResponseText> {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum ResponseDone<'a> {
+pub enum ResponseLine<'a> {
+    CapabilityData(Vec<Capability<'a>>),
+    CondBye(ResponseText<'a>),
+    CondState(ResponseCondState<'a>),
     Tagged(TaggedResponse<'a>),
     Fatal(ResponseText<'a>),
 }
-pub fn response_done(input: &str) -> IResult<&str, ResponseDone> {
+pub fn response_done(input: &str) -> IResult<&str, ResponseLine> {
     alt((
-        map(response_tagged, ResponseDone::Tagged),
-        map(response_fatal, ResponseDone::Fatal),
+        map(response_tagged, ResponseLine::Tagged),
+        map(response_fatal, ResponseLine::Fatal),
     ))(input)
+}
+
+pub fn response_data(input: &str) -> IResult<&str, ResponseLine> {
+    delimited(
+        pair(tag("*"), space),
+        alt((
+            map(resp_cond_state, ResponseLine::CondState),
+            map(resp_cond_bye, ResponseLine::CondBye),
+            map(capability_data, ResponseLine::CapabilityData),
+        )),
+        crlf,
+    )(input)
 }
 
 #[derive(Debug, PartialEq)]
