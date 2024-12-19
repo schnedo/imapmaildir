@@ -1,14 +1,12 @@
+use chrono::{DateTime, FixedOffset, NaiveTime, TimeZone};
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, tag, take_while, take_while1},
-    character::{
-        complete::{char, crlf, digit1, one_of},
-        streaming::char,
-    },
-    combinator::{map, opt},
+    bytes::complete::{escaped, tag, take, take_while, take_while1},
+    character::complete::{char, crlf, digit0, digit1, one_of},
+    combinator::{all_consuming, map, opt},
     error::Error,
-    multi::{many0, separated_list1},
-    sequence::{delimited, pair, preceded, separated_pair, terminated},
+    multi::{many0, separated_list0, separated_list1},
+    sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     IResult, Parser,
 };
 
@@ -113,6 +111,18 @@ fn number(input: &str) -> IResult<&str, u32> {
     }
 }
 
+fn two_digit(input: &str) -> IResult<&str, u32> {
+    let (rest, raw_number) = take(2u32).and_then(all_consuming(digit0)).parse(input)?;
+    if let Ok(parsed_number) = raw_number.parse::<u32>() {
+        Ok((rest, parsed_number))
+    } else {
+        Err(nom::Err::Error(Error::new(
+            input,
+            nom::error::ErrorKind::Float,
+        )))
+    }
+}
+
 fn string(input: &str) -> IResult<&str, &str> {
     alt((quoted, literal))(input)
 }
@@ -189,6 +199,8 @@ pub enum Flag<'a> {
     Extension(&'a str),
     // technically flag-perm, not flag as defined by bakus-naur, but easier to parse
     Wildcard,
+    // technically flag-fetch, not flag as defined by bakus-naur, but easier to parse
+    Recent,
 }
 fn flag(input: &str) -> IResult<&str, Flag> {
     alt((
@@ -198,9 +210,9 @@ fn flag(input: &str) -> IResult<&str, Flag> {
         map(tag("\\Seen"), |_| Flag::Seen),
         map(tag("\\Draft"), |_| Flag::Draft),
         map(tag("\\*"), |_| Flag::Wildcard),
+        map(tag("\\Recent"), |_| Flag::Recent),
         flag_keyword,
         flag_extension,
-        //does not include \"Recent"
     ))(input)
 }
 
@@ -307,6 +319,93 @@ fn space(input: &str) -> IResult<&str, char> {
     char(' ')(input)
 }
 
+fn nstring(input: &str) -> IResult<&str, &str> {
+    alt((tag("NIL"), string))(input)
+}
+
+fn uniqueid(input: &str) -> IResult<&str, u32> {
+    nz_number(input) // strictly ascending
+}
+
+fn date_month(input: &str) -> IResult<&str, u32> {
+    alt((
+        map(tag("Jan"), |_| 1),
+        map(tag("Feb"), |_| 2),
+        map(tag("Mar"), |_| 3),
+        map(tag("Apr"), |_| 4),
+        map(tag("May"), |_| 5),
+        map(tag("Jun"), |_| 6),
+        map(tag("Jul"), |_| 7),
+        map(tag("Aug"), |_| 8),
+        map(tag("Sep"), |_| 9),
+        map(tag("Oct"), |_| 10),
+        map(tag("Nov"), |_| 11),
+        map(tag("Dec"), |_| 12),
+    ))(input)
+}
+
+fn date_year(input: &str) -> IResult<&str, u32> {
+    number(input) // technically 4DIGIT
+}
+
+fn date_day_fixed(input: &str) -> IResult<&str, u32> {
+    preceded(opt(space), number)(input) // technically (SP DIGIT) / 2DIGIT
+}
+
+fn time(input: &str) -> IResult<&str, (u32, u32, u32)> {
+    // technically hh:mm:ss, not number:number:number
+    tuple((number, delimited(char(':'), number, char(':')), number))(input)
+}
+enum PlusMinus {
+    Plus,
+    Minus,
+}
+fn zone(input: &str) -> IResult<&str, FixedOffset> {
+    map(
+        tuple((
+            alt((
+                map(char('+'), |_| PlusMinus::Plus),
+                map(char('-'), |_| PlusMinus::Minus),
+            )),
+            two_digit,
+            two_digit,
+        )),
+        |(plus_minus, hh, mm)| {
+            let seconds = (mm * 60 + hh * 60 * 60)
+                .try_into()
+                .expect("seconds should be in i32 range");
+            match plus_minus {
+                PlusMinus::Plus => {
+                    FixedOffset::west_opt(seconds).expect("west timezone should be parseable")
+                }
+                PlusMinus::Minus => {
+                    FixedOffset::east_opt(seconds).expect("east timezone should be parseable")
+                }
+            }
+        },
+    )(input)
+}
+
+fn date_time(input: &str) -> IResult<&str, DateTime<FixedOffset>> {
+    map(
+        delimited(
+            char('"'),
+            tuple((
+                date_day_fixed,
+                delimited(char('-'), date_month, char('-')),
+                date_year,
+                delimited(space, time, space),
+                zone,
+            )),
+            char('"'),
+        ),
+        |(day, month, year, (hour, min, sec), zone)| {
+            zone.with_ymd_and_hms(year as i32, month, day, hour, min, sec)
+                .unwrap()
+        },
+    )(input) // strictly ascending
+}
+
 fn resp_cond_auth(input: &str) -> IResult<&str, ResponseText> {
     preceded(pair(alt((tag("OK"), tag("PREAUTH"))), space), resp_text)(input)
 }
@@ -320,7 +419,39 @@ fn response_fatal(input: &str) -> IResult<&str, ResponseText> {
     delimited(tag("*"), resp_cond_bye, crlf)(input)
 }
 
-fn msg_att_dynamic(input: &str) -> IResult<&str, &str> {}
+fn msg_att_static(input: &str) -> IResult<&str, Vec<Flag>> {
+    alt((
+        separated_pair(tag("ENVELOPE"), space, envelope),
+        separated_pair(tag("INTERNALDATE"), space, date_time),
+        separated_pair(tag("RFC822.TEXT"), space, nstring),
+        separated_pair(tag("RFC822.HEADER"), space, nstring),
+        separated_pair(tag("RFC822"), space, nstring),
+        separated_pair(tag("RFC822.SIZE"), space, number),
+        separated_pair(tag("BODYSTRUCTURE"), space, body),
+        separated_pair(tag("BODY"), space, body),
+        separated_pair(
+            tuple((
+                tag("BODY"),
+                section,
+                opt(delimited(char('<'), number, char('>'))),
+            )),
+            space,
+            nstring,
+        ),
+        separated_pair(tag("UID"), space, uniqueid),
+    ))(input)
+}
+
+fn msg_att_dynamic(input: &str) -> IResult<&str, Vec<Flag>> {
+    map(
+        separated_pair(
+            tag("FLAGS"),
+            space,
+            delimited(char('('), separated_list0(space, flag), char(')')),
+        ),
+        |(_, flags)| flags,
+    )(input)
+}
 
 fn msg_att(input: &str) -> IResult<&str, &str> {
     delimited(
@@ -330,11 +461,20 @@ fn msg_att(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
-fn message_data(input: &str) -> IResult<&str, &str> {
+enum MessageDataType<'a> {
+    Expunge,
+    Fetch(&'a str),
+}
+fn message_data(input: &str) -> IResult<&str, (u32, MessageDataType)> {
     separated_pair(
         nz_number,
         space,
-        alt((tag("EXPUNGE"), separated_pair(tag("FETCH"), space, msg_att))),
+        alt((
+            map(tag("EXPUNGE"), |_| MessageDataType::Expunge),
+            map(separated_pair(tag("FETCH"), space, msg_att), |(_, attr)| {
+                MessageDataType::Fetch(attr)
+            }),
+        )),
     )(input)
 }
 
