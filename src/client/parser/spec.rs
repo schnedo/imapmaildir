@@ -5,7 +5,7 @@ use nom::{
     character::complete::{char, crlf, digit0, digit1, one_of},
     combinator::{all_consuming, map, opt},
     error::Error,
-    multi::{many0, separated_list0, separated_list1},
+    multi::{many0, many1, separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     IResult, Parser,
 };
@@ -320,7 +320,7 @@ fn space(input: &str) -> IResult<&str, char> {
 }
 
 fn nstring(input: &str) -> IResult<&str, &str> {
-    alt((tag("NIL"), string))(input)
+    alt((nil, string))(input)
 }
 
 fn uniqueid(input: &str) -> IResult<&str, u32> {
@@ -495,6 +495,166 @@ fn resp_cond_bye(input: &str) -> IResult<&str, ResponseText> {
 fn response_fatal(input: &str) -> IResult<&str, ResponseText> {
     // Server closes connection immediately
     delimited(tag("*"), resp_cond_bye, crlf)(input)
+}
+
+fn nil(input: &str) -> IResult<&str, &str> {
+    tag("NIL")(input)
+}
+
+fn addr_adl(input: &str) -> IResult<&str, &str> {
+    // Holds route from [RFC-2822] route-addr if non-NIL
+    nstring(input)
+}
+
+fn addr_host(input: &str) -> IResult<&str, &str> {
+    // NIL indicates [RFC-2822] group syntax.
+    // Otherwise, holds [RFC-2822] domain name
+    nstring(input)
+}
+
+fn addr_mailbox(input: &str) -> IResult<&str, &str> {
+    // NIL indicates end of [RFC-2822] group; if
+    // non-NIL and addr-host is NIL, holds
+    // [RFC-2822] group name.
+    // Otherwise, holds [RFC-2822] local-part
+    // after removing [RFC-2822] quoting
+    nstring(input)
+}
+
+fn addr_name(input: &str) -> IResult<&str, &str> {
+    // If non-NIL, holds phrase from [RFC-2822]
+    // mailbox after removing [RFC-2822] quoting
+    nstring(input)
+}
+
+struct Address<'a> {
+    name: &'a str,
+    adl: &'a str,
+    mailbox: &'a str,
+    host: &'a str,
+}
+fn address(input: &str) -> IResult<&str, Address> {
+    map(
+        delimited(
+            char('('),
+            tuple((
+                addr_name,
+                preceded(space, addr_adl),
+                preceded(space, addr_mailbox),
+                preceded(space, addr_host),
+            )),
+            char(')'),
+        ),
+        |(name, adl, mailbox, host)| Address {
+            name,
+            adl,
+            mailbox,
+            host,
+        },
+    )(input)
+}
+
+fn env_bcc(input: &str) -> IResult<&str, Vec<Address>> {
+    alt((
+        delimited(char('('), many1(address), char(')')),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+fn env_cc(input: &str) -> IResult<&str, Vec<Address>> {
+    alt((
+        delimited(char('('), many1(address), char(')')),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+fn env_date(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn env_from(input: &str) -> IResult<&str, Vec<Address>> {
+    alt((
+        delimited(char('('), many1(address), char(')')),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+fn env_in_reply_to(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn env_message_id(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn env_reply_to(input: &str) -> IResult<&str, Vec<Address>> {
+    alt((
+        delimited(char('('), many1(address), char(')')),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+fn env_sender(input: &str) -> IResult<&str, Vec<Address>> {
+    alt((
+        delimited(char('('), many1(address), char(')')),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+fn env_subject(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn env_to(input: &str) -> IResult<&str, Vec<Address>> {
+    alt((
+        delimited(char('('), many1(address), char(')')),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+struct Envelope<'a> {
+    date: &'a str,
+    subject: &'a str,
+    from: Vec<Address<'a>>,
+    sender: Vec<Address<'a>>,
+    reply_to: Vec<Address<'a>>,
+    to: Vec<Address<'a>>,
+    cc: Vec<Address<'a>>,
+    bcc: Vec<Address<'a>>,
+    in_reply_to: &'a str,
+    message_id: &'a str,
+}
+fn envelope(input: &str) -> IResult<&str, Envelope> {
+    map(
+        delimited(
+            char('('),
+            tuple((
+                env_date,
+                preceded(space, env_subject),
+                preceded(space, env_from),
+                preceded(space, env_sender),
+                preceded(space, env_reply_to),
+                preceded(space, env_to),
+                preceded(space, env_cc),
+                preceded(space, env_bcc),
+                preceded(space, env_in_reply_to),
+                preceded(space, env_message_id),
+            )),
+            char(')'),
+        ),
+        |(date, subject, from, sender, reply_to, to, cc, bcc, in_reply_to, message_id)| Envelope {
+            date,
+            subject,
+            from,
+            sender,
+            reply_to,
+            to,
+            cc,
+            bcc,
+            in_reply_to,
+            message_id,
+        },
+    )(input)
 }
 
 fn msg_att_static(input: &str) -> IResult<&str, Vec<Flag>> {
