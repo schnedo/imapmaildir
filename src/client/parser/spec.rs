@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset, NaiveTime, TimeZone};
+use chrono::{DateTime, FixedOffset, TimeZone};
 use nom::{
     branch::alt,
     bytes::complete::{escaped, tag, take, take_while, take_while1},
@@ -404,6 +404,84 @@ fn date_time(input: &str) -> IResult<&str, DateTime<FixedOffset>> {
                 .unwrap()
         },
     )(input) // strictly ascending
+}
+
+fn header_fld_name(input: &str) -> IResult<&str, &str> {
+    astring(input)
+}
+
+fn header_list(input: &str) -> IResult<&str, Vec<&str>> {
+    delimited(
+        char('('),
+        separated_list1(space, header_fld_name),
+        char(')'),
+    )(input)
+}
+
+enum SectionMsgText<'a> {
+    Header,
+    HeaderFields(Vec<&'a str>),
+    HeaderFieldsNot(Vec<&'a str>),
+    Text,
+}
+fn section_msgtxt(input: &str) -> IResult<&str, SectionMsgText> {
+    // top-level or MESSAGE/RFC822 part
+    alt((
+        map(tag("HEADER"), |_| SectionMsgText::Header),
+        map(
+            separated_pair(
+                pair(tag("HEADER.FIELDS"), opt(tag(".NOT"))),
+                space,
+                header_list,
+            ),
+            |((_, not), headers)| {
+                if let Some(_) = not {
+                    SectionMsgText::HeaderFieldsNot(headers)
+                } else {
+                    SectionMsgText::HeaderFields(headers)
+                }
+            },
+        ),
+        map(tag("TEXT"), |_| SectionMsgText::Text),
+    ))(input)
+}
+
+enum SectionText<'a> {
+    Mime,
+    SectionMsgText(SectionMsgText<'a>),
+}
+fn section_text(input: &str) -> IResult<&str, SectionText> {
+    // tuple(section_part, opt(preceded(char('.'), section_text)))
+    alt((
+        map(section_msgtxt, |msgtxt| SectionText::SectionMsgText(msgtxt)),
+        map(tag("MIME"), |_| SectionText::Mime),
+    ))(input)
+}
+
+fn section_part(input: &str) -> IResult<&str, Vec<u32>> {
+    // body part nesting
+    separated_list1(char('.'), nz_number)(input)
+}
+
+enum SectionSpec<'a> {
+    SectionMsgText(SectionMsgText<'a>),
+    SectionPart {
+        part: Vec<u32>,
+        text: Option<SectionText<'a>>,
+    },
+}
+fn section_spec(input: &str) -> IResult<&str, SectionSpec> {
+    alt((
+        map(section_msgtxt, |msgtxt| SectionSpec::SectionMsgText(msgtxt)),
+        map(
+            pair(section_part, opt(preceded(char('.'), section_text))),
+            |(part, text)| SectionSpec::SectionPart { part, text },
+        ),
+    ))(input)
+}
+
+fn section(input: &str) -> IResult<&str, Option<SectionSpec>> {
+    delimited(char('['), opt(section_spec), char(']'))(input)
 }
 
 fn resp_cond_auth(input: &str) -> IResult<&str, ResponseText> {
