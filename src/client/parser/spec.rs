@@ -657,6 +657,227 @@ fn envelope(input: &str) -> IResult<&str, Envelope> {
     )(input)
 }
 
+fn media_subtype(input: &str) -> IResult<&str, &str> {
+    // Defined in [MIME-IMT]
+    string(input)
+}
+
+fn media_basic(input: &str) -> IResult<&str, (&str, &str)> {
+    // Defined in [MIME-IMT]
+    separated_pair(
+        alt((
+            delimited(
+                char('"'),
+                alt((
+                    tag("APPLICATION"),
+                    tag("AUDIO"),
+                    tag("IMAGE"),
+                    tag("MESSAGE"),
+                    tag("VIDEO"),
+                )),
+                char('"'),
+            ),
+            string,
+        )),
+        space,
+        media_subtype,
+    )(input)
+}
+
+fn body_fld_octets(input: &str) -> IResult<&str, u32> {
+    number(input)
+}
+
+fn body_fld_id(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn body_fld_desc(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn body_fld_enc(input: &str) -> IResult<&str, &str> {
+    alt((
+        delimited(
+            char('"'),
+            alt((
+                tag("7BIT"),
+                tag("8BIT"),
+                tag("BINARY"),
+                tag("BASE64"),
+                tag("QUOTED-PRINTABLE"),
+            )),
+            char('"'),
+        ),
+        string,
+    ))(input)
+}
+
+fn body_fld_param(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+    alt((
+        delimited(
+            char('('),
+            separated_list1(space, separated_pair(string, space, string)),
+            char(')'),
+        ),
+        map(nil, |_| Vec::with_capacity(0)),
+    ))(input)
+}
+
+struct BodyFields<'a> {
+    param: Vec<(&'a str, &'a str)>,
+    id: &'a str,
+    desc: &'a str,
+    enc: &'a str,
+    octets: u32,
+}
+fn body_fields(input: &str) -> IResult<&str, BodyFields> {
+    map(
+        tuple((
+            body_fld_param,
+            preceded(space, body_fld_id),
+            preceded(space, body_fld_desc),
+            preceded(space, body_fld_enc),
+            preceded(space, body_fld_octets),
+        )),
+        |(param, id, desc, enc, octets)| BodyFields {
+            param,
+            id,
+            desc,
+            enc,
+            octets,
+        },
+    )(input)
+}
+
+fn body_type_basic(input: &str) -> IResult<&str, ((&str, &str), BodyFields)> {
+    // MESSAGE subtype MUST NOT be "RFC822"
+    separated_pair(media_basic, space, body_fields)(input)
+}
+
+fn body_fld_lines(input: &str) -> IResult<&str, u32> {
+    number(input)
+}
+
+fn media_message(input: &str) -> IResult<&str, &str> {
+    // Defined in [MIME-IMT]
+    delimited(
+        char('"'),
+        tag("MESSAGE"),
+        tuple((char('"'), space, char('"'), tag("RFC822"), char('"'))),
+    )(input)
+}
+
+struct BodyTypeMesage<'a> {
+    media_message: &'a str,
+    body_fields: BodyFields<'a>,
+    envelope: Envelope<'a>,
+    body: &'a str,
+    body_fld_lines: u32,
+}
+fn body_type_msg(input: &str) -> IResult<&str, BodyTypeMesage> {
+    map(
+        tuple((
+            media_message,
+            preceded(space, body_fields),
+            preceded(space, envelope),
+            preceded(space, body),
+            preceded(space, body_fld_lines),
+        )),
+        |(media_message, body_fields, envelope, body, body_fld_lines)| BodyTypeMesage {
+            media_message,
+            body_fields,
+            envelope,
+            body,
+            body_fld_lines,
+        },
+    )(input)
+}
+
+fn media_text(input: &str) -> IResult<&str, &str> {
+    // Defined in [MIME-IMT]
+    preceded(
+        tuple((char('"'), tag("TEXT"), char('"'), space)),
+        media_subtype,
+    )(input)
+}
+
+struct BodyTypeText<'a> {
+    media_text: &'a str,
+    body_fields: BodyFields<'a>,
+    body_fld_lines: u32,
+}
+fn body_type_text(input: &str) -> IResult<&str, BodyTypeText> {
+    map(
+        tuple((
+            media_text,
+            preceded(space, body_fields),
+            preceded(space, body_fld_lines),
+        )),
+        |(media_text, body_fields, body_fld_lines)| BodyTypeText {
+            media_text,
+            body_fields,
+            body_fld_lines,
+        },
+    )(input)
+}
+
+fn body_fld_md5(input: &str) -> IResult<&str, &str> {
+    nstring(input)
+}
+
+fn body_fld_dsp(input: &str) -> IResult<&str, Option<(&str, Vec<(&str, &str)>)>> {
+    alt((
+        map(
+            delimited(
+                char('('),
+                separated_pair(string, space, body_fld_param),
+                char(')'),
+            ),
+            |res| Some(res),
+        ),
+        map(nil, |_| None),
+    ))(input)
+}
+
+fn body_ext_1part(input: &str) -> IResult<&str, &str> {
+    // MUST NOT be returned on non-extensible "BODY" fetch
+    pair(
+        body_fld_md5,
+        opt(preceded(
+            space,
+            pair(
+                body_fld_dsp,
+                opt(preceded(
+                    space,
+                    pair(
+                        body_fld_lang,
+                        opt(preceded(
+                            space,
+                            pair(body_fld_loc, many0(preceded(space, body_extension))),
+                        )),
+                    ),
+                )),
+            ),
+        )),
+    )(input)
+}
+
+fn body_type_1part(input: &str) -> IResult<&str, &str> {
+    pair(
+        alt((body_type_basic, body_type_msg, body_type_text)),
+        opt(preceded(space, body_ext_1part)),
+    )(input)
+}
+
+fn body(input: &str) -> IResult<&str, &str> {
+    delimited(
+        char('('),
+        alt((body_type_1part, body_type_mpart)),
+        char(')'),
+    )(input)
+}
+
 fn msg_att_static(input: &str) -> IResult<&str, Vec<Flag>> {
     alt((
         separated_pair(tag("ENVELOPE"), space, envelope),
