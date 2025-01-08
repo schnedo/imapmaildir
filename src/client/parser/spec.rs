@@ -995,7 +995,7 @@ enum BodyType<'a> {
     Message {
         body_fields: BodyFields<'a>,
         envelope: Envelope<'a>,
-        body: &'a str,
+        body: BodyParts<'a>,
         body_fld_lines: u32,
     },
     Text {
@@ -1048,26 +1048,73 @@ fn body(input: &str) -> IResult<&str, BodyParts> {
     )(input)
 }
 
-fn msg_att_static(input: &str) -> IResult<&str, Vec<Flag>> {
+enum MsgAttStatic<'a> {
+    Envelope(Envelope<'a>),
+    Internaldate(DateTime<FixedOffset>),
+    RFC822Text(Option<&'a str>),
+    RFC822Header(Option<&'a str>),
+    RFC822(Option<&'a str>),
+    RFC822Size(u32),
+    Bodystructure(BodyParts<'a>),
+    Body(BodyParts<'a>),
+    Bodysection {
+        section: Option<SectionSpec<'a>>,
+        number: Option<u32>,
+        string: Option<&'a str>,
+    },
+    Uid(u32),
+}
+fn msg_att_static(input: &str) -> IResult<&str, MsgAttStatic> {
     alt((
-        separated_pair(tag("ENVELOPE"), space, envelope),
-        separated_pair(tag("INTERNALDATE"), space, date_time),
-        separated_pair(tag("RFC822.TEXT"), space, nstring),
-        separated_pair(tag("RFC822.HEADER"), space, nstring),
-        separated_pair(tag("RFC822"), space, nstring),
-        separated_pair(tag("RFC822.SIZE"), space, number),
-        separated_pair(tag("BODYSTRUCTURE"), space, body),
-        separated_pair(tag("BODY"), space, body),
-        separated_pair(
-            tuple((
-                tag("BODY"),
-                section,
-                opt(delimited(char('<'), number, char('>'))),
-            )),
-            space,
-            nstring,
+        map(
+            separated_pair(tag("ENVELOPE"), space, envelope),
+            |(_, envelope)| MsgAttStatic::Envelope(envelope),
         ),
-        separated_pair(tag("UID"), space, uniqueid),
+        map(
+            separated_pair(tag("INTERNALDATE"), space, date_time),
+            |(_, date)| MsgAttStatic::Internaldate(date),
+        ),
+        map(
+            separated_pair(tag("RFC822.TEXT"), space, nstring),
+            |(_, text)| MsgAttStatic::RFC822Text(text),
+        ),
+        map(
+            separated_pair(tag("RFC822.HEADER"), space, nstring),
+            |(_, header)| MsgAttStatic::RFC822Header(header),
+        ),
+        map(separated_pair(tag("RFC822"), space, nstring), |(_, r)| {
+            MsgAttStatic::RFC822(r)
+        }),
+        map(
+            separated_pair(tag("RFC822.SIZE"), space, number),
+            |(_, size)| MsgAttStatic::RFC822Size(size),
+        ),
+        map(
+            separated_pair(tag("BODYSTRUCTURE"), space, body),
+            |(_, body)| MsgAttStatic::Bodystructure(body),
+        ),
+        map(separated_pair(tag("BODY"), space, body), |(_, body)| {
+            MsgAttStatic::Body(body)
+        }),
+        map(
+            separated_pair(
+                tuple((
+                    tag("BODY"),
+                    section,
+                    opt(delimited(char('<'), number, char('>'))),
+                )),
+                space,
+                nstring,
+            ),
+            |((_, section, number), string)| MsgAttStatic::Bodysection {
+                section,
+                number,
+                string,
+            },
+        ),
+        map(separated_pair(tag("UID"), space, uniqueid), |(_, uid)| {
+            MsgAttStatic::Uid(uid)
+        }),
     ))(input)
 }
 
