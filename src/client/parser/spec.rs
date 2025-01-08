@@ -876,26 +876,60 @@ fn body_extension(input: &str) -> IResult<&str, Option<BodyExtension>> {
     ))(input)
 }
 
-fn body_ext_1part(input: &str) -> IResult<&str, &str> {
+#[derive(Default)]
+struct BodyExt1Part<'a> {
+    md5: Option<&'a str>,
+    dsp: Option<(&'a str, Vec<(&'a str, &'a str)>)>,
+    lang: Vec<&'a str>,
+    loc: Option<&'a str>,
+    extensions: Vec<Option<BodyExtension<'a>>>,
+}
+fn body_ext_1part(input: &str) -> IResult<&str, BodyExt1Part> {
     // MUST NOT be returned on non-extensible "BODY" fetch
-    pair(
-        body_fld_md5,
-        opt(preceded(
-            space,
-            pair(
-                body_fld_dsp,
-                opt(preceded(
-                    space,
-                    pair(
-                        body_fld_lang,
-                        opt(preceded(
-                            space,
-                            pair(body_fld_loc, many0(preceded(space, body_extension))),
-                        )),
-                    ),
-                )),
-            ),
-        )),
+    map(
+        pair(
+            body_fld_md5,
+            opt(preceded(
+                space,
+                pair(
+                    body_fld_dsp,
+                    opt(preceded(
+                        space,
+                        pair(
+                            body_fld_lang,
+                            opt(preceded(
+                                space,
+                                pair(body_fld_loc, many0(preceded(space, body_extension))),
+                            )),
+                        ),
+                    )),
+                ),
+            )),
+        ),
+        |o| match o {
+            (md5, None) => BodyExt1Part {
+                md5,
+                ..Default::default()
+            },
+            (md5, Some((dsp, None))) => BodyExt1Part {
+                md5,
+                dsp,
+                ..Default::default()
+            },
+            (md5, Some((dsp, Some((lang, None))))) => BodyExt1Part {
+                md5,
+                dsp,
+                lang,
+                ..Default::default()
+            },
+            (md5, Some((dsp, Some((lang, Some((loc, extensions))))))) => BodyExt1Part {
+                md5,
+                dsp,
+                lang,
+                loc,
+                extensions,
+            },
+        },
     )(input)
 }
 
