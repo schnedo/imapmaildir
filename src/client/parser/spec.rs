@@ -840,6 +840,19 @@ fn body_fld_dsp(input: &str) -> IResult<&str, Option<(&str, Vec<(&str, &str)>)>>
     ))(input)
 }
 
+fn body_fld_lang(input: &str) -> IResult<&str, Vec<&str>> {
+    alt((
+        map(nstring, |opt| {
+            if let Some(lang) = opt {
+                vec![lang]
+            } else {
+                Vec::with_capacity(0)
+            }
+        }),
+        delimited(char('"'), separated_list1(space, string), char('"')),
+    ))(input)
+}
+
 fn body_ext_1part(input: &str) -> IResult<&str, &str> {
     // MUST NOT be returned on non-extensible "BODY" fetch
     pair(
