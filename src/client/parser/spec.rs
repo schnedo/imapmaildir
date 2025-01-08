@@ -750,9 +750,15 @@ fn body_fields(input: &str) -> IResult<&str, BodyFields> {
     )(input)
 }
 
-fn body_type_basic(input: &str) -> IResult<&str, ((&str, &str), BodyFields)> {
+fn body_type_basic(input: &str) -> IResult<&str, BodyType> {
     // MESSAGE subtype MUST NOT be "RFC822"
-    separated_pair(media_basic, space, body_fields)(input)
+    map(
+        separated_pair(media_basic, space, body_fields),
+        |((type_, subtype), fields)| BodyType::Basic {
+            media: Media { type_, subtype },
+            fields,
+        },
+    )(input)
 }
 
 fn body_fld_lines(input: &str) -> IResult<&str, u32> {
@@ -768,14 +774,7 @@ fn media_message(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
-struct BodyTypeMesage<'a> {
-    media_message: &'a str,
-    body_fields: BodyFields<'a>,
-    envelope: Envelope<'a>,
-    body: &'a str,
-    body_fld_lines: u32,
-}
-fn body_type_msg(input: &str) -> IResult<&str, BodyTypeMesage> {
+fn body_type_msg(input: &str) -> IResult<&str, BodyType> {
     map(
         tuple((
             media_message,
@@ -784,8 +783,7 @@ fn body_type_msg(input: &str) -> IResult<&str, BodyTypeMesage> {
             preceded(space, body),
             preceded(space, body_fld_lines),
         )),
-        |(media_message, body_fields, envelope, body, body_fld_lines)| BodyTypeMesage {
-            media_message,
+        |(_, body_fields, envelope, body, body_fld_lines)| BodyType::Message {
             body_fields,
             envelope,
             body,
@@ -802,19 +800,14 @@ fn media_text(input: &str) -> IResult<&str, &str> {
     )(input)
 }
 
-struct BodyTypeText<'a> {
-    media_text: &'a str,
-    body_fields: BodyFields<'a>,
-    body_fld_lines: u32,
-}
-fn body_type_text(input: &str) -> IResult<&str, BodyTypeText> {
+fn body_type_text(input: &str) -> IResult<&str, BodyType> {
     map(
         tuple((
             media_text,
             preceded(space, body_fields),
             preceded(space, body_fld_lines),
         )),
-        |(media_text, body_fields, body_fld_lines)| BodyTypeText {
+        |(media_text, body_fields, body_fld_lines)| BodyType::Text {
             media_text,
             body_fields,
             body_fld_lines,
@@ -933,6 +926,27 @@ fn body_ext_1part(input: &str) -> IResult<&str, BodyExt1Part> {
     )(input)
 }
 
+struct Media<'a> {
+    type_: &'a str,
+    subtype: &'a str,
+}
+enum BodyType<'a> {
+    Basic {
+        media: Media<'a>,
+        fields: BodyFields<'a>,
+    },
+    Message {
+        body_fields: BodyFields<'a>,
+        envelope: Envelope<'a>,
+        body: &'a str,
+        body_fld_lines: u32,
+    },
+    Text {
+        media_text: &'a str,
+        body_fields: BodyFields<'a>,
+        body_fld_lines: u32,
+    },
+}
 fn body_type_1part(input: &str) -> IResult<&str, &str> {
     pair(
         alt((body_type_basic, body_type_msg, body_type_text)),
