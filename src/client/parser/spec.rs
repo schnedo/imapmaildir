@@ -947,7 +947,7 @@ enum BodyType<'a> {
         body_fld_lines: u32,
     },
 }
-fn body_type_1part(input: &str) -> IResult<&str, &str> {
+fn body_type_1part(input: &str) -> IResult<&str, (BodyType, Option<BodyExt1Part>)> {
     pair(
         alt((body_type_basic, body_type_msg, body_type_text)),
         opt(preceded(space, body_ext_1part)),
