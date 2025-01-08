@@ -926,6 +926,63 @@ fn body_ext_1part(input: &str) -> IResult<&str, BodyExt1Part> {
     )(input)
 }
 
+#[derive(Default)]
+struct BodyExtMPart<'a> {
+    param: Vec<(&'a str, &'a str)>,
+    dsp: Option<(&'a str, Vec<(&'a str, &'a str)>)>,
+    lang: Vec<&'a str>,
+    loc: Option<&'a str>,
+    extensions: Vec<Option<BodyExtension<'a>>>,
+}
+fn body_ext_mpart(input: &str) -> IResult<&str, BodyExtMPart> {
+    // MUST NOT be returned on non-extensible "BODY" fetch
+    map(
+        pair(
+            body_fld_param,
+            opt(preceded(
+                space,
+                pair(
+                    body_fld_dsp,
+                    opt(preceded(
+                        space,
+                        pair(
+                            body_fld_lang,
+                            opt(preceded(
+                                space,
+                                pair(body_fld_loc, many0(preceded(space, body_extension))),
+                            )),
+                        ),
+                    )),
+                ),
+            )),
+        ),
+        |o| match o {
+            (param, None) => BodyExtMPart {
+                param,
+                ..Default::default()
+            },
+            (param, Some((dsp, None))) => BodyExtMPart {
+                param,
+                dsp,
+                ..Default::default()
+            },
+            (param, Some((dsp, Some((lang, None))))) => BodyExtMPart {
+                param,
+                dsp,
+                lang,
+                ..Default::default()
+            },
+            (param, Some((dsp, Some((lang, Some((loc, extensions))))))) => BodyExtMPart {
+                param,
+                dsp,
+                lang,
+                loc,
+                extensions,
+            },
+        },
+    )(input)
+}
+
 struct Media<'a> {
     type_: &'a str,
     subtype: &'a str,
@@ -947,14 +1004,43 @@ enum BodyType<'a> {
         body_fld_lines: u32,
     },
 }
-fn body_type_1part(input: &str) -> IResult<&str, (BodyType, Option<BodyExt1Part>)> {
-    pair(
-        alt((body_type_basic, body_type_msg, body_type_text)),
-        opt(preceded(space, body_ext_1part)),
+fn body_type_1part(input: &str) -> IResult<&str, BodyParts> {
+    map(
+        pair(
+            alt((body_type_basic, body_type_msg, body_type_text)),
+            opt(preceded(space, body_ext_1part)),
+        ),
+        |(type_, extension)| BodyParts::One { type_, extension },
     )(input)
 }
 
-fn body(input: &str) -> IResult<&str, &str> {
+enum BodyParts<'a> {
+    One {
+        type_: BodyType<'a>,
+        extension: Option<BodyExt1Part<'a>>,
+    },
+    Many {
+        bodies: Vec<BodyParts<'a>>,
+        media_subtype: &'a str,
+        extension: Option<BodyExtMPart<'a>>,
+    },
+}
+
+fn body_type_mpart(input: &str) -> IResult<&str, BodyParts> {
+    map(
+        pair(
+            separated_pair(many1(body), space, media_subtype),
+            opt(preceded(space, body_ext_mpart)),
+        ),
+        |((bodies, media_subtype), extension)| BodyParts::Many {
+            bodies,
+            media_subtype,
+            extension,
+        },
+    )(input)
+}
+
+fn body(input: &str) -> IResult<&str, BodyParts> {
     delimited(
         char('('),
         alt((body_type_1part, body_type_mpart)),
