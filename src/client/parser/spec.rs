@@ -319,8 +319,8 @@ fn space(input: &str) -> IResult<&str, char> {
     char(' ')(input)
 }
 
-fn nstring(input: &str) -> IResult<&str, &str> {
-    alt((nil, string))(input)
+fn nstring(input: &str) -> IResult<&str, Option<&str>> {
+    alt((map(nil, |_| None), map(string, |s| Some(s))))(input)
 }
 
 fn uniqueid(input: &str) -> IResult<&str, u32> {
@@ -501,18 +501,18 @@ fn nil(input: &str) -> IResult<&str, &str> {
     tag("NIL")(input)
 }
 
-fn addr_adl(input: &str) -> IResult<&str, &str> {
+fn addr_adl(input: &str) -> IResult<&str, Option<&str>> {
     // Holds route from [RFC-2822] route-addr if non-NIL
     nstring(input)
 }
 
-fn addr_host(input: &str) -> IResult<&str, &str> {
+fn addr_host(input: &str) -> IResult<&str, Option<&str>> {
     // NIL indicates [RFC-2822] group syntax.
     // Otherwise, holds [RFC-2822] domain name
     nstring(input)
 }
 
-fn addr_mailbox(input: &str) -> IResult<&str, &str> {
+fn addr_mailbox(input: &str) -> IResult<&str, Option<&str>> {
     // NIL indicates end of [RFC-2822] group; if
     // non-NIL and addr-host is NIL, holds
     // [RFC-2822] group name.
@@ -521,17 +521,17 @@ fn addr_mailbox(input: &str) -> IResult<&str, &str> {
     nstring(input)
 }
 
-fn addr_name(input: &str) -> IResult<&str, &str> {
+fn addr_name(input: &str) -> IResult<&str, Option<&str>> {
     // If non-NIL, holds phrase from [RFC-2822]
     // mailbox after removing [RFC-2822] quoting
     nstring(input)
 }
 
 struct Address<'a> {
-    name: &'a str,
-    adl: &'a str,
-    mailbox: &'a str,
-    host: &'a str,
+    name: Option<&'a str>,
+    adl: Option<&'a str>,
+    mailbox: Option<&'a str>,
+    host: Option<&'a str>,
 }
 fn address(input: &str) -> IResult<&str, Address> {
     map(
@@ -568,7 +568,7 @@ fn env_cc(input: &str) -> IResult<&str, Vec<Address>> {
     ))(input)
 }
 
-fn env_date(input: &str) -> IResult<&str, &str> {
+fn env_date(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
@@ -579,11 +579,11 @@ fn env_from(input: &str) -> IResult<&str, Vec<Address>> {
     ))(input)
 }
 
-fn env_in_reply_to(input: &str) -> IResult<&str, &str> {
+fn env_in_reply_to(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
-fn env_message_id(input: &str) -> IResult<&str, &str> {
+fn env_message_id(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
@@ -601,7 +601,7 @@ fn env_sender(input: &str) -> IResult<&str, Vec<Address>> {
     ))(input)
 }
 
-fn env_subject(input: &str) -> IResult<&str, &str> {
+fn env_subject(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
@@ -613,16 +613,16 @@ fn env_to(input: &str) -> IResult<&str, Vec<Address>> {
 }
 
 struct Envelope<'a> {
-    date: &'a str,
-    subject: &'a str,
+    date: Option<&'a str>,
+    subject: Option<&'a str>,
     from: Vec<Address<'a>>,
     sender: Vec<Address<'a>>,
     reply_to: Vec<Address<'a>>,
     to: Vec<Address<'a>>,
     cc: Vec<Address<'a>>,
     bcc: Vec<Address<'a>>,
-    in_reply_to: &'a str,
-    message_id: &'a str,
+    in_reply_to: Option<&'a str>,
+    message_id: Option<&'a str>,
 }
 fn envelope(input: &str) -> IResult<&str, Envelope> {
     map(
@@ -688,11 +688,11 @@ fn body_fld_octets(input: &str) -> IResult<&str, u32> {
     number(input)
 }
 
-fn body_fld_id(input: &str) -> IResult<&str, &str> {
+fn body_fld_id(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
-fn body_fld_desc(input: &str) -> IResult<&str, &str> {
+fn body_fld_desc(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
@@ -726,8 +726,8 @@ fn body_fld_param(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
 
 struct BodyFields<'a> {
     param: Vec<(&'a str, &'a str)>,
-    id: &'a str,
-    desc: &'a str,
+    id: Option<&'a str>,
+    desc: Option<&'a str>,
     enc: &'a str,
     octets: u32,
 }
@@ -822,7 +822,7 @@ fn body_type_text(input: &str) -> IResult<&str, BodyTypeText> {
     )(input)
 }
 
-fn body_fld_md5(input: &str) -> IResult<&str, &str> {
+fn body_fld_md5(input: &str) -> IResult<&str, Option<&str>> {
     nstring(input)
 }
 
