@@ -853,6 +853,29 @@ fn body_fld_lang(input: &str) -> IResult<&str, Vec<&str>> {
     ))(input)
 }
 
+fn body_fld_loc(input: &str) -> IResult<&str, Option<&str>> {
+    nstring(input)
+}
+
+enum BodyExtension<'a> {
+    String(&'a str),
+    Number(u32),
+    List(Vec<Option<BodyExtension<'a>>>),
+}
+fn body_extension(input: &str) -> IResult<&str, Option<BodyExtension>> {
+    alt((
+        map(nstring, |o| o.map(BodyExtension::String)),
+        map(number, |n| Some(BodyExtension::Number(n))),
+        // Future expansion. Client implementations MUST accept body-extension
+        // fields. Server implementations MUST NOT generate body-extension fields
+        // except as defined by future standard or standards-track revisions of this specification.
+        map(
+            delimited(char('"'), separated_list1(space, body_extension), char('"')),
+            |v| Some(BodyExtension::List(v)),
+        ),
+    ))(input)
+}
+
 fn body_ext_1part(input: &str) -> IResult<&str, &str> {
     // MUST NOT be returned on non-extensible "BODY" fetch
     pair(
