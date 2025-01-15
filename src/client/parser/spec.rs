@@ -106,7 +106,7 @@ fn number(input: &str) -> IResult<&str, u32> {
     } else {
         Err(nom::Err::Error(Error::new(
             input,
-            nom::error::ErrorKind::Float,
+            nom::error::ErrorKind::MapRes,
         )))
     }
 }
