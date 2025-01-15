@@ -65,14 +65,14 @@ fn is_not_quoted_special_or_escape(input: char) -> bool {
 // number represents the number of char8s
 fn literal(input: &str) -> IResult<&str, &str> {
     let (rest, char8_length) = terminated(delimited(char('{'), number, char('}')), crlf)(input)?;
-    let (rest, char8_sequence) = take_while(is_char8)(rest)?;
-    if char8_sequence.len() as u32 == char8_length {
+    let (rest, char8_sequence) = take(char8_length)(rest)?;
+    if char8_sequence.chars().all(is_char8) {
         Ok((rest, char8_sequence))
     } else {
         // ToDo: actually learn, how the error system in nom works
         Err(nom::Err::Error(Error::new(
             input,
-            nom::error::ErrorKind::Float,
+            nom::error::ErrorKind::MapRes,
         )))
     }
 }
