@@ -1,24 +1,21 @@
-mod parser;
+mod codec;
 
-use parser::parse_greeting;
-use tokio::{
-    io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, ReadHalf, WriteHalf},
-    net::TcpStream,
-};
+use codec::ImapCodec;
+use futures::stream::StreamExt;
+use imap_proto::{Capability, Response, ResponseCode, Status};
+use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
+use tokio_util::codec::Framed;
 
 use crate::config::Config;
 
-type Reader = BufReader<ReadHalf<TlsStream<TcpStream>>>;
-type Writer = BufWriter<WriteHalf<TlsStream<TcpStream>>>;
-
 pub struct Client {
-    reader: Reader,
-    writer: Writer,
+    can_idle: bool,
+    transport: Framed<TlsStream<TcpStream>, ImapCodec>,
 }
 
 impl Client {
-    pub async fn new(config: &Config) -> Self {
+    pub async fn connect(config: &Config) -> Self {
         let tls = native_tls::TlsConnector::new().expect("native tls should be available");
         let tls = TlsConnector::from(tls);
         let stream = (TcpStream::connect((config.host(), config.port)).await)
@@ -26,29 +23,28 @@ impl Client {
         let stream =
             (tls.connect(config.host(), stream).await).expect("upgrading to tls should succeed");
 
-        let (reader, writer) = split(stream);
-        let mut reader = BufReader::new(reader);
-        let mut writer = BufWriter::new(writer);
+        let mut transport = Framed::new(stream, ImapCodec::default());
 
-        let mut res = String::new();
-        (reader.read_line(&mut res).await).expect("greeting should be readable");
-        dbg!(&res);
-        let greeting_response = parse_greeting(&res).expect("greeting should be parseable");
-        dbg!(greeting_response);
-        get_capabilities(&mut reader, &mut writer).await;
+        let greeting = (transport.next().await)
+            .expect("greeting should be present")
+            .expect("greeting should be parsable");
 
-        Client { reader, writer }
+        let can_idle = if let Response::Data {
+            status: Status::Ok,
+            code: Some(ResponseCode::Capabilities(capabilities)),
+            information: _,
+        } = greeting.parsed()
+        {
+            dbg!(&capabilities);
+            capabilities.contains(&Capability::Atom(std::borrow::Cow::Borrowed("IDLE")))
+        } else {
+            dbg!(&greeting);
+            todo!("greeting should have capabilities")
+        };
+
+        Client {
+            can_idle,
+            transport,
+        }
     }
-}
-
-async fn get_capabilities(reader: &mut Reader, writer: &mut Writer) {
-    (writer.write_all(b"abcd CAPABILITY\r\n"))
-        .await
-        .expect("writing capability command to buffer should succeed");
-    (writer.flush())
-        .await
-        .expect("sending capability command should succeed");
-    let mut res = String::new();
-    (reader.read_line(&mut res).await).expect("greeting should be readable");
-    dbg!(&res);
 }

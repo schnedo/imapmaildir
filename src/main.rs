@@ -7,5 +7,5 @@ mod config;
 #[tokio::main]
 async fn main() {
     let config = Config::load_from_file();
-    Client::new(&config).await;
+    Client::connect(&config).await;
 }
