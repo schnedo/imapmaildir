@@ -1,8 +1,9 @@
-mod parser;
-
-use parser::parse_greeting;
+use imap_proto::parser::parse_response;
 use tokio::{
-    io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter, ReadHalf, WriteHalf},
+    io::{
+        split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter, ReadHalf,
+        WriteHalf,
+    },
     net::TcpStream,
 };
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
@@ -27,13 +28,12 @@ impl Client {
             (tls.connect(config.host(), stream).await).expect("upgrading to tls should succeed");
 
         let (reader, writer) = split(stream);
-        let mut reader = BufReader::new(reader);
-        let mut writer = BufWriter::new(writer);
 
-        let mut res = String::new();
+        let mut res = Vec::new();
+        reader.read(&mut res);
         (reader.read_line(&mut res).await).expect("greeting should be readable");
         dbg!(&res);
-        let greeting_response = parse_greeting(&res).expect("greeting should be parseable");
+        let greeting_response = parse_response(&res).expect("greeting should be parseable");
         dbg!(greeting_response);
         get_capabilities(&mut reader, &mut writer).await;
 
