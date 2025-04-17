@@ -1,9 +1,11 @@
 mod codec;
 mod tag_generator;
 
+use std::borrow::Cow;
+
 use codec::ImapCodec;
-use futures::stream::StreamExt;
-use imap_proto::{Capability, Response, ResponseCode, Status};
+use futures::{stream::StreamExt, SinkExt};
+use imap_proto::{Capability, Request, Response, ResponseCode, Status};
 use tag_generator::TagGenerator;
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
@@ -48,4 +50,26 @@ impl Client {
             tag_generator: TagGenerator::default(),
         }
     }
+
+    pub async fn login(mut self, username: &str, password: &str) {
+        let request = Request(
+            self.tag_generator.next(),
+            Cow::Owned(format!("LOGIN {username} {password}").into_bytes()),
+        );
+        dbg!(&request);
+        if (self.transport.send(&request).await).is_ok() {
+            let response = (self.transport.next().await)
+                .expect("response should be present")
+                .expect("response should be parsable");
+            dbg!(&response);
+
+            Session { client: self }
+        } else {
+            todo!("handle login error")
+        };
+    }
+}
+
+pub struct Session {
+    client: Client,
 }
