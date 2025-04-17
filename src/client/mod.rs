@@ -3,7 +3,7 @@ mod tag_generator;
 
 use std::borrow::Cow;
 
-use codec::ImapCodec;
+use codec::{ImapCodec, ResponseData};
 use futures::{stream::StreamExt, SinkExt};
 use imap_proto::{Capability, Request, Response, ResponseCode, Status};
 use tag_generator::TagGenerator;
@@ -62,13 +62,32 @@ impl Client {
     async fn send(&mut self, command: &str) {
         let request = Request(self.tag_generator.next(), Cow::Borrowed(command.as_bytes()));
         if (self.transport.send(&request).await).is_ok() {
-            let response = (self.transport.next().await)
-                .expect("response should be present")
-                .expect("response should be parsable");
-            dbg!(&response);
+            self.receive().await;
         } else {
             todo!("handle login error")
         };
+    }
+
+    async fn receive(&mut self) -> ResponseData {
+        loop {
+            let response = self
+                .transport
+                .next()
+                .await
+                .expect("response should be present")
+                .expect("response should be parsable");
+            dbg!(&response);
+
+            if let Response::Done {
+                tag: _,
+                status: _,
+                code: _,
+                information: _,
+            } = response.parsed()
+            {
+                break response;
+            }
+        }
     }
 }
 
@@ -77,5 +96,9 @@ pub struct Session {
 }
 
 impl Session {
-    pub async fn select(&self, mailbox: &str) {}
+    pub async fn select(&mut self, mailbox: &str) {
+        let command = format!("SELECT {mailbox}");
+        dbg!(&command);
+        self.client.send(&command).await;
+    }
 }
