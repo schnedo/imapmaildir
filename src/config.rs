@@ -13,7 +13,7 @@ pub struct Config {
     user: String,
     password_cmd: String,
     host: String,
-    pub port: u16,
+    port: u16,
 }
 
 impl Config {
@@ -56,6 +56,10 @@ impl Config {
 
     pub fn host(&self) -> &str {
         self.host.as_str()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     pub fn user(&self) -> &str {

@@ -18,7 +18,7 @@ impl Client {
     pub async fn connect(config: &Config) -> Self {
         let tls = native_tls::TlsConnector::new().expect("native tls should be available");
         let tls = TlsConnector::from(tls);
-        let stream = (TcpStream::connect((config.host(), config.port)).await)
+        let stream = (TcpStream::connect((config.host(), config.port())).await)
             .expect("connection to server should succeed");
         let stream =
             (tls.connect(config.host(), stream).await).expect("upgrading to tls should succeed");
