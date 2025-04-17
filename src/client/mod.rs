@@ -1,8 +1,10 @@
 mod codec;
+mod tag_generator;
 
 use codec::ImapCodec;
 use futures::stream::StreamExt;
 use imap_proto::{Capability, Response, ResponseCode, Status};
+use tag_generator::TagGenerator;
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 use tokio_util::codec::Framed;
@@ -10,6 +12,7 @@ use tokio_util::codec::Framed;
 pub struct Client {
     can_idle: bool,
     transport: Framed<TlsStream<TcpStream>, ImapCodec>,
+    tag_generator: TagGenerator,
 }
 
 impl Client {
@@ -42,6 +45,7 @@ impl Client {
         Client {
             can_idle,
             transport,
+            tag_generator: TagGenerator::default(),
         }
     }
 }
