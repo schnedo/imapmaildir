@@ -52,17 +52,15 @@ impl Client {
     }
 
     pub async fn login(mut self, username: &str, password: &str) -> Session {
-        let request = Request(
-            self.tag_generator.next(),
-            Cow::Owned(format!("LOGIN {username} {password}").into_bytes()),
-        );
-        dbg!(&request);
-        self.send(request).await;
+        let command = format!("LOGIN {username} {password}");
+        dbg!(&command);
+        self.send(&command).await;
 
         Session { client: self }
     }
 
-    async fn send(&mut self, request: Request<'_>) {
+    async fn send(&mut self, command: &str) {
+        let request = Request(self.tag_generator.next(), Cow::Borrowed(command.as_bytes()));
         if (self.transport.send(&request).await).is_ok() {
             let response = (self.transport.next().await)
                 .expect("response should be present")
@@ -76,4 +74,8 @@ impl Client {
 
 pub struct Session {
     client: Client,
+}
+
+impl Session {
+    pub async fn select(&self, mailbox: &str) {}
 }
