@@ -51,19 +51,23 @@ impl Client {
         }
     }
 
-    pub async fn login(mut self, username: &str, password: &str) {
+    pub async fn login(mut self, username: &str, password: &str) -> Session {
         let request = Request(
             self.tag_generator.next(),
             Cow::Owned(format!("LOGIN {username} {password}").into_bytes()),
         );
         dbg!(&request);
+        self.send(request).await;
+
+        Session { client: self }
+    }
+
+    async fn send(&mut self, request: Request<'_>) {
         if (self.transport.send(&request).await).is_ok() {
             let response = (self.transport.next().await)
                 .expect("response should be present")
                 .expect("response should be parsable");
             dbg!(&response);
-
-            Session { client: self }
         } else {
             todo!("handle login error")
         };
