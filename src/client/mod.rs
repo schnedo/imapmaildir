@@ -72,7 +72,6 @@ impl Client {
             Cow::Borrowed(tag.as_bytes()),
             Cow::Borrowed(command.as_bytes()),
         );
-        dbg!(&tag);
         if (self.transport.send(&request).await).is_ok() {
             ResponseStream::new(&mut self.transport, tag)
         } else {
@@ -105,12 +104,10 @@ impl Stream for ResponseStream<'_> {
             return Poll::Ready(None);
         }
         let next_poll = self.transport.try_poll_next_unpin(cx);
-        dbg!(&next_poll);
         match next_poll {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Ready(Some(Ok(data))) => {
-                dbg!(&data);
                 if let Some(tag) = data.request_id() {
                     self.done = true;
                     assert_eq!(
