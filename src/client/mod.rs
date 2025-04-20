@@ -66,9 +66,14 @@ impl Client {
     }
 
     async fn send(&mut self, command: &str) -> ResponseStream {
-        let request = Request(self.tag_generator.next(), Cow::Borrowed(command.as_bytes()));
+        let tag = self.tag_generator.next();
+        let request = Request(
+            Cow::Borrowed(tag.as_bytes()),
+            Cow::Borrowed(command.as_bytes()),
+        );
+        dbg!(&tag);
         if (self.transport.send(&request).await).is_ok() {
-            ResponseStream::new(&mut self.transport)
+            ResponseStream::new(&mut self.transport, tag)
         } else {
             todo!("handle connection error")
         }
@@ -78,13 +83,15 @@ impl Client {
 pub struct ResponseStream<'a> {
     transport: &'a mut Transport,
     done: bool,
+    tag: String,
 }
 
 impl<'a> ResponseStream<'a> {
-    pub fn new(transport: &'a mut Transport) -> Self {
+    pub fn new(transport: &'a mut Transport, tag: String) -> Self {
         Self {
             transport,
             done: false,
+            tag,
         }
     }
 }
@@ -103,6 +110,13 @@ impl Stream for ResponseStream<'_> {
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Ready(Some(Ok(data))) => {
                 dbg!(&data);
+                if let Some(tag) = data.request_id() {
+                    self.done = true;
+                    assert_eq!(
+                        tag.0, self.tag,
+                        "Response tag did not match request tag. This should never happen and indicates that something is seriously wrong."
+                    );
+                }
                 if data.request_id().is_some() {
                     self.done = true;
                 }

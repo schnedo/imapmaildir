@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::Wrapping};
+use std::num::Wrapping;
 
 pub(super) struct TagGenerator {
     last_tag: Wrapping<u16>,
@@ -10,8 +10,8 @@ impl TagGenerator {
             last_tag: Wrapping(u16::MAX),
         }
     }
-    pub fn next(&mut self) -> Cow<'static, [u8]> {
+    pub fn next(&mut self) -> String {
         self.last_tag += 1;
-        Cow::Owned(format!("{:04x}", self.last_tag).into_bytes())
+        format!("{:04x}", self.last_tag)
     }
 }
