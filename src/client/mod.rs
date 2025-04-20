@@ -1,19 +1,25 @@
 mod codec;
 mod tag_generator;
 
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-use codec::{ImapCodec, ResponseData};
-use futures::{stream::StreamExt, SinkExt};
+use codec::ImapCodec;
+use futures::{stream::StreamExt, SinkExt, Stream, TryStreamExt};
 use imap_proto::{Capability, Request, Response, ResponseCode, Status};
 use tag_generator::TagGenerator;
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Decoder, Framed};
+
+type Transport = Framed<TlsStream<TcpStream>, ImapCodec>;
 
 pub struct Client {
     can_idle: bool,
-    transport: Framed<TlsStream<TcpStream>, ImapCodec>,
+    transport: Transport,
     tag_generator: TagGenerator,
 }
 
@@ -59,34 +65,50 @@ impl Client {
         Session { client: self }
     }
 
-    async fn send(&mut self, command: &str) {
+    async fn send(&mut self, command: &str) -> ResponseStream {
         let request = Request(self.tag_generator.next(), Cow::Borrowed(command.as_bytes()));
         if (self.transport.send(&request).await).is_ok() {
-            self.receive().await;
+            ResponseStream::new(&mut self.transport)
         } else {
             todo!("handle connection error")
-        };
+        }
     }
+}
 
-    async fn receive(&mut self) -> ResponseData {
-        loop {
-            let response = self
-                .transport
-                .next()
-                .await
-                .expect("response should be present")
-                .expect("response should be parsable");
-            dbg!(&response);
+pub struct ResponseStream<'a> {
+    transport: &'a mut Transport,
+    done: bool,
+}
 
-            if let Response::Done {
-                tag: _,
-                status: _,
-                code: _,
-                information: _,
-            } = response.parsed()
-            {
-                break response;
+impl<'a> ResponseStream<'a> {
+    pub fn new(transport: &'a mut Transport) -> Self {
+        Self {
+            transport,
+            done: false,
+        }
+    }
+}
+
+impl Stream for ResponseStream<'_> {
+    type Item = <ImapCodec as Decoder>::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+        let next_poll = self.transport.try_poll_next_unpin(cx);
+        dbg!(&next_poll);
+        match next_poll {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Ok(data))) => {
+                dbg!(&data);
+                if data.request_id().is_some() {
+                    self.done = true;
+                }
+                Poll::Ready(Some(data))
             }
+            Poll::Ready(Some(Err(_))) => todo!("handle connection errors"),
         }
     }
 }
@@ -99,6 +121,7 @@ impl Session {
     pub async fn select(&mut self, mailbox: &str) {
         let command = format!("SELECT {mailbox}");
         dbg!(&command);
-        self.client.send(&command).await;
+        let mut responses = self.client.send(&command).await;
+        while (responses.next().await).is_some() {}
     }
 }
