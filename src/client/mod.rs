@@ -60,7 +60,8 @@ impl Client {
     pub async fn login(mut self, username: &str, password: &str) -> Session {
         let command = format!("LOGIN {username} {password}");
         dbg!(&command);
-        self.send(&command).await;
+        let mut responses = self.send(&command).await;
+        while responses.next().await.is_some() {}
 
         Session { client: self }
     }
