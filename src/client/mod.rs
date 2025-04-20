@@ -64,7 +64,7 @@ impl Client {
         if (self.transport.send(&request).await).is_ok() {
             self.receive().await;
         } else {
-            todo!("handle login error")
+            todo!("handle connection error")
         };
     }
 
