@@ -1,21 +1,19 @@
 mod codec;
+mod response_stream;
 mod session;
 mod tag_generator;
 
-use std::{
-    borrow::Cow,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::borrow::Cow;
 
 use codec::ImapCodec;
-use futures::{stream::StreamExt, SinkExt, Stream, TryStreamExt};
+use futures::{stream::StreamExt, SinkExt};
 use imap_proto::{Capability, Request, Response, ResponseCode, Status};
+use response_stream::ResponseStream;
 use session::Session;
 use tag_generator::TagGenerator;
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
-use tokio_util::codec::{Decoder, Framed};
+use tokio_util::codec::Framed;
 
 type Transport = Framed<TlsStream<TcpStream>, ImapCodec>;
 
@@ -76,51 +74,6 @@ impl Client {
             ResponseStream::new(&mut self.transport, tag)
         } else {
             todo!("handle connection error")
-        }
-    }
-}
-
-pub struct ResponseStream<'a> {
-    transport: &'a mut Transport,
-    done: bool,
-    tag: String,
-}
-
-impl<'a> ResponseStream<'a> {
-    pub fn new(transport: &'a mut Transport, tag: String) -> Self {
-        Self {
-            transport,
-            done: false,
-            tag,
-        }
-    }
-}
-
-impl Stream for ResponseStream<'_> {
-    type Item = <ImapCodec as Decoder>::Item;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.done {
-            return Poll::Ready(None);
-        }
-        let next_poll = self.transport.try_poll_next_unpin(cx);
-        match next_poll {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some(Ok(data))) => {
-                if let Some(tag) = data.request_id() {
-                    self.done = true;
-                    assert_eq!(
-                        tag.0, self.tag,
-                        "Response tag did not match request tag. This should never happen and indicates that something is seriously wrong."
-                    );
-                }
-                if data.request_id().is_some() {
-                    self.done = true;
-                }
-                Poll::Ready(Some(data))
-            }
-            Poll::Ready(Some(Err(_))) => todo!("handle connection errors"),
         }
     }
 }
