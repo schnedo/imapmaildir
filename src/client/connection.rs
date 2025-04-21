@@ -120,7 +120,7 @@ impl Stream for ResponseStream<'_> {
                             }
                             return Poll::Ready(Some(data));
                         }
-                        Some(Err(_)) => todo!("handle connection errors"),
+                        Some(Err(e)) => panic!("{}", e),
                     }
                 }
                 ResponseStreamState::Done => return Poll::Ready(None),
