@@ -67,7 +67,7 @@ pub struct ResponseStream<'a> {
 }
 
 impl<'a> ResponseStream<'a> {
-    pub fn new(
+    pub(super) fn new(
         imap_stream: &'a mut ImapStream,
         tag_generator: &'a mut TagGenerator,
         command: &'a str,
