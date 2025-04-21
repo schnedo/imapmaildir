@@ -14,7 +14,7 @@ impl Session {
     pub async fn select(&mut self, mailbox: &str) {
         let command = format!("SELECT {mailbox}");
         dbg!(&command);
-        let mut responses = self.client.send(&command).await;
+        let mut responses = self.client.send(&command);
         while (responses.next().await).is_some() {}
     }
 }
