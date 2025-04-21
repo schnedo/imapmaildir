@@ -30,13 +30,12 @@ impl Client {
         if let imap_proto::Response::Done {
             tag: _,
             status,
-            code,
+            code: _,
             information: _,
         } = response.parsed()
         {
             match status {
                 imap_proto::Status::Ok => {
-                    dbg!(code);
                     Ok(Session::new(self.connection))
                 },
                 imap_proto::Status::No => Err(LoginError),
