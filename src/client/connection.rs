@@ -16,7 +16,7 @@ use super::{
 };
 
 type ImapStream = Framed<TlsStream<TcpStream>, ImapCodec>;
-pub struct Connection {
+pub(super) struct Connection {
     stream: ImapStream,
     tag_generator: TagGenerator,
 }
@@ -58,7 +58,7 @@ enum ResponseStreamState {
     Done,
 }
 
-pub struct ResponseStream<'a> {
+pub(super) struct ResponseStream<'a> {
     imap_stream: &'a mut ImapStream,
     state: ResponseStreamState,
     tag_generator: &'a mut TagGenerator,
@@ -67,7 +67,7 @@ pub struct ResponseStream<'a> {
 }
 
 impl<'a> ResponseStream<'a> {
-    pub(super) fn new(
+    pub fn new(
         imap_stream: &'a mut ImapStream,
         tag_generator: &'a mut TagGenerator,
         command: &'a str,

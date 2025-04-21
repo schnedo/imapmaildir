@@ -7,7 +7,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(connection: Connection) -> Self {
+    pub(super) fn new(connection: Connection) -> Self {
         Self { connection }
     }
 
