@@ -5,6 +5,7 @@ use imap_proto::{
     ResponseCode::{PermanentFlags, ReadOnly, UidNext, UidValidity, Unseen},
     Status::{Bad, No, Ok},
 };
+use log::info;
 use thiserror::Error;
 
 use crate::client::mailbox::{MailboxBuilder, UidBuilder};
@@ -26,7 +27,7 @@ impl Session {
 
     pub async fn select<'a>(&mut self, mailbox: &'a str) -> Result<(), SelectError<'a>> {
         let command = format!("SELECT {mailbox}");
-        dbg!(&command);
+        info!("{}", command);
         let mut responses = self.connection.send(&command);
         let mut new_mailbox = MailboxBuilder::default();
         new_mailbox.name(mailbox.to_string());
