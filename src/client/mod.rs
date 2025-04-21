@@ -3,7 +3,7 @@ mod connection;
 mod session;
 mod tag_generator;
 
-use connection::{Connection, ResponseStream};
+use connection::Connection;
 use futures::stream::StreamExt;
 use session::Session;
 use tag_generator::TagGenerator;
@@ -21,12 +21,8 @@ impl Client {
 
     pub async fn login(mut self, username: &str, password: &str) -> Session {
         let command = format!("LOGIN {username} {password}");
-        let mut responses = self.send(&command);
+        let mut responses = self.connection.send(&command);
         while responses.next().await.is_some() {}
-        Session::new(self)
-    }
-
-    fn send<'a>(&'a mut self, command: &'a str) -> ResponseStream<'a> {
-        self.connection.send(command)
+        Session::new(self.connection)
     }
 }
