@@ -6,6 +6,7 @@ use std::{
 
 use futures::{SinkExt, Stream, StreamExt, TryStreamExt};
 use imap_proto::Request;
+use log::{debug, trace};
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 use tokio_util::codec::{Decoder, Framed};
@@ -23,6 +24,7 @@ pub(super) struct Connection {
 
 impl Connection {
     pub async fn connect_to(host: &str, port: u16) -> (Self, ResponseData) {
+        debug!("Connecting to server");
         let tls = native_tls::TlsConnector::new().expect("native tls should be available");
         let tls = TlsConnector::from(tls);
         let stream =
@@ -36,6 +38,7 @@ impl Connection {
             .await
             .expect("greeting should be present")
             .expect("greeting should be parsable");
+        trace!("greeting = {:?}", response_data);
 
         (
             Connection {

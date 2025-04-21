@@ -5,7 +5,7 @@ use imap_proto::{
     ResponseCode::{PermanentFlags, ReadOnly, UidNext, UidValidity, Unseen},
     Status::{Bad, No, Ok},
 };
-use log::info;
+use log::{debug, trace, warn};
 use thiserror::Error;
 
 use crate::client::mailbox::{MailboxBuilder, UidBuilder};
@@ -27,7 +27,7 @@ impl Session {
 
     pub async fn select<'a>(&mut self, mailbox: &'a str) -> Result<(), SelectError<'a>> {
         let command = format!("SELECT {mailbox}");
-        info!("{}", command);
+        debug!("{}", command);
         let mut responses = self.connection.send(&command);
         let mut new_mailbox = MailboxBuilder::default();
         new_mailbox.name(mailbox.to_string());
@@ -49,13 +49,21 @@ impl Session {
                         new_mailbox.recent(*recent);
                     }
                     _ => {
-                        dbg!(&mailbox_datum);
+                        warn!("ignoring unknown mailbox data response to SELECT");
+                        trace!("{:?}", mailbox_datum);
                     }
                 },
                 Data {
                     status: Ok,
+                    code: None,
+                    information: Some(information),
+                } => {
+                    debug!("{}", information);
+                }
+                Data {
+                    status: Ok,
                     code: Some(code),
-                    information: _,
+                    information,
                 } => match code {
                     Unseen(unseen) => {
                         new_mailbox.unseen(*unseen);
@@ -74,7 +82,11 @@ impl Session {
                         uid.validity(*validity);
                     }
                     _ => {
-                        dbg!(code);
+                        warn!("ignoring unknown data response to SELECT");
+                        if let Some(information) = information {
+                            warn!("{}", information);
+                        }
+                        trace!("{:?}", code);
                     }
                 },
                 Done { status, code, .. } => match status {
@@ -90,7 +102,7 @@ impl Session {
                                 .build()
                                 .expect("mailbox data should be all available at this point"),
                         );
-                        dbg!(&self.selected_mailbox);
+                        trace!("selected_mailbox = {:?}", self.selected_mailbox);
                     }
                     No => {
                         self.selected_mailbox = None;
@@ -100,7 +112,8 @@ impl Session {
                     _ => panic!("select status can only ever be Ok, No or Bad"),
                 },
                 _ => {
-                    dbg!(response.parsed());
+                    warn!("ignoring unknown response to SELECT");
+                    trace!("{:?}", response.parsed());
                 }
             }
         }

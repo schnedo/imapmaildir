@@ -6,6 +6,7 @@ mod tag_generator;
 
 use connection::Connection;
 use futures::stream::StreamExt;
+use log::{debug, trace};
 use session::Session;
 use tag_generator::TagGenerator;
 use thiserror::Error;
@@ -22,6 +23,7 @@ impl Client {
     }
 
     pub async fn login(mut self, username: &str, password: &str) -> Result<Session, LoginError> {
+        debug!("LOGIN <user> <password>");
         let command = format!("LOGIN {username} {password}");
         let mut responses = self.connection.send(&command);
         let response = responses
@@ -31,12 +33,13 @@ impl Client {
         if let imap_proto::Response::Done {
             tag: _,
             status,
-            code: _,
+            code,
             information: _,
         } = response.parsed()
         {
             match status {
                 imap_proto::Status::Ok => {
+                    trace!("{:?}", code);
                     Ok(Session::new(self.connection))
                 },
                 imap_proto::Status::No => Err(LoginError),
