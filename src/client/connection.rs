@@ -114,9 +114,10 @@ impl Stream for ResponseStream<'_> {
                             if let Some(tag) = data.request_id() {
                                 self.state = ResponseStreamState::Done;
                                 assert_eq!(
-                        tag.0, self.tag,
-                        "Response tag did not match request tag. This should never happen and indicates that something is seriously wrong."
-                    );
+                                    tag.0,
+                                    self.tag,
+                                    "Response tag did not match request tag. This should never happen and indicates that something is seriously wrong.",
+                                );
                             }
                             return Poll::Ready(Some(data));
                         }
