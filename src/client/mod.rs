@@ -1,4 +1,5 @@
 mod codec;
+mod session;
 mod tag_generator;
 
 use std::{
@@ -10,6 +11,7 @@ use std::{
 use codec::ImapCodec;
 use futures::{stream::StreamExt, SinkExt, Stream, TryStreamExt};
 use imap_proto::{Capability, Request, Response, ResponseCode, Status};
+use session::Session;
 use tag_generator::TagGenerator;
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
@@ -61,7 +63,7 @@ impl Client {
         let command = format!("LOGIN {username} {password}");
         let mut responses = self.send(&command).await;
         while responses.next().await.is_some() {}
-        Session { client: self }
+        Session::new(self)
     }
 
     async fn send(&mut self, command: &str) -> ResponseStream {
@@ -120,18 +122,5 @@ impl Stream for ResponseStream<'_> {
             }
             Poll::Ready(Some(Err(_))) => todo!("handle connection errors"),
         }
-    }
-}
-
-pub struct Session {
-    client: Client,
-}
-
-impl Session {
-    pub async fn select(&mut self, mailbox: &str) {
-        let command = format!("SELECT {mailbox}");
-        dbg!(&command);
-        let mut responses = self.client.send(&command).await;
-        while (responses.next().await).is_some() {}
     }
 }
