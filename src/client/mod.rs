@@ -1,41 +1,22 @@
 mod codec;
-mod response_stream;
+mod connection;
 mod session;
 mod tag_generator;
 
-use std::borrow::Cow;
-
-use codec::ImapCodec;
-use futures::{stream::StreamExt, SinkExt};
-use imap_proto::{Capability, Request, Response, ResponseCode, Status};
-use response_stream::ResponseStream;
+use connection::{Connection, ResponseStream};
+use futures::stream::StreamExt;
+use imap_proto::{Capability, Response, ResponseCode, Status};
 use session::Session;
 use tag_generator::TagGenerator;
-use tokio::net::TcpStream;
-use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
-use tokio_util::codec::Framed;
-
-type Transport = Framed<TlsStream<TcpStream>, ImapCodec>;
 
 pub struct Client {
     can_idle: bool,
-    transport: Transport,
-    tag_generator: TagGenerator,
+    connection: Connection,
 }
 
 impl Client {
     pub async fn connect(host: &str, port: u16) -> Self {
-        let tls = native_tls::TlsConnector::new().expect("native tls should be available");
-        let tls = TlsConnector::from(tls);
-        let stream =
-            (TcpStream::connect((host, port)).await).expect("connection to server should succeed");
-        let stream = (tls.connect(host, stream).await).expect("upgrading to tls should succeed");
-
-        let mut transport = Framed::new(stream, ImapCodec::default());
-
-        let greeting = (transport.next().await)
-            .expect("greeting should be present")
-            .expect("greeting should be parsable");
+        let (connection, greeting) = Connection::connect_to(host, port).await;
 
         let can_idle = if let Response::Data {
             status: Status::Ok,
@@ -52,8 +33,7 @@ impl Client {
 
         Client {
             can_idle,
-            transport,
-            tag_generator: TagGenerator::default(),
+            connection,
         }
     }
 
@@ -65,15 +45,6 @@ impl Client {
     }
 
     async fn send(&mut self, command: &str) -> ResponseStream {
-        let tag = self.tag_generator.next();
-        let request = Request(
-            Cow::Borrowed(tag.as_bytes()),
-            Cow::Borrowed(command.as_bytes()),
-        );
-        if (self.transport.send(&request).await).is_ok() {
-            ResponseStream::new(&mut self.transport, tag)
-        } else {
-            todo!("handle connection error")
-        }
+        self.connection.send(command).await
     }
 }
