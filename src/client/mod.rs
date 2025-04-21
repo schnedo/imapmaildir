@@ -1,5 +1,6 @@
 mod codec;
 mod connection;
+mod mailbox;
 mod session;
 mod tag_generator;
 
