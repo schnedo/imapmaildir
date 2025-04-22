@@ -1,20 +1,79 @@
-use super::{response_stream::Response, SendCommand};
+use std::{borrow::Cow, marker::Unpin};
 
-pub struct MockConnection<T: Iterator<Item = Response>> {
-    responses: T,
+use futures::{stream::iter, Stream, StreamExt};
+use imap_proto::{RequestId, Response, Status};
+
+use super::{codec::ResponseData, response_stream, SendCommand};
+
+pub struct MockConnection {
+    responses: Box<dyn Iterator<Item = ResponseData>>,
 }
 
-impl<T: Iterator<Item = Response>> MockConnection<T> {
-    pub fn new() -> Self {}
-}
-
-impl<T: Iterator<Item = Response>> SendCommand for MockConnection<T> {
-    fn send<'a>(&'a mut self, command: &'a str) -> super::response_stream::ResponseStream<'a> {
-        todo!()
+impl MockConnection {
+    pub fn new(responses: impl IntoIterator<Item = Response<'static>> + 'static) -> Self {
+        let responses = Box::new(responses.into_iter().map(ResponseData::new));
+        Self { responses }
     }
 }
 
-#[test]
-fn should_just_return_input() {
-    assert!(false);
+// TODO: Response does not implement copy or clone, so cannot just return input.
+// Maybe match on command and generate data on the fly?
+// Or use IntoIter?
+// Or generate Stream in new to avoid moving here behind mutable self reference?
+impl SendCommand for MockConnection {
+    fn send<'a>(
+        &'a mut self,
+        _command: &'a str,
+    ) -> impl Stream<Item = response_stream::Response> + Unpin {
+        let buf: Vec<_> = self.responses.by_ref().collect();
+        iter(buf)
+    }
+}
+
+#[tokio::test]
+async fn should_just_return_input() {
+    let responses = [
+        Response::Data {
+            status: Status::Ok,
+            code: None,
+            information: None,
+        },
+        Response::Done {
+            tag: RequestId("0000".to_owned()),
+            status: Status::Ok,
+            code: None,
+            information: Some(Cow::Borrowed("information")),
+        },
+    ];
+    let mut mock_connection = MockConnection::new(responses);
+
+    let mut responses = mock_connection.send("whatever");
+
+    let next_response = responses.next().await;
+    assert!(next_response.is_some());
+    let next_response = next_response.unwrap();
+    let next_response = next_response.parsed();
+    assert!(matches!(
+        next_response,
+        Response::Data {
+            status: Status::Ok,
+            code: None,
+            information: None
+        }
+    ));
+    let next_response = responses.next().await;
+    assert!(next_response.is_some());
+    let next_response = next_response.unwrap();
+    let next_response = next_response.parsed();
+    assert!(matches!(
+        next_response,
+        Response::Done {
+            tag: RequestId(_),
+            status: Status::Ok,
+            code: None,
+            information: Some(Cow::Borrowed("information")),
+        },
+    ));
+    let next_response = responses.next().await;
+    assert!(next_response.is_none());
 }
