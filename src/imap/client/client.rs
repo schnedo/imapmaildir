@@ -2,22 +2,20 @@ use futures::stream::StreamExt;
 use log::{debug, trace};
 use thiserror::Error;
 
-use crate::imap::connection::Connection;
+use crate::imap::connection::SendCommand;
 
 use super::session::Session;
 
-pub struct Client {
-    connection: Connection,
+pub struct Client<T: SendCommand> {
+    connection: T,
 }
 
-impl Client {
-    pub async fn connect(host: &str, port: u16) -> Self {
-        let (connection, _) = Connection::connect_to(host, port).await;
-
-        Client { connection }
+impl<T: SendCommand> Client<T> {
+    pub fn new(connection: T) -> Self {
+        Self { connection }
     }
 
-    pub async fn login(mut self, username: &str, password: &str) -> Result<Session, LoginError> {
+    pub async fn login(mut self, username: &str, password: &str) -> Result<Session<T>, LoginError> {
         debug!("LOGIN <user> <password>");
         let command = format!("LOGIN {username} {password}");
         let mut responses = self.connection.send(&command);

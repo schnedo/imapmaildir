@@ -8,6 +8,7 @@ use super::{
     codec::{ImapCodec, ResponseData},
     response_stream::ResponseStream,
     tag_generator::TagGenerator,
+    SendCommand,
 };
 
 pub type ImapStream = Framed<TlsStream<TcpStream>, ImapCodec>;
@@ -43,8 +44,10 @@ impl Connection {
             response_data,
         )
     }
+}
 
-    pub fn send<'a>(&'a mut self, command: &'a str) -> ResponseStream<'a> {
+impl SendCommand for Connection {
+    fn send<'a>(&'a mut self, command: &'a str) -> ResponseStream<'a> {
         ResponseStream::new(&mut self.stream, &mut self.tag_generator, command)
     }
 }

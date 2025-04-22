@@ -8,19 +8,19 @@ use imap_proto::{
 use log::{debug, trace, warn};
 use thiserror::Error;
 
-use crate::imap::connection::Connection;
+use crate::imap::connection::SendCommand;
 
 use super::mailbox::Mailbox;
 use super::mailbox::MailboxBuilder;
 use super::mailbox::UidBuilder;
 
-pub struct Session {
-    connection: Connection,
+pub struct Session<T: SendCommand> {
+    connection: T,
     selected_mailbox: Option<Mailbox>,
 }
 
-impl Session {
-    pub(super) fn new(connection: Connection) -> Self {
+impl<T: SendCommand> Session<T> {
+    pub(super) fn new(connection: T) -> Self {
         Self {
             connection,
             selected_mailbox: None,
