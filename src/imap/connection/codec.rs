@@ -121,3 +121,14 @@ impl ResponseData {
         &self.response
     }
 }
+
+// my own code
+#[cfg(test)]
+impl ResponseData {
+    pub fn new(response: Response<'static>) -> Self {
+        Self {
+            raw: Bytes::new(),
+            response,
+        }
+    }
+}

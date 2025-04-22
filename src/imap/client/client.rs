@@ -18,11 +18,13 @@ impl<T: SendCommand> Client<T> {
     pub async fn login(mut self, username: &str, password: &str) -> Result<Session<T>, LoginError> {
         debug!("LOGIN <user> <password>");
         let command = format!("LOGIN {username} {password}");
-        let mut responses = self.connection.send(&command);
-        let response = responses
-            .next()
-            .await
-            .expect("login should receive response");
+        let response = {
+            let mut responses = self.connection.send(&command);
+            responses
+                .next()
+                .await
+                .expect("login should receive response")
+        };
         if let imap_proto::Response::Done {
             tag: _,
             status,
