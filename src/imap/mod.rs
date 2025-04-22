@@ -1,5 +1,4 @@
 mod client;
-mod mailbox;
-mod session;
+mod connection;
 
 pub use client::Client;

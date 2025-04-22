@@ -8,7 +8,7 @@ use imap_proto::{
 use log::{debug, trace, warn};
 use thiserror::Error;
 
-use crate::client::connection::Connection;
+use crate::imap::connection::Connection;
 
 use super::mailbox::Mailbox;
 use super::mailbox::MailboxBuilder;

@@ -1,10 +1,10 @@
-mod client;
 mod config;
+mod imap;
 mod logging;
 
 use anyhow::Result;
-use client::Client;
 use config::Config;
+use imap::Client;
 
 #[tokio::main]
 async fn main() -> Result<()> {

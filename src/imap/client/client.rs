@@ -2,7 +2,7 @@ use futures::stream::StreamExt;
 use log::{debug, trace};
 use thiserror::Error;
 
-use crate::client::connection::Connection;
+use crate::imap::connection::Connection;
 
 use super::session::Session;
 
