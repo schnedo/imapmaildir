@@ -7,3 +7,5 @@ mod tag_generator;
 
 pub use connection::Connection;
 pub use send_command::SendCommand;
+#[cfg(test)]
+pub mod mock_connection;

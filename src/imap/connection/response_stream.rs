@@ -41,8 +41,10 @@ impl<'a> ResponseStream<'a> {
     }
 }
 
+pub type Response = <ImapCodec as Decoder>::Item;
+
 impl Stream for ResponseStream<'_> {
-    type Item = <ImapCodec as Decoder>::Item;
+    type Item = Response;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
