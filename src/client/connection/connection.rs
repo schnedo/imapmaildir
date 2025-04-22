@@ -13,11 +13,11 @@ use tokio_util::codec::{Decoder, Framed};
 
 use super::{
     codec::{ImapCodec, ResponseData},
-    TagGenerator,
+    tag_generator::TagGenerator,
 };
 
 type ImapStream = Framed<TlsStream<TcpStream>, ImapCodec>;
-pub(super) struct Connection {
+pub struct Connection {
     stream: ImapStream,
     tag_generator: TagGenerator,
 }
@@ -61,7 +61,7 @@ enum ResponseStreamState {
     Done,
 }
 
-pub(super) struct ResponseStream<'a> {
+pub struct ResponseStream<'a> {
     imap_stream: &'a mut ImapStream,
     state: ResponseStreamState,
     tag_generator: &'a mut TagGenerator,

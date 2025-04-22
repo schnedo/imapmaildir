@@ -1,6 +1,6 @@
 use std::num::Wrapping;
 
-pub(super) struct TagGenerator {
+pub struct TagGenerator {
     last_tag: Wrapping<u16>,
 }
 

@@ -8,9 +8,11 @@ use imap_proto::{
 use log::{debug, trace, warn};
 use thiserror::Error;
 
-use crate::client::mailbox::{MailboxBuilder, UidBuilder};
+use crate::client::connection::Connection;
 
-use super::{connection::Connection, mailbox::Mailbox};
+use super::mailbox::Mailbox;
+use super::mailbox::MailboxBuilder;
+use super::mailbox::UidBuilder;
 
 pub struct Session {
     connection: Connection,

@@ -40,7 +40,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use imap_proto::types::{Request, RequestId, Response};
 
 #[derive(Default)]
-pub(super) struct ImapCodec {
+pub struct ImapCodec {
     decode_need_message_bytes: usize,
 }
 
@@ -94,7 +94,7 @@ impl<'a> Encoder<&'a Request<'a>> for ImapCodec {
 }
 
 #[derive(Debug)]
-pub(super) struct ResponseData {
+pub struct ResponseData {
     #[allow(dead_code)] // Contains data that `response` borrows
     raw: Bytes,
     // This reference is really scoped to the lifetime of the `raw`
