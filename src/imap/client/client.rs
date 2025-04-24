@@ -50,3 +50,46 @@ impl<T: SendCommand> Client<T> {
 #[derive(Debug, Error)]
 #[error("username or password rejected")]
 pub struct LoginError;
+
+#[cfg(test)]
+mod tests {
+    use imap_proto::*;
+
+    use crate::imap::connection::mock_connection::MockConnection;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn should_return_session_when_login_ok() {
+        let mock_responses = [Response::Done {
+            tag: RequestId("0000".to_owned()),
+            status: Status::Ok,
+            code: Some(ResponseCode::Capabilities(vec![Capability::Imap4rev1])),
+            information: Some(std::borrow::Cow::Borrowed("Logged in")),
+        }];
+        let mock_connection = MockConnection::new(mock_responses);
+        let client = Client::new(mock_connection);
+
+        let maybe_session = client.login("name", "password").await;
+
+        assert!(matches!(maybe_session, Ok(Session { .. })));
+    }
+
+    #[tokio::test]
+    async fn should_return_login_error_when_login_no() {
+        let mock_responses = [Response::Done {
+            tag: RequestId("0000".to_owned()),
+            status: Status::No,
+            code: None,
+            information: Some(std::borrow::Cow::Borrowed(
+                "[AUTHENTICATIONFAILED] Authentication failed.",
+            )),
+        }];
+        let mock_connection = MockConnection::new(mock_responses);
+        let client = Client::new(mock_connection);
+
+        let maybe_session = client.login("name", "password").await;
+
+        assert!(matches!(maybe_session, Err(LoginError)));
+    }
+}
