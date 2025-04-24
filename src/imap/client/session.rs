@@ -35,6 +35,7 @@ impl<T: SendCommand> Session<T> {
         new_mailbox.name(mailbox.to_string());
         let mut uid = UidBuilder::default();
         while let Some(response) = responses.next().await {
+            dbg!(response.parsed());
             match response.parsed() {
                 MailboxData(mailbox_datum) => match mailbox_datum {
                     Flags(cows) => {
@@ -128,4 +129,101 @@ impl<T: SendCommand> Session<T> {
 #[error("cannot select mailbox {mailbox}. Going back to unselected.")]
 pub struct SelectError<'a> {
     mailbox: &'a str,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::imap::connection::mock_connection::MockConnection;
+
+    use super::*;
+
+    use std::borrow::Cow;
+
+    use imap_proto::*;
+
+    #[tokio::test]
+    async fn should() {
+        let exists = 6084;
+        let recent = 4;
+        let uid_validity = 1234214;
+        let uid_next = 4321;
+        let responses = [
+            Response::MailboxData(Flags(vec![
+                Cow::Borrowed("\\Answered"),
+                Cow::Borrowed("\\Flagged"),
+                Cow::Borrowed("\\Deleted"),
+                Cow::Borrowed("\\Seen"),
+                Cow::Borrowed("\\Draft"),
+            ])),
+            Response::Data {
+                status: Ok,
+                code: Some(PermanentFlags(vec![
+                    Cow::Borrowed("\\Answered"),
+                    Cow::Borrowed("\\Flagged"),
+                    Cow::Borrowed("\\Deleted"),
+                    Cow::Borrowed("\\Seen"),
+                    Cow::Borrowed("\\Draft"),
+                    Cow::Borrowed("\\*"),
+                ])),
+                information: Some(Cow::Borrowed("Flags permitted.")),
+            },
+            Response::MailboxData(Exists(exists)),
+            Response::MailboxData(Recent(recent)),
+            Response::Data {
+                status: Ok,
+                code: Some(UidValidity(uid_validity)),
+                information: Some(Cow::Borrowed("UIDs valid")),
+            },
+            Response::Data {
+                status: Ok,
+                code: Some(UidNext(uid_next)),
+                information: Some(Cow::Borrowed("Predicted next UID")),
+            },
+            Response::Data {
+                status: Ok,
+                code: Some(ResponseCode::HighestModSeq(70500)),
+                information: Some(Cow::Borrowed("")),
+            },
+            Response::Done {
+                tag: RequestId("0001".to_string()),
+                status: Ok,
+                code: Some(ResponseCode::ReadWrite),
+                information: Some(Cow::Borrowed("Select completed (0.001 + 0.000 secs).")),
+            },
+        ];
+        let mock_connection = MockConnection::new(responses);
+        let mut session = Session::new(mock_connection);
+
+        let mailbox_name = "foo";
+
+        let result = session.select(mailbox_name).await;
+
+        assert!(result.is_ok());
+        let mailbox = session.selected_mailbox.unwrap();
+        assert_eq!(mailbox.name(), mailbox_name);
+        assert_eq!(mailbox.readonly(), &false);
+        assert_eq!(
+            mailbox.flags(),
+            &vec!["\\Answered", "\\Flagged", "\\Deleted", "\\Seen", "\\Draft",]
+        );
+        assert_eq!(mailbox.exists(), &exists);
+        assert_eq!(mailbox.recent(), &recent);
+        assert!(mailbox.unseen().is_none());
+        assert_eq!(
+            mailbox.permanent_flags(),
+            &vec![
+                "\\Answered",
+                "\\Flagged",
+                "\\Deleted",
+                "\\Seen",
+                "\\Draft",
+                "\\*",
+            ]
+        );
+        assert!(mailbox.uid().is_some());
+        if let Some(uid) = mailbox.uid() {
+            assert_eq!(uid.validity(), &uid_validity);
+            assert_eq!(uid.next(), &uid_next);
+        }
+    }
 }

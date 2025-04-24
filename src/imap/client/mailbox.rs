@@ -1,6 +1,7 @@
 use derive_builder::Builder;
+use derive_getters::Getters;
 
-#[derive(Builder, Debug)]
+#[derive(Builder, Debug, Getters)]
 pub(super) struct Mailbox {
     name: String,
     #[builder(default)]
@@ -16,7 +17,7 @@ pub(super) struct Mailbox {
     uid: Option<Uid>,
 }
 
-#[derive(Builder, Debug, Clone)]
+#[derive(Builder, Debug, Clone, Getters)]
 pub(super) struct Uid {
     validity: u32,
     next: u32,
