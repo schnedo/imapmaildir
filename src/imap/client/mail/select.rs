@@ -26,7 +26,6 @@ pub async fn select<'a>(
     new_mailbox.name(mailbox.to_string());
     let mut uid = UidBuilder::default();
     while let Some(response) = responses.next().await {
-        dbg!(response.parsed());
         match response.parsed() {
             MailboxData(mailbox_datum) => match mailbox_datum {
                 Flags(cows) => {
