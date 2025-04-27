@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
     let client = Client::new(connection);
     let mut session = client.login(config.user(), &config.password()).await?;
     session.select("INBOX").await?;
-    session.select("FOOOAA").await?;
+    session.fetch("foo").await;
 
     Ok(())
 }
