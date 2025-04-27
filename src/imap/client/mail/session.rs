@@ -1,8 +1,8 @@
 use crate::imap::connection::SendCommand;
 
 use super::{
-    commands::{select, SelectError},
     mailbox::Mailbox,
+    select::{select, SelectError},
 };
 
 pub struct Session<T: SendCommand> {
@@ -11,7 +11,7 @@ pub struct Session<T: SendCommand> {
 }
 
 impl<T: SendCommand> Session<T> {
-    pub(super) fn new(connection: T) -> Self {
+    pub fn new(connection: T) -> Self {
         Self {
             connection,
             selected_mailbox: None,

@@ -2,9 +2,7 @@ use futures::stream::StreamExt;
 use log::{debug, trace};
 use thiserror::Error;
 
-use crate::imap::connection::SendCommand;
-
-use super::session::Session;
+use crate::imap::{client::mail::Session, connection::SendCommand};
 
 pub struct Client<T: SendCommand> {
     connection: T,

@@ -1,7 +1,4 @@
-#[allow(clippy::module_inception)]
-mod client;
-mod commands;
-mod mailbox;
-mod session;
+mod auth;
+mod mail;
 
-pub use client::Client;
+pub use auth::Client;

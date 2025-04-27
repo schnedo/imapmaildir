@@ -9,9 +9,11 @@ use log::{debug, trace, warn};
 use thiserror::Error;
 
 use crate::imap::{
-    client::mailbox::{Mailbox, MailboxBuilder, UidBuilder},
+    client::mail::mailbox::{MailboxBuilder, UidBuilder},
     connection::SendCommand,
 };
+
+use super::mailbox::Mailbox;
 
 pub async fn select<'a>(
     connection: &mut impl SendCommand,
