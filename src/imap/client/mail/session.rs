@@ -4,6 +4,7 @@ use crate::imap::connection::SendCommand;
 
 use super::{
     fetch::fetch,
+    idle::idle,
     mailbox::Mailbox,
     select::{select, SelectError},
 };
@@ -32,6 +33,10 @@ impl<T: SendCommand> Session<T> {
                 Err(e)
             }
         }
+    }
+
+    pub async fn idle(&mut self) {
+        idle(&mut self.connection).await;
     }
 
     pub async fn fetch(&mut self, sequence_set: &str) {
