@@ -8,7 +8,10 @@ use futures::{SinkExt as _, Stream, TryStreamExt as _};
 use imap_proto::Request;
 use tokio_util::codec::Decoder;
 
-use super::{codec::ImapCodec, connection::ImapStream, tag_generator::TagGenerator};
+use super::{
+    codec::ImapCodec, connection::ImapStream, send_command::ContinuationCommand,
+    tag_generator::TagGenerator,
+};
 
 enum ResponseStreamState {
     Start,
@@ -88,5 +91,15 @@ impl Stream for ResponseStream<'_> {
                 ResponseStreamState::Done => return Poll::Ready(None),
             }
         }
+    }
+}
+
+impl ContinuationCommand for ResponseStream<'_> {
+    async fn send(&mut self, command: &str) {
+        let request = Request(Cow::Borrowed(&[]), Cow::Borrowed(command.as_bytes()));
+        self.imap_stream
+            .send(&request)
+            .await
+            .expect("sending of continuation data should succeed");
     }
 }
