@@ -1,6 +1,4 @@
-use std::marker::Unpin;
-
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use log::{debug, trace};
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
@@ -8,7 +6,7 @@ use tokio_util::codec::Framed;
 
 use super::{
     codec::{ImapCodec, ResponseData},
-    response_stream::{Response, ResponseStream},
+    response_stream::ResponseStream,
     tag_generator::TagGenerator,
     SendCommand,
 };
@@ -49,7 +47,9 @@ impl Connection {
 }
 
 impl SendCommand for Connection {
-    fn send<'a>(&'a mut self, command: &'a str) -> impl Stream<Item = Response> + Unpin {
+    type Responses<'a> = ResponseStream<'a>;
+
+    fn send<'a>(&'a mut self, command: &'a str) -> Self::Responses<'a> {
         ResponseStream::new(&mut self.stream, &mut self.tag_generator, command)
     }
 }

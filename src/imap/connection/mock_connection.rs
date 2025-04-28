@@ -1,9 +1,12 @@
-use std::{borrow::Cow, marker::Unpin};
+use std::{borrow::Cow, vec::IntoIter};
 
-use futures::{stream::iter, Stream, StreamExt};
+use futures::{
+    stream::{iter, Iter},
+    StreamExt,
+};
 use imap_proto::{RequestId, Response, Status};
 
-use super::{codec::ResponseData, response_stream, SendCommand};
+use super::{codec::ResponseData, SendCommand};
 
 pub struct MockConnection {
     responses: Box<dyn Iterator<Item = ResponseData>>,
@@ -21,10 +24,9 @@ impl MockConnection {
 // Or use IntoIter?
 // Or generate Stream in new to avoid moving here behind mutable self reference?
 impl SendCommand for MockConnection {
-    fn send<'a>(
-        &'a mut self,
-        _command: &'a str,
-    ) -> impl Stream<Item = response_stream::Response> + Unpin {
+    type Responses<'a> = Iter<IntoIter<ResponseData>>;
+
+    fn send<'a>(&'a mut self, _command: &'a str) -> Self::Responses<'a> {
         let buf: Vec<_> = self.responses.by_ref().collect();
         iter(buf)
     }
