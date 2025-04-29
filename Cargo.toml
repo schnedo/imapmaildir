@@ -20,3 +20,7 @@ tokio = { version = "1.42.0", features = ["full"] }
 tokio-native-tls = "0.3.1"
 tokio-util = { version = "0.7.14", features = ["codec"] }
 toml = "0.8.19"
+
+[lints.clippy]
+pedantic = {level = "warn", priority = -2}
+allow_attributes = "warn"
