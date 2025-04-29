@@ -7,7 +7,7 @@ pub async fn fetch(connection: &mut impl SendCommand, sequence_set: &str) {
     // TODO: use imap_proto::Attribute enum?
     // TODO: use imap_proto::Attribute enum?
     let command = format!("FETCH {sequence_set} (FLAGS ENVELOPE RFC822.TEXT)");
-    debug!("{}", command);
+    debug!("{command}");
     let mut responses = connection.send(&command);
     while let Some(response) = responses.next().await {
         dbg!(response.parsed());

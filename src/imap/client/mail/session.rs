@@ -45,6 +45,6 @@ impl<T: SendCommand> Session<T> {
             fetch(&mut self.connection, &sequence_set).await;
         } else {
             error!("no mailbox selected");
-        };
+        }
     }
 }

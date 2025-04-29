@@ -1,5 +1,5 @@
 mod codec;
-#[allow(clippy::module_inception)]
+#[expect(clippy::module_inception)]
 mod connection;
 mod response_stream;
 mod send_command;

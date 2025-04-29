@@ -20,7 +20,7 @@ pub async fn select<'a>(
     mailbox: &'a str,
 ) -> Result<Mailbox, SelectError<'a>> {
     let command = format!("SELECT {mailbox}");
-    debug!("{}", command);
+    debug!("{command}");
     let mut responses = connection.send(&command);
     let mut new_mailbox = MailboxBuilder::default();
     new_mailbox.name(mailbox.to_string());
@@ -43,7 +43,7 @@ pub async fn select<'a>(
                 }
                 _ => {
                     warn!("ignoring unknown mailbox data response to SELECT");
-                    trace!("{:?}", mailbox_datum);
+                    trace!("{mailbox_datum:?}");
                 }
             },
             Data {
@@ -51,7 +51,7 @@ pub async fn select<'a>(
                 code: None,
                 information: Some(information),
             } => {
-                debug!("{}", information);
+                debug!("{information}");
             }
             Data {
                 status: Ok,
@@ -77,9 +77,9 @@ pub async fn select<'a>(
                 _ => {
                     warn!("ignoring unknown data response to SELECT");
                     if let Some(information) = information {
-                        warn!("{}", information);
+                        warn!("{information}");
                     }
-                    trace!("{:?}", code);
+                    trace!("{code:?}");
                 }
             },
             Done { status, code, .. } => match status {
@@ -108,7 +108,7 @@ pub async fn select<'a>(
     let selected_mailbox = new_mailbox
         .build()
         .expect("mailbox data should be all available at this point");
-    trace!("selected_mailbox = {:?}", selected_mailbox);
+    trace!("selected_mailbox = {selected_mailbox:?}");
     Result::Ok(selected_mailbox)
 }
 

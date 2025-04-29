@@ -34,7 +34,7 @@ impl Connection {
             .await
             .expect("greeting should be present")
             .expect("greeting should be parsable");
-        trace!("greeting = {:?}", response_data);
+        trace!("greeting = {response_data:?}");
 
         (
             Connection {

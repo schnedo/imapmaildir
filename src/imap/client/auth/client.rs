@@ -32,7 +32,7 @@ impl<T: SendCommand> Client<T> {
         {
             match status {
                 imap_proto::Status::Ok => {
-                    trace!("{:?}", code);
+                    trace!("{code:?}");
                     Ok(Session::new(self.connection))
                 },
                 imap_proto::Status::No => Err(LoginError),

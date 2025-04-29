@@ -1,3 +1,5 @@
+#![expect(clippy::ref_option)]
+
 use derive_builder::Builder;
 use derive_getters::Getters;
 

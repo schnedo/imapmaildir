@@ -68,8 +68,8 @@ impl Decoder for ImapCodec {
             Err(nom::Err::Incomplete(_)) => {
                 return Ok(None);
             }
-            Err(nom::Err::Error(nom::error::Error { code, .. }))
-            | Err(nom::Err::Failure(nom::error::Error { code, .. })) => {
+            Err(nom::Err::Error(nom::error::Error { code, .. }) |
+nom::Err::Failure(nom::error::Error { code, .. })) => {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     format!("{code:?} during parsing of {buf:?}"),
@@ -97,7 +97,7 @@ impl<'a> Encoder<&'a Request<'a>> for ImapCodec {
 
 #[derive(Debug)]
 pub struct ResponseData {
-    #[allow(dead_code)] // Contains data that `response` borrows
+    #[expect(dead_code)] // Contains data that `response` borrows
     raw: Bytes,
     // This reference is really scoped to the lifetime of the `raw`
     // member, but unfortunately Rust does not allow that yet. It
@@ -118,7 +118,7 @@ impl ResponseData {
         }
     }
 
-    #[allow(clippy::needless_lifetimes)]
+    #[expect(clippy::needless_lifetimes)]
     pub fn parsed<'a>(&'a self) -> &'a Response<'a> {
         &self.response
     }
