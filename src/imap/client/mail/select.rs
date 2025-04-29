@@ -129,10 +129,10 @@ mod tests {
     use imap_proto::*;
 
     #[tokio::test]
-    async fn should() {
+    async fn should_return_data() {
         let exists = 6084;
         let recent = 4;
-        let uid_validity = 1234214;
+        let uid_validity = 1_234_214;
         let uid_next = 4321;
         let responses = [[
             Response::MailboxData(Flags(vec![
