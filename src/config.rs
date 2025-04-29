@@ -6,14 +6,17 @@ use std::{
     str::FromStr,
 };
 
+use derive_getters::Getters;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Getters)]
 pub struct Config {
     user: String,
+    #[getter(skip)]
     password_cmd: String,
     host: String,
     port: u16,
+    maildir: PathBuf,
 }
 
 impl Config {
@@ -52,17 +55,5 @@ impl Config {
             .expect("password_cmd should evaluate to password")
             .trim_end()
             .to_string()
-    }
-
-    pub fn host(&self) -> &str {
-        self.host.as_str()
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub fn user(&self) -> &str {
-        self.user.as_str()
     }
 }
