@@ -134,7 +134,7 @@ mod tests {
         let recent = 4;
         let uid_validity = 1234214;
         let uid_next = 4321;
-        let responses = [
+        let responses = [[
             Response::MailboxData(Flags(vec![
                 Cow::Borrowed("\\Answered"),
                 Cow::Borrowed("\\Flagged"),
@@ -177,7 +177,7 @@ mod tests {
                 code: Some(ResponseCode::ReadWrite),
                 information: Some(Cow::Borrowed("Select completed (0.001 + 0.000 secs).")),
             },
-        ];
+        ]];
         let mut mock_connection = MockConnection::new(responses);
 
         let mailbox_name = "foo";

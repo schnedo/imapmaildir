@@ -59,12 +59,12 @@ mod tests {
 
     #[tokio::test]
     async fn should_return_session_when_login_ok() {
-        let mock_responses = [Response::Done {
+        let mock_responses = [[Response::Done {
             tag: RequestId("0000".to_owned()),
             status: Status::Ok,
             code: Some(ResponseCode::Capabilities(vec![Capability::Imap4rev1])),
             information: Some(std::borrow::Cow::Borrowed("Logged in")),
-        }];
+        }]];
         let mock_connection = MockConnection::new(mock_responses);
         let client = Client::new(mock_connection);
 
@@ -75,14 +75,14 @@ mod tests {
 
     #[tokio::test]
     async fn should_return_login_error_when_login_no() {
-        let mock_responses = [Response::Done {
+        let mock_responses = [[Response::Done {
             tag: RequestId("0000".to_owned()),
             status: Status::No,
             code: None,
             information: Some(std::borrow::Cow::Borrowed(
                 "[AUTHENTICATIONFAILED] Authentication failed.",
             )),
-        }];
+        }]];
         let mock_connection = MockConnection::new(mock_responses);
         let client = Client::new(mock_connection);
 
