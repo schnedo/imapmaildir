@@ -51,6 +51,11 @@ impl Config {
         }
         let output = cmd.output().expect("password_cmd should be executable");
 
+        assert!(
+            !output.stdout.is_empty(),
+            "could not retrieve password from password_cmd"
+        );
+
         String::from_utf8(output.stdout)
             .expect("password_cmd should evaluate to password")
             .trim_end()
