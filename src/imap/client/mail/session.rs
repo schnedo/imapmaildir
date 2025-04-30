@@ -1,9 +1,7 @@
-use log::error;
-
 use crate::imap::connection::SendCommand;
 
 use super::{
-    fetch::fetch,
+    fetch::{fetch, RemoteMail},
     idle::idle,
     mailbox::Mailbox,
     select::{select, SelectError},
@@ -39,12 +37,11 @@ impl<T: SendCommand> Session<T> {
         idle(&mut self.connection).await;
     }
 
-    pub async fn fetch(&mut self, sequence_set: &str) {
-        if let Some(mailbox) = &self.selected_mailbox {
-            let sequence_set = mailbox.exists().to_string();
-            fetch(&mut self.connection, &sequence_set).await;
+    pub async fn fetch(&mut self, sequence_set: &str) -> Vec<RemoteMail> {
+        if self.selected_mailbox.is_some() {
+            fetch(&mut self.connection, sequence_set).await
         } else {
-            error!("no mailbox selected");
+            panic!("no mailbox selected");
         }
     }
 }

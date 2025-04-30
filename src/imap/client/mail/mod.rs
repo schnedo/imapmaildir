@@ -4,4 +4,5 @@ mod mailbox;
 mod select;
 mod session;
 
+pub use fetch::RemoteMail;
 pub use session::Session;

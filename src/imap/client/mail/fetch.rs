@@ -31,7 +31,7 @@ pub struct RemoteMail {
 }
 
 impl RemoteMail {
-    fn body(&self) -> &[u8] {
+    pub fn content(&self) -> &[u8] {
         if let Response::Fetch(_, attributes) = self.response.parsed() {
             for attribute in attributes {
                 if let AttributeValue::Rfc822(Some(data)) = attribute {
