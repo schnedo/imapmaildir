@@ -28,6 +28,13 @@ pub async fn idle(connection: &mut impl SendCommand) -> IdleData {
             imap_proto::Response::MailboxData(MailboxDatum::Recent(recent)) => {
                 idle_data.recent = *recent;
             }
+            imap_proto::Response::Data {
+                status: Status::Ok,
+                code: None,
+                information,
+            } => {
+                trace!("Received ok with information: {information:?}");
+            }
             response => {
                 warn!("unhandled response to idle: {response:?}");
             }
