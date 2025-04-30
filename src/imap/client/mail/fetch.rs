@@ -1,16 +1,46 @@
+use std::str;
+
 use futures::StreamExt;
-use log::debug;
+use imap_proto::{AttributeValue, Response};
+use log::{debug, trace, warn};
 
-use crate::imap::connection::SendCommand;
+use crate::imap::connection::{ResponseData, SendCommand};
 
-pub async fn fetch(connection: &mut impl SendCommand, sequence_set: &str) {
+pub async fn fetch(connection: &mut impl SendCommand, sequence_set: &str) -> Vec<RemoteMail> {
     // TODO: use imap_proto::Attribute enum?
     // TODO: use imap_proto::Attribute enum?
-    let command = format!("FETCH {sequence_set} (FLAGS ENVELOPE RFC822.TEXT)");
+    let command = format!("FETCH {sequence_set} (RFC822)");
     debug!("{command}");
     let mut responses = connection.send(&command);
+    // TODO: infer capacity from sequence_set
+    let mut mails = Vec::with_capacity(1);
     while let Some(response) = responses.next().await {
-        dbg!(response.parsed());
+        if let Response::Fetch(_, attibutes) = response.parsed() {
+            debug_assert_eq!(attibutes.len(), 1); // same as attibutes list in command
+            mails.push(RemoteMail { response });
+        } else {
+            warn!("ignoring unknown response to FETCH");
+            trace!("{:?}", response.parsed());
+        }
+    }
+    mails
+}
+
+pub struct RemoteMail {
+    response: ResponseData, // need to hold reference to response buffer
+}
+
+impl RemoteMail {
+    fn body(&self) -> &[u8] {
+        if let Response::Fetch(_, attributes) = self.response.parsed() {
+            for attribute in attributes {
+                if let AttributeValue::Rfc822(Some(data)) = attribute {
+                    return data.as_ref();
+                }
+            }
+            panic!("no mail content found. probably wrong FETCH command attributes");
+        }
+        panic!("response should be FETCH response. check construnction code");
     }
 }
 
