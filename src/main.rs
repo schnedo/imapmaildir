@@ -1,12 +1,12 @@
 mod config;
 mod imap;
 mod logging;
-mod mailbox;
+mod maildir;
 
 use anyhow::Result;
 use config::Config;
 use imap::{Client, Connection};
-use mailbox::Mailbox;
+use maildir::Maildir;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
     session.select("INBOX").await?;
     let mails = session.fetch("6106").await;
 
-    let mailbox = Mailbox::new(config.maildir());
+    let mailbox = Maildir::new(config.maildir());
 
     let join_handles = mails.into_iter().map(|mail| mailbox.store_new(mail));
     for handle in join_handles {
