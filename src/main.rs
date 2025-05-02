@@ -8,7 +8,7 @@ use config::Config;
 use imap::{Client, Connection};
 use maildir::Maildir;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     logging::init();
 
