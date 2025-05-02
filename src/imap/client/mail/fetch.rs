@@ -4,7 +4,7 @@ use std::{
 };
 
 use futures::StreamExt;
-use imap_proto::{AttributeValue, Response};
+use imap_proto::{AttributeValue, Response, Status};
 use log::{debug, trace, warn};
 
 use crate::imap::connection::{ResponseData, SendCommand};
@@ -47,21 +47,34 @@ pub async fn fetch(
     // TODO: infer capacity from sequence_set
     let mut mails = Vec::with_capacity(1);
     while let Some(response) = responses.next().await {
-        if let Response::Fetch(_, attributes) = response.parsed() {
-            if let [AttributeValue::Uid(uid), AttributeValue::Rfc822(Some(content))] =
-                attributes.as_slice()
-            {
-                mails.push(RemoteMail {
-                    uid: *uid,
-                    content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
-                    response,
-                });
-            } else {
-                panic!("wrong format of FETCH response. check order of attributes in command");
+        match response.parsed() {
+            Response::Fetch(_, attributes) => {
+                if let [AttributeValue::Uid(uid), AttributeValue::Rfc822(Some(content))] =
+                    attributes.as_slice()
+                {
+                    mails.push(RemoteMail {
+                        uid: *uid,
+                        content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
+                        response,
+                    });
+                } else {
+                    panic!("wrong format of FETCH response. check order of attributes in command");
+                }
             }
-        } else {
-            warn!("ignoring unknown response to FETCH");
-            trace!("{:?}", response.parsed());
+            Response::Done {
+                status: Status::Ok, ..
+            } => {}
+            Response::Done { information, .. } => {
+                if let Some(information) = information {
+                    panic!("{information}");
+                } else {
+                    panic!("bad FETCH");
+                }
+            }
+            _ => {
+                warn!("ignoring unknown response to FETCH");
+                trace!("{:?}", response.parsed());
+            }
         }
     }
     mails
