@@ -1,7 +1,7 @@
 use std::{
-    fs::{self, DirBuilder},
-    io::Error,
-    os::unix::fs::DirBuilderExt as _,
+    fs::{self, DirBuilder, OpenOptions},
+    io::{Error, Write},
+    os::unix::fs::{DirBuilderExt as _, MetadataExt},
     path::PathBuf,
     process,
     sync::Arc,
@@ -52,16 +52,36 @@ impl Maildir {
     pub fn store_new(&self, mail: RemoteMail) -> JoinHandle<Result<(), Error>> {
         let maildir_path = self.maildir_root.clone();
         spawn_blocking(move || {
-            let filename = Self::generate_filename(&mail);
+            let filename = Self::generate_filename();
             let file_path = maildir_path.join(format!("tmp/{filename}"));
+
             trace!("writing to {file_path:?}");
-            fs::write(file_path.as_path(), mail.content())
+            let Ok(mut file) = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&file_path)
+            else {
+                todo!("handle tmp file creation errors");
+            };
+
+            file.write_all(mail.content())
                 .expect("writing new mail to tmp should succeed");
-            fs::rename(file_path, maildir_path.join(format!("new/{filename}")))
+            file.sync_all()
+                .expect("writing new tmp mail to disc should succeed");
+
+            let uid = mail.uid();
+            let meta = file
+                .metadata()
+                .expect("reading tmp file metadata should succeed");
+            let size = meta.size();
+            fs::rename(
+                file_path,
+                maildir_path.join(format!("new/{filename},S={size},U={uid}:2,")),
+            )
         })
     }
 
-    fn generate_filename(mail: &RemoteMail) -> String {
+    fn generate_filename() -> String {
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("should be able to get unix time");
@@ -70,7 +90,6 @@ impl Maildir {
         let hostname = uname();
         let hostname = hostname.nodename().to_string_lossy();
         let pid = process::id();
-        let uid = mail.uid();
-        format!("{secs}.U={uid},P={pid},N={nanos}.{hostname}:2,")
+        format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
 }
