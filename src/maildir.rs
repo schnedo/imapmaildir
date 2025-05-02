@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{fs::DirBuilder, os::unix::fs::DirBuilderExt as _, path::PathBuf, sync::Arc};
 
 use log::info;
 use tokio::task::{spawn_blocking, JoinHandle};
@@ -18,6 +18,12 @@ impl Maildir {
             info!("using mailbox in {maildir_path:#?}");
         } else {
             info!("creating new maildir in {maildir_path:#?}");
+            let mut builder = DirBuilder::new();
+            builder
+                .recursive(true)
+                .mode(0o700)
+                .create(maildir_path.as_path())
+                .expect("creation of maildir should succeed");
         }
 
         Self { maildir_path }
