@@ -4,7 +4,6 @@ use std::{
     path::PathBuf,
     process::Command,
     str::FromStr,
-    sync::Arc,
 };
 
 use derive_getters::Getters;
@@ -17,7 +16,6 @@ pub struct Config {
     password_cmd: String,
     host: String,
     port: u16,
-    #[getter(skip)]
     maildir: PathBuf,
 }
 
@@ -62,9 +60,5 @@ impl Config {
             .expect("password_cmd should evaluate to password")
             .trim_end()
             .to_string()
-    }
-
-    pub fn maildir(&self) -> Arc<PathBuf> {
-        Arc::new(self.maildir.clone())
     }
 }

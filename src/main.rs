@@ -20,11 +20,14 @@ async fn main() -> Result<()> {
     session.select("INBOX").await?;
     let mails = session.fetch("6106").await;
 
-    let mailbox = Maildir::new(config.maildir());
+    let mailbox = Maildir::new(config.maildir().clone());
 
     let join_handles = mails.into_iter().map(|mail| mailbox.store_new(mail));
     for handle in join_handles {
-        handle.await;
+        handle
+            .await
+            .expect("mail store task should not panic")
+            .expect("writing to mail should succeed");
     }
     // session.idle().await;
 
