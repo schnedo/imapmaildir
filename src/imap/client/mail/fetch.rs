@@ -1,4 +1,4 @@
-use std::str;
+use std::{mem::transmute, str};
 
 use futures::StreamExt;
 use imap_proto::{AttributeValue, Response};
@@ -7,17 +7,24 @@ use log::{debug, trace, warn};
 use crate::imap::connection::{ResponseData, SendCommand};
 
 pub async fn fetch(connection: &mut impl SendCommand, sequence_set: &str) -> Vec<RemoteMail> {
-    // TODO: use imap_proto::Attribute enum?
-    // TODO: use imap_proto::Attribute enum?
-    let command = format!("FETCH {sequence_set} (RFC822)");
+    let command = format!("FETCH {sequence_set} (UID, RFC822)");
     debug!("{command}");
     let mut responses = connection.send(&command);
     // TODO: infer capacity from sequence_set
     let mut mails = Vec::with_capacity(1);
     while let Some(response) = responses.next().await {
-        if let Response::Fetch(_, attibutes) = response.parsed() {
-            debug_assert_eq!(attibutes.len(), 1); // same as attibutes list in command
-            mails.push(RemoteMail { response });
+        if let Response::Fetch(_, attributes) = response.parsed() {
+            if let [AttributeValue::Uid(uid), AttributeValue::Rfc822(Some(content))] =
+                attributes.as_slice()
+            {
+                mails.push(RemoteMail {
+                    uid: *uid,
+                    content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
+                    response,
+                });
+            } else {
+                panic!("wrong format of FETCH response. check order of attributes in command");
+            }
         } else {
             warn!("ignoring unknown response to FETCH");
             trace!("{:?}", response.parsed());
@@ -27,24 +34,19 @@ pub async fn fetch(connection: &mut impl SendCommand, sequence_set: &str) -> Vec
 }
 
 pub struct RemoteMail {
-    response: ResponseData, // need to hold reference to response buffer
+    #[expect(dead_code)] // need to hold reference to response buffer for other fields
+    response: ResponseData,
+    uid: u32,
+    content: &'static [u8],
 }
 
 impl RemoteMail {
     pub fn content(&self) -> &[u8] {
-        if let Response::Fetch(_, attributes) = self.response.parsed() {
-            for attribute in attributes {
-                if let AttributeValue::Rfc822(Some(data)) = attribute {
-                    return data.as_ref();
-                }
-            }
-            panic!("no mail content found. probably wrong FETCH command attributes");
-        }
-        panic!("response should be FETCH response. check construnction code");
+        self.content
     }
 
     pub fn uid(&self) -> u32 {
-        8
+        self.uid
     }
 }
 
