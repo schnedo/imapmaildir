@@ -74,9 +74,25 @@ impl Maildir {
                 .metadata()
                 .expect("reading tmp file metadata should succeed");
             let size = meta.size();
+            let mut flags = String::with_capacity(6);
+            if mail.draft() {
+                flags.push('D');
+            }
+            if mail.flagged() {
+                flags.push('F');
+            }
+            if mail.answered() {
+                flags.push('R');
+            }
+            if mail.seen() {
+                flags.push('S');
+            }
+            if mail.deleted() {
+                flags.push('T');
+            }
             fs::rename(
                 file_path,
-                maildir_path.join(format!("new/{filename},S={size},U={uid}:2,")),
+                maildir_path.join(format!("new/{filename},S={size},U={uid}:2,{flags}")),
             )
         })
     }

@@ -41,7 +41,7 @@ pub async fn fetch(
     connection: &mut impl SendCommand,
     sequence_set: &SequenceSet,
 ) -> Vec<RemoteMail> {
-    let command = format!("FETCH {sequence_set} (UID, RFC822)");
+    let command = format!("FETCH {sequence_set} (UID, FLAGS, RFC822)");
     debug!("{command}");
     let mut responses = connection.send(&command);
     // TODO: infer capacity from sequence_set
@@ -49,11 +49,35 @@ pub async fn fetch(
     while let Some(response) = responses.next().await {
         match response.parsed() {
             Response::Fetch(_, attributes) => {
-                if let [AttributeValue::Uid(uid), AttributeValue::Rfc822(Some(content))] =
+                if let [AttributeValue::Uid(uid), AttributeValue::Flags(flags), AttributeValue::Rfc822(Some(content))] =
                     attributes.as_slice()
                 {
+                    trace!("{flags:?}");
+                    let mut seen = None;
+                    let mut answered = None;
+                    let mut flagged = None;
+                    let mut deleted = None;
+                    let mut draft = None;
+                    let mut recent = None;
+                    for flag in flags {
+                        match flag.as_ref() {
+                            "\\Seen" => seen = Some(()),
+                            "\\Answered" => flagged = Some(()),
+                            "\\Flagged" => answered = Some(()),
+                            "\\Deleted" => deleted = Some(()),
+                            "\\Draft" => draft = Some(()),
+                            "\\Recent" => recent = Some(()),
+                            _ => debug!("ignoring unhandled flag {flag}"),
+                        }
+                    }
                     mails.push(RemoteMail {
                         uid: *uid,
+                        seen: seen.is_some(),
+                        answered: answered.is_some(),
+                        flagged: flagged.is_some(),
+                        deleted: deleted.is_some(),
+                        draft: draft.is_some(),
+                        recent: recent.is_some(),
                         content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
                         response,
                     });
@@ -80,10 +104,17 @@ pub async fn fetch(
     mails
 }
 
+#[expect(clippy::struct_excessive_bools)]
 pub struct RemoteMail {
     #[expect(dead_code)] // need to hold reference to response buffer for other fields
     response: ResponseData,
     uid: u32,
+    seen: bool,
+    answered: bool,
+    flagged: bool,
+    deleted: bool,
+    draft: bool,
+    recent: bool,
     content: &'static [u8],
 }
 
@@ -94,6 +125,25 @@ impl RemoteMail {
 
     pub fn uid(&self) -> u32 {
         self.uid
+    }
+
+    pub fn seen(&self) -> bool {
+        self.seen
+    }
+    pub fn answered(&self) -> bool {
+        self.answered
+    }
+    pub fn flagged(&self) -> bool {
+        self.flagged
+    }
+    pub fn deleted(&self) -> bool {
+        self.deleted
+    }
+    pub fn draft(&self) -> bool {
+        self.draft
+    }
+    pub fn recent(&self) -> bool {
+        self.recent
     }
 }
 
