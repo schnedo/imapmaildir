@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         handle
             .await
             .expect("mail store task should not panic")
-            .expect("writing to mail should succeed");
+            .expect("writing mail to disc should succeed");
     }
     // session.idle().await;
 
