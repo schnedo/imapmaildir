@@ -5,7 +5,7 @@ mod maildir;
 
 use anyhow::Result;
 use config::Config;
-use imap::{Client, Connection};
+use imap::{Client, Connection, SequenceSet};
 use maildir::Maildir;
 
 #[tokio::main(flavor = "current_thread")]
@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let client = Client::new(connection);
     let mut session = client.login(config.user(), &config.password()).await?;
     session.select("INBOX").await?;
-    let mails = session.fetch("6106").await;
+    let mails = session.fetch(&SequenceSet::single(6106)).await;
 
     let mailbox = Maildir::new(config.maildir().clone());
 

@@ -1,4 +1,7 @@
-use std::{mem::transmute, str};
+use std::{
+    fmt::{Display, Formatter, Result},
+    mem::transmute,
+};
 
 use futures::StreamExt;
 use imap_proto::{AttributeValue, Response};
@@ -6,7 +9,38 @@ use log::{debug, trace, warn};
 
 use crate::imap::connection::{ResponseData, SendCommand};
 
-pub async fn fetch(connection: &mut impl SendCommand, sequence_set: &str) -> Vec<RemoteMail> {
+// simplified form of real imap sequence set.
+// this struct currently only takes a single number or a range instead of full blown vector of
+// numbers/ranges
+#[derive(Debug)]
+pub struct SequenceSet {
+    from: u32,
+    to: Option<u32>,
+}
+
+impl SequenceSet {
+    pub fn single(from: u32) -> Self {
+        Self { from, to: None }
+    }
+    pub fn range(from: u32, to: u32) -> Self {
+        Self { from, to: Some(to) }
+    }
+}
+
+impl Display for SequenceSet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        if let Some(to) = self.to {
+            write!(f, "{}:{}", self.from, to)
+        } else {
+            write!(f, "{}", self.from)
+        }
+    }
+}
+
+pub async fn fetch(
+    connection: &mut impl SendCommand,
+    sequence_set: &SequenceSet,
+) -> Vec<RemoteMail> {
     let command = format!("FETCH {sequence_set} (UID, RFC822)");
     debug!("{command}");
     let mut responses = connection.send(&command);
