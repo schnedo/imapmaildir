@@ -2,12 +2,12 @@ mod config;
 mod imap;
 mod logging;
 mod maildir;
+mod sync;
 
 use anyhow::Result;
 use config::Config;
-use imap::{Client, Connection, SequenceSet};
-use log::debug;
-use maildir::{Maildir, State};
+use imap::{Client, Connection};
+use sync::Syncer;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -17,27 +17,12 @@ async fn main() -> Result<()> {
 
     let (connection, _) = Connection::connect_to(config.host(), *config.port()).await;
     let client = Client::new(connection);
-    let mut session = client.login(config.user(), &config.password()).await?;
+    let session = client.login(config.user(), &config.password()).await?;
     let mailbox = "INBOX";
-    let uid_validity = session.select(mailbox).await?;
-    let mails = session.fetch(&SequenceSet::single(6106)).await;
 
-    let maildir = config.maildir().join(mailbox);
-    let state_dir = config.statedir();
+    let mut syncer = Syncer::connect(session, config.maildir(), config.statedir(), mailbox).await;
 
-    let state = if let Ok(state) = State::load(state_dir, mailbox) {
-        debug!("existing state file for {mailbox} found");
-        if *state.uid_validity() != uid_validity {
-            todo!("handle uid_validity change");
-        }
-        state
-    } else {
-        debug!("creating new state file for {mailbox}");
-        State::create_new(state_dir, mailbox, uid_validity)
-    };
-    let mailbox = Maildir::new(maildir, state);
-
-    let join_handles = mails.into_iter().map(|mail| mailbox.store_new(mail));
+    let join_handles = syncer.fetch_6106().await;
     for handle in join_handles {
         handle
             .await

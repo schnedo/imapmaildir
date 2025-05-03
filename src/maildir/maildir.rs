@@ -14,14 +14,12 @@ use tokio::task::{spawn_blocking, JoinHandle};
 
 use crate::imap::RemoteMail;
 
-use super::state::State;
-
 pub struct Maildir {
     maildir_root: Arc<PathBuf>,
 }
 
 impl Maildir {
-    pub fn new(mut maildir_path: PathBuf, state: State) -> Self {
+    pub fn new(mut maildir_path: PathBuf) -> Self {
         info!("using mailbox in {maildir_path:#?}");
         let mut builder = DirBuilder::new();
         builder.recursive(true).mode(0o700);
