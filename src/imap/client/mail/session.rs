@@ -3,7 +3,7 @@ use crate::imap::connection::SendCommand;
 use super::{
     fetch::{fetch, RemoteMail, SequenceSet},
     idle::idle,
-    mailbox::Mailbox,
+    mailbox::{Mailbox, UidValidity},
     select::{select, SelectError},
 };
 
@@ -20,11 +20,11 @@ impl<T: SendCommand> Session<T> {
         }
     }
 
-    pub async fn select<'a>(&mut self, mailbox: &'a str) -> Result<(), SelectError<'a>> {
+    pub async fn select<'a>(&mut self, mailbox: &'a str) -> Result<UidValidity, SelectError<'a>> {
         match select(&mut self.connection, mailbox).await {
-            Ok(mailbox) => {
+            Ok((uid_validity, mailbox)) => {
                 self.selected_mailbox = Some(mailbox);
-                Ok(())
+                Ok(uid_validity)
             }
             Err(e) => {
                 self.selected_mailbox = None;

@@ -13,12 +13,12 @@ use crate::imap::{
     connection::SendCommand,
 };
 
-use super::mailbox::Mailbox;
+use super::mailbox::{self, Mailbox};
 
 pub async fn select<'a>(
     connection: &mut impl SendCommand,
     mailbox: &'a str,
-) -> Result<Mailbox, SelectError<'a>> {
+) -> Result<(mailbox::UidValidity, Mailbox), SelectError<'a>> {
     let command = format!("SELECT {mailbox}");
     debug!("{command}");
     let mut responses = connection.send(&command);
@@ -72,7 +72,7 @@ pub async fn select<'a>(
                     uid.next(*next);
                 }
                 UidValidity(validity) => {
-                    uid.validity(*validity);
+                    uid.validity(validity.into());
                 }
                 _ => {
                     warn!("ignoring unknown data response to SELECT");
@@ -86,9 +86,6 @@ pub async fn select<'a>(
                 Ok => {
                     if let Some(ReadOnly) = code {
                         new_mailbox.readonly(true);
-                    }
-                    if let Result::Ok(uid) = uid.build() {
-                        new_mailbox.uid(uid);
                     }
                     break;
                 }
@@ -108,8 +105,9 @@ pub async fn select<'a>(
     let selected_mailbox = new_mailbox
         .build()
         .expect("mailbox data should be all available at this point");
+    let uid = uid.build().expect("uid should be set");
     trace!("selected_mailbox = {selected_mailbox:?}");
-    Result::Ok(selected_mailbox)
+    Result::Ok((*uid.validity(), selected_mailbox))
 }
 
 #[derive(Error, Debug)]
@@ -120,7 +118,7 @@ pub struct SelectError<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::imap::connection::mock_connection::MockConnection;
+    use crate::imap::{client::mail::mailbox, connection::mock_connection::MockConnection};
 
     use super::*;
 
@@ -132,7 +130,7 @@ mod tests {
     async fn should_return_data() {
         let exists = 6084;
         let recent = 4;
-        let uid_validity = 1_234_214;
+        let expected_uid_validity = 1_234_214;
         let uid_next = 4321;
         let responses = [[
             Response::MailboxData(Flags(vec![
@@ -158,7 +156,7 @@ mod tests {
             Response::MailboxData(Recent(recent)),
             Response::Data {
                 status: Ok,
-                code: Some(UidValidity(uid_validity)),
+                code: Some(UidValidity(expected_uid_validity)),
                 information: Some(Cow::Borrowed("UIDs valid")),
             },
             Response::Data {
@@ -185,7 +183,7 @@ mod tests {
         let result = select(&mut mock_connection, mailbox_name).await;
 
         assert!(result.is_ok());
-        let mailbox = result.unwrap();
+        let (uid_validity, mailbox) = result.unwrap();
         assert_eq!(mailbox.name(), mailbox_name);
         assert_eq!(mailbox.readonly(), &false);
         assert_eq!(
@@ -206,10 +204,9 @@ mod tests {
                 "\\*",
             ]
         );
-        assert!(mailbox.uid().is_some());
-        if let Some(uid) = mailbox.uid() {
-            assert_eq!(uid.validity(), &uid_validity);
-            assert_eq!(uid.next(), &uid_next);
-        }
+        assert_eq!(
+            uid_validity,
+            mailbox::UidValidity::new(expected_uid_validity)
+        );
     }
 }

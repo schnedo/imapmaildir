@@ -4,7 +4,7 @@ use derive_builder::Builder;
 use derive_getters::Getters;
 
 #[derive(Builder, Debug, Getters)]
-pub(super) struct Mailbox {
+pub struct Mailbox {
     name: String,
     #[builder(default)]
     readonly: bool,
@@ -15,12 +15,25 @@ pub(super) struct Mailbox {
     unseen: Option<u32>,
     #[builder(default)]
     permanent_flags: Vec<String>,
-    #[builder(setter(strip_option), default)]
-    uid: Option<Uid>,
+}
+
+#[derive(Clone, Debug, PartialEq, Copy)]
+pub struct UidValidity(u32);
+
+impl UidValidity {
+    pub fn new(validity: u32) -> Self {
+        Self(validity)
+    }
+}
+
+impl From<&u32> for UidValidity {
+    fn from(value: &u32) -> Self {
+        Self(*value)
+    }
 }
 
 #[derive(Builder, Debug, Clone, Getters)]
-pub(super) struct Uid {
-    validity: u32,
+pub struct Uid {
+    validity: UidValidity,
     next: u32,
 }
