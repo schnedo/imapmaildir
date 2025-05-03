@@ -39,7 +39,23 @@ impl From<UidValidity> for u32 {
 }
 
 #[derive(Builder, Debug, Clone, Getters)]
-pub struct Uid {
+//TODO: refactor this
+pub struct UidStruct {
     validity: UidValidity,
     next: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Uid(u32);
+
+impl From<u32> for Uid {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Uid> for u32 {
+    fn from(value: Uid) -> Self {
+        value.0
+    }
 }

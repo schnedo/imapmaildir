@@ -9,7 +9,7 @@ use log::{debug, trace, warn};
 use thiserror::Error;
 
 use crate::imap::{
-    client::mail::mailbox::{MailboxBuilder, UidBuilder},
+    client::mail::mailbox::{MailboxBuilder, UidStructBuilder},
     connection::SendCommand,
 };
 
@@ -24,7 +24,7 @@ pub async fn select<'a>(
     let mut responses = connection.send(&command);
     let mut new_mailbox = MailboxBuilder::default();
     new_mailbox.name(mailbox.to_string());
-    let mut uid = UidBuilder::default();
+    let mut uid = UidStructBuilder::default();
     while let Some(response) = responses.next().await {
         match response.parsed() {
             MailboxData(mailbox_datum) => match mailbox_datum {

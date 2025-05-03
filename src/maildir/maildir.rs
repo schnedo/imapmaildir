@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, DirBuilder, OpenOptions},
+    fs::{self, read_dir, DirBuilder, OpenOptions},
     io::{Error, Write},
     os::unix::fs::{DirBuilderExt as _, MetadataExt},
     path::{Path, PathBuf},
@@ -12,7 +12,7 @@ use log::{info, trace};
 use rustix::system::uname;
 use tokio::task::{spawn_blocking, JoinHandle};
 
-use crate::imap::RemoteMail;
+use crate::imap::{RemoteMail, Uid};
 
 pub struct Maildir {
     new: Arc<PathBuf>,
@@ -109,5 +109,29 @@ impl Maildir {
         let hostname = hostname.nodename().to_string_lossy();
         let pid = process::id();
         format!("{secs}.P{pid}N{nanos}.{hostname}")
+    }
+
+    pub fn list_cur(&self) -> impl Iterator<Item = Uid> {
+        read_dir(self.cur.as_path())
+            .expect("cur should be readable")
+            .map(|entry| {
+                let filename = entry
+                    .expect("entry of cur should be readable")
+                    .file_name()
+                    .into_string()
+                    .expect("converting filename from OsString to String should be possible");
+                let uid_field = filename
+                    .rsplit_once(':')
+                    .expect("filename should contain :")
+                    .0
+                    .rsplit_once('=')
+                    .expect("filename should contain =");
+                assert_eq!(uid_field.0, "U");
+                uid_field
+                    .0
+                    .parse::<u32>()
+                    .expect("uid field should be u32")
+                    .into()
+            })
     }
 }
