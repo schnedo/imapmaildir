@@ -34,7 +34,7 @@ impl<T: SendCommand> Syncer<T> {
             debug!("creating new state file for {mailbox}");
             State::create_new(state_dir, mailbox, uid_validity);
         };
-        let maildir = Maildir::new(maildir);
+        let maildir = Maildir::new(maildir.as_path());
 
         Self { session, maildir }
     }

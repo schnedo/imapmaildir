@@ -2,7 +2,7 @@ use std::{
     fs::{self, DirBuilder, OpenOptions},
     io::{Error, Write},
     os::unix::fs::{DirBuilderExt as _, MetadataExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -15,33 +15,34 @@ use tokio::task::{spawn_blocking, JoinHandle};
 use crate::imap::RemoteMail;
 
 pub struct Maildir {
-    maildir_root: Arc<PathBuf>,
+    new: Arc<PathBuf>,
+    cur: Arc<PathBuf>,
+    tmp: Arc<PathBuf>,
 }
 
 impl Maildir {
-    pub fn new(mut maildir_path: PathBuf) -> Self {
+    pub fn new(maildir_path: &Path) -> Self {
         info!("using mailbox in {maildir_path:#?}");
         let mut builder = DirBuilder::new();
         builder.recursive(true).mode(0o700);
 
-        maildir_path.push("tmp");
+        let tmp = maildir_path.join("tmp");
         builder
-            .create(maildir_path.as_path())
+            .create(tmp.as_path())
             .expect("creation of tmp subdir should succeed");
-        maildir_path.pop();
-        maildir_path.push("new");
+        let new = maildir_path.join("new");
         builder
-            .create(maildir_path.as_path())
+            .create(new.as_path())
             .expect("creation of new subdir should succeed");
-        maildir_path.pop();
-        maildir_path.push("cur");
+        let cur = maildir_path.join("cur");
         builder
-            .create(maildir_path.as_path())
+            .create(cur.as_path())
             .expect("creation of cur subdir should succeed");
-        maildir_path.pop();
 
         Self {
-            maildir_root: Arc::new(maildir_path),
+            new: Arc::new(new),
+            cur: Arc::new(cur),
+            tmp: Arc::new(tmp),
         }
     }
 
@@ -50,10 +51,11 @@ impl Maildir {
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
     pub fn store_new(&self, mail: RemoteMail) -> JoinHandle<Result<(), Error>> {
-        let maildir_path = self.maildir_root.clone();
+        let new = self.new.clone();
+        let tmp = self.tmp.clone();
         spawn_blocking(move || {
             let filename = Self::generate_filename();
-            let file_path = maildir_path.join(format!("tmp/{filename}"));
+            let file_path = tmp.join(&filename);
 
             trace!("writing to {file_path:?}");
             let Ok(mut file) = OpenOptions::new()
@@ -92,7 +94,7 @@ impl Maildir {
             }
             fs::rename(
                 file_path,
-                maildir_path.join(format!("new/{filename},S={size},U={uid}:2,{flags}")),
+                new.join(format!("{filename},S={size},U={uid}:2,{flags}")),
             )
         })
     }
