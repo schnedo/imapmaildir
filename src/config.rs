@@ -1,6 +1,6 @@
 use ::std::env;
 use std::{
-    fs::{create_dir, read_to_string},
+    fs::{create_dir_all, read_to_string},
     path::PathBuf,
     process::Command,
     str::FromStr,
@@ -17,6 +17,8 @@ pub struct Config {
     host: String,
     port: u16,
     maildir: PathBuf,
+    #[serde(default = "statedir")]
+    statedir: PathBuf,
 }
 
 impl Config {
@@ -25,13 +27,13 @@ impl Config {
             PathBuf::from_str(&config_home).expect("XDG_CONFIG_HOME should be a parseable path")
         } else {
             let mut config_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
-                .expect("XDG_CONFIG_HOME should be a parseable path");
+                .expect("HOME should be a parseable path");
             config_home.push(".config");
             config_home
         };
         config_dir.push(env!("CARGO_PKG_NAME"));
         if !config_dir.exists() {
-            create_dir(&config_dir).expect("config_dir should be creatable");
+            create_dir_all(&config_dir).expect("config_dir should be creatable");
         }
         config_dir.push("config.toml");
 
@@ -60,5 +62,16 @@ impl Config {
             .expect("password_cmd should evaluate to password")
             .trim_end()
             .to_string()
+    }
+}
+
+fn statedir() -> PathBuf {
+    if let Ok(state_home) = env::var("XDG_STATE_HOME") {
+        PathBuf::from_str(&state_home).expect("XDG_STATE_HOME should be a parseable path")
+    } else {
+        let mut state_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
+            .expect("HOME should be a parseable path");
+        state_home.push(".local/state");
+        state_home
     }
 }

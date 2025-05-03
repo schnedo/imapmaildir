@@ -72,7 +72,7 @@ pub async fn select<'a>(
                     uid.next(*next);
                 }
                 UidValidity(validity) => {
-                    uid.validity(validity.into());
+                    uid.validity((*validity).into());
                 }
                 _ => {
                     warn!("ignoring unknown data response to SELECT");

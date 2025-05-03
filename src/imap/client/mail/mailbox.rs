@@ -26,9 +26,15 @@ impl UidValidity {
     }
 }
 
-impl From<&u32> for UidValidity {
-    fn from(value: &u32) -> Self {
-        Self(*value)
+impl From<u32> for UidValidity {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<UidValidity> for u32 {
+    fn from(value: UidValidity) -> Self {
+        value.0
     }
 }
 
