@@ -1,8 +1,12 @@
 use std::path::Path;
 
+use futures::stream::iter;
 use log::debug;
 
-use crate::{imap::UidValidity, sync::Repository};
+use crate::{
+    imap::UidValidity,
+    sync::{MailMetadata, Repository},
+};
 
 use super::{Maildir, State};
 
@@ -43,5 +47,9 @@ impl MaildirRepository {
 impl Repository for MaildirRepository {
     fn validity(&self) -> &UidValidity {
         self.state.uid_validity()
+    }
+
+    fn list_all(&self) -> impl futures::Stream<Item = MailMetadata> {
+        iter(self.maildir.list_cur())
     }
 }

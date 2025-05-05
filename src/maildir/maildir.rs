@@ -12,7 +12,10 @@ use log::{info, trace};
 use rustix::system::uname;
 use tokio::task::{spawn_blocking, JoinHandle};
 
-use crate::imap::{RemoteMail, Uid};
+use crate::{
+    imap::RemoteMail,
+    sync::{Flag, MailMetadata},
+};
 
 pub struct Maildir {
     new: Arc<PathBuf>,
@@ -111,7 +114,7 @@ impl Maildir {
         format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
 
-    pub fn list_cur(&self) -> impl Iterator<Item = Uid> {
+    pub fn list_cur(&self) -> impl Iterator<Item = MailMetadata> {
         read_dir(self.cur.as_path())
             .expect("cur should be readable")
             .map(|entry| {
@@ -120,6 +123,8 @@ impl Maildir {
                     .file_name()
                     .into_string()
                     .expect("converting filename from OsString to String should be possible");
+                let (filename, flags) = filename.rsplit_once(',').expect("flags should be present");
+                let flags = flags.chars().map(Flag::from).collect();
                 let uid_field = filename
                     .rsplit_once(':')
                     .expect("filename should contain :")
@@ -127,16 +132,31 @@ impl Maildir {
                     .rsplit_once('=')
                     .expect("filename should contain =");
                 assert_eq!(uid_field.0, "U");
-                uid_field
+                let uid = uid_field
                     .0
                     .parse::<u32>()
                     .expect("uid field should be u32")
-                    .into()
+                    .into();
+
+                MailMetadata::new(uid, flags)
             })
     }
 
     pub fn is_empty(&self) -> bool {
         self.cur.is_empty() && self.new.is_empty() && self.tmp.is_empty()
+    }
+}
+
+impl From<char> for Flag {
+    fn from(value: char) -> Self {
+        match value {
+            'D' => Flag::Draft,
+            'F' => Flag::Flagged,
+            'R' => Flag::Answered,
+            'S' => Flag::Seen,
+            'T' => Flag::Deleted,
+            _ => panic!("unknown flag"),
+        }
     }
 }
 
