@@ -15,6 +15,7 @@ pub struct Mailbox {
     unseen: Option<u32>,
     #[builder(default)]
     permanent_flags: Vec<String>,
+    uid_validity: UidValidity,
 }
 
 #[derive(Clone, Debug, PartialEq, Copy)]
@@ -36,13 +37,6 @@ impl From<UidValidity> for u32 {
     fn from(value: UidValidity) -> Self {
         value.0
     }
-}
-
-#[derive(Builder, Debug, Clone, Getters)]
-//TODO: refactor this
-pub struct UidStruct {
-    validity: UidValidity,
-    next: u32,
 }
 
 #[derive(Debug, PartialEq)]

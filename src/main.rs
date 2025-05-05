@@ -7,6 +7,7 @@ mod sync;
 use anyhow::Result;
 use config::Config;
 use imap::{Client, Connection};
+use maildir::MaildirRepository;
 use sync::Syncer;
 
 #[tokio::main(flavor = "current_thread")]
@@ -17,19 +18,14 @@ async fn main() -> Result<()> {
 
     let (connection, _) = Connection::connect_to(config.host(), *config.port()).await;
     let client = Client::new(connection);
-    let session = client.login(config.user(), &config.password()).await?;
+    let mut session = client.login(config.user(), &config.password()).await?;
     let mailbox = "INBOX";
 
-    let mut syncer = Syncer::connect(session, config.maildir(), config.statedir(), mailbox).await;
+    let uid_validity = session.select(mailbox).await?;
+    let maildir_repository =
+        MaildirRepository::new(config.maildir(), mailbox, config.statedir(), *uid_validity);
 
-    let join_handles = syncer.fetch_6106().await;
-    for handle in join_handles {
-        handle
-            .await
-            .expect("mail store task should not panic")
-            .expect("writing mail to disc should succeed");
-    }
-    // session.idle().await;
+    let _ = Syncer::new(session, maildir_repository);
 
     Ok(())
 }

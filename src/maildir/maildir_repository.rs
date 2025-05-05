@@ -2,7 +2,7 @@ use std::path::Path;
 
 use log::debug;
 
-use crate::imap::UidValidity;
+use crate::{imap::UidValidity, sync::Repository};
 
 use super::{Maildir, State};
 
@@ -37,5 +37,11 @@ impl MaildirRepository {
         };
 
         Self { maildir, state }
+    }
+}
+
+impl Repository for MaildirRepository {
+    fn validity(&self) -> &UidValidity {
+        self.state.uid_validity()
     }
 }

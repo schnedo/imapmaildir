@@ -1,4 +1,4 @@
-use crate::imap::connection::SendCommand;
+use crate::{imap::connection::SendCommand, sync::Repository};
 
 use super::{
     fetch::{fetch, RemoteMail, SequenceSet},
@@ -20,11 +20,14 @@ impl<T: SendCommand> Session<T> {
         }
     }
 
-    pub async fn select<'a>(&mut self, mailbox: &'a str) -> Result<UidValidity, SelectError<'a>> {
+    pub async fn select<'a, 'b>(
+        &'b mut self,
+        mailbox: &'a str,
+    ) -> Result<&'b UidValidity, SelectError<'a>> {
         match select(&mut self.connection, mailbox).await {
-            Ok((uid_validity, mailbox)) => {
+            Ok(mailbox) => {
                 self.selected_mailbox = Some(mailbox);
-                Ok(uid_validity)
+                Ok(self.selected_mailbox.as_ref().unwrap().uid_validity())
             }
             Err(e) => {
                 self.selected_mailbox = None;
@@ -40,6 +43,19 @@ impl<T: SendCommand> Session<T> {
     pub async fn fetch(&mut self, sequence_set: &SequenceSet) -> Vec<RemoteMail> {
         if self.selected_mailbox.is_some() {
             fetch(&mut self.connection, sequence_set).await
+        } else {
+            panic!("no mailbox selected");
+        }
+    }
+}
+
+impl<T> Repository for Session<T>
+where
+    T: SendCommand,
+{
+    fn validity(&self) -> &UidValidity {
+        if let Some(mailbox) = &self.selected_mailbox {
+            mailbox.uid_validity()
         } else {
             panic!("no mailbox selected");
         }
