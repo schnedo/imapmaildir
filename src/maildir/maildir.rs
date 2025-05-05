@@ -10,6 +10,7 @@ use std::{
 
 use log::{info, trace};
 use rustix::system::uname;
+use thiserror::Error;
 use tokio::task::{spawn_blocking, JoinHandle};
 
 use crate::{
@@ -80,20 +81,10 @@ impl Maildir {
                 .expect("reading tmp file metadata should succeed");
             let size = meta.size();
             let mut flags = String::with_capacity(6);
-            if mail.draft() {
-                flags.push('D');
-            }
-            if mail.flagged() {
-                flags.push('F');
-            }
-            if mail.answered() {
-                flags.push('R');
-            }
-            if mail.seen() {
-                flags.push('S');
-            }
-            if mail.deleted() {
-                flags.push('T');
+            for flag in mail.flags() {
+                if let Ok(char_flag) = flag.try_into() {
+                    flags.push(char_flag);
+                }
             }
             fs::rename(
                 file_path,
@@ -156,6 +147,25 @@ impl From<char> for Flag {
             'S' => Flag::Seen,
             'T' => Flag::Deleted,
             _ => panic!("unknown flag"),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("Unknown Maildir flag")]
+struct UnknownMaildirFlagError {}
+
+impl TryFrom<&Flag> for char {
+    type Error = UnknownMaildirFlagError;
+
+    fn try_from(value: &Flag) -> Result<Self, Self::Error> {
+        match value {
+            Flag::Seen => Ok('S'),
+            Flag::Answered => Ok('R'),
+            Flag::Flagged => Ok('F'),
+            Flag::Deleted => Ok('T'),
+            Flag::Draft => Ok('D'),
+            Flag::Recent => Err(UnknownMaildirFlagError {}),
         }
     }
 }

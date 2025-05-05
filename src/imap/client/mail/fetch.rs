@@ -6,8 +6,12 @@ use std::{
 use futures::StreamExt;
 use imap_proto::{AttributeValue, Response, Status};
 use log::{debug, trace, warn};
+use thiserror::Error;
 
-use crate::imap::connection::{ResponseData, SendCommand};
+use crate::{
+    imap::connection::{ResponseData, SendCommand},
+    sync::Flag,
+};
 
 // simplified form of real imap sequence set.
 // this struct currently only takes a single number or a range instead of full blown vector of
@@ -53,31 +57,13 @@ pub async fn fetch(
                     attributes.as_slice()
                 {
                     trace!("{flags:?}");
-                    let mut seen = None;
-                    let mut answered = None;
-                    let mut flagged = None;
-                    let mut deleted = None;
-                    let mut draft = None;
-                    let mut recent = None;
-                    for flag in flags {
-                        match flag.as_ref() {
-                            "\\Seen" => seen = Some(()),
-                            "\\Answered" => flagged = Some(()),
-                            "\\Flagged" => answered = Some(()),
-                            "\\Deleted" => deleted = Some(()),
-                            "\\Draft" => draft = Some(()),
-                            "\\Recent" => recent = Some(()),
-                            _ => debug!("ignoring unhandled flag {flag}"),
-                        }
-                    }
+                    let mail_flags = flags
+                        .iter()
+                        .map(|flag| flag.as_ref().try_into().expect("Mail flag should be known"))
+                        .collect();
                     mails.push(RemoteMail {
                         uid: *uid,
-                        seen: seen.is_some(),
-                        answered: answered.is_some(),
-                        flagged: flagged.is_some(),
-                        deleted: deleted.is_some(),
-                        draft: draft.is_some(),
-                        recent: recent.is_some(),
+                        flags: mail_flags,
                         content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
                         response,
                     });
@@ -104,17 +90,34 @@ pub async fn fetch(
     mails
 }
 
+#[derive(Error, Debug)]
+#[error("unknown flag {flag}")]
+pub struct UnknownFlagError<'a> {
+    flag: &'a str,
+}
+
+impl<'a> TryFrom<&'a str> for Flag {
+    type Error = UnknownFlagError<'a>;
+
+    fn try_from(value: &'a str) -> std::result::Result<Self, Self::Error> {
+        match value {
+            "\\Seen" => Ok(Flag::Seen),
+            "\\Answered" => Ok(Flag::Answered),
+            "\\Flagged" => Ok(Flag::Flagged),
+            "\\Deleted" => Ok(Flag::Deleted),
+            "\\Draft" => Ok(Flag::Draft),
+            "\\Recent" => Ok(Flag::Recent),
+            _ => Err(Self::Error { flag: value }),
+        }
+    }
+}
+
 #[expect(clippy::struct_excessive_bools)]
 pub struct RemoteMail {
     #[expect(dead_code)] // need to hold reference to response buffer for other fields
     response: ResponseData,
     uid: u32,
-    seen: bool,
-    answered: bool,
-    flagged: bool,
-    deleted: bool,
-    draft: bool,
-    recent: bool,
+    flags: Vec<Flag>,
     content: &'static [u8],
 }
 
@@ -127,23 +130,8 @@ impl RemoteMail {
         self.uid
     }
 
-    pub fn seen(&self) -> bool {
-        self.seen
-    }
-    pub fn answered(&self) -> bool {
-        self.answered
-    }
-    pub fn flagged(&self) -> bool {
-        self.flagged
-    }
-    pub fn deleted(&self) -> bool {
-        self.deleted
-    }
-    pub fn draft(&self) -> bool {
-        self.draft
-    }
-    pub fn recent(&self) -> bool {
-        self.recent
+    pub fn flags(&self) -> &[Flag] {
+        self.flags.as_slice()
     }
 }
 
