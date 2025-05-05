@@ -6,8 +6,12 @@ use std::{
 use futures::StreamExt;
 use imap_proto::{AttributeValue, Response, Status};
 use log::{debug, trace, warn};
+use thiserror::Error;
 
-use crate::imap::connection::{ResponseData, SendCommand};
+use crate::{
+    imap::connection::{ResponseData, SendCommand},
+    sync::Flag,
+};
 
 // simplified form of real imap sequence set.
 // this struct currently only takes a single number or a range instead of full blown vector of
@@ -102,6 +106,28 @@ pub async fn fetch(
         }
     }
     mails
+}
+
+#[derive(Error, Debug)]
+#[error("unknown flag {flag}")]
+pub struct UnknownFlagError<'a> {
+    flag: &'a str,
+}
+
+impl<'a> TryFrom<&'a str> for Flag {
+    type Error = UnknownFlagError<'a>;
+
+    fn try_from(value: &'a str) -> std::result::Result<Self, Self::Error> {
+        match value {
+            "\\Seen" => Ok(Flag::Seen),
+            "\\Answered" => Ok(Flag::Answered),
+            "\\Flagged" => Ok(Flag::Flagged),
+            "\\Deleted" => Ok(Flag::Deleted),
+            "\\Draft" => Ok(Flag::Draft),
+            "\\Recent" => Ok(Flag::Recent),
+            _ => Err(Self::Error { flag: value }),
+        }
+    }
 }
 
 #[expect(clippy::struct_excessive_bools)]
