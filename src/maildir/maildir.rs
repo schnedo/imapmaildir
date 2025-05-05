@@ -134,4 +134,21 @@ impl Maildir {
                     .into()
             })
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.cur.is_empty() && self.new.is_empty() && self.tmp.is_empty()
+    }
+}
+
+trait IsEmpty {
+    fn is_empty(&self) -> bool;
+}
+
+impl IsEmpty for PathBuf {
+    fn is_empty(&self) -> bool {
+        self.read_dir()
+            .expect("dir should be readable")
+            .next()
+            .is_none()
+    }
 }
