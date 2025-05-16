@@ -1,4 +1,7 @@
-use crate::{imap::connection::SendCommand, sync::Repository};
+use crate::{
+    imap::connection::SendCommand,
+    sync::{MailMetadata, Repository},
+};
 
 use super::{
     fetch::{fetch, RemoteMail, SequenceSet},
@@ -59,5 +62,9 @@ where
         } else {
             panic!("no mailbox selected");
         }
+    }
+
+    fn list_all(&self) -> impl futures::Stream<Item = MailMetadata> {
+        todo!()
     }
 }
