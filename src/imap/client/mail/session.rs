@@ -1,9 +1,12 @@
 use futures::Stream;
 
-use crate::{imap::connection::SendCommand, sync::Repository};
+use crate::{
+    imap::connection::SendCommand,
+    sync::{MailMetadata, Repository},
+};
 
 use super::{
-    fetch::{fetch, RemoteMail, SequenceSet},
+    fetch::{fetch, fetch_metadata, RemoteMail, SequenceSet},
     idle::idle,
     mailbox::{Mailbox, UidValidity},
     select::{select, SelectError},
@@ -64,5 +67,13 @@ where
         } else {
             panic!("no mailbox selected");
         }
+    }
+
+    fn list_all(&mut self) -> impl futures::Stream<Item = MailMetadata> {
+        let validity = *(self.validity());
+        fetch_metadata(
+            &mut self.connection,
+            &SequenceSet::range(0, validity.into()),
+        )
     }
 }

@@ -49,7 +49,7 @@ impl Repository for MaildirRepository {
         self.state.uid_validity()
     }
 
-    fn list_all(&self) -> impl futures::Stream<Item = MailMetadata> {
+    fn list_all(&mut self) -> impl futures::Stream<Item = MailMetadata> {
         iter(self.maildir.list_cur())
     }
 }

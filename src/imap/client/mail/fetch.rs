@@ -9,8 +9,11 @@ use log::{debug, trace, warn};
 use thiserror::Error;
 
 use crate::{
-    imap::connection::{ResponseData, SendCommand},
-    sync::Flag,
+    imap::{
+        connection::{ResponseData, SendCommand},
+        Uid,
+    },
+    sync::{Flag, MailMetadata},
 };
 
 // simplified form of real imap sequence set.
@@ -45,6 +48,49 @@ impl Display for SequenceSet {
             write!(f, "{}", self.from)
         }
     }
+}
+
+pub fn fetch_metadata<'a, T: SendCommand>(
+    connection: &'a mut T,
+    sequence_set: &SequenceSet,
+) -> impl Stream<Item = MailMetadata> + use<'a, T> {
+    let command = format!("FETCH {sequence_set} (UID, FLAGS)");
+    debug!("{command}");
+    let responses = connection.send(command);
+    responses.filter_map(|response| async move {
+        match response.parsed() {
+            Response::Fetch(_, attributes) => {
+                if let [AttributeValue::Uid(uid), AttributeValue::Flags(flags)] =
+                    attributes.as_slice()
+                {
+                    trace!("{flags:?}");
+                    let mail_flags = flags
+                        .iter()
+                        .map(|flag| flag.as_ref().try_into().expect("Mail flag should be known"))
+                        .collect();
+
+                    Some(MailMetadata::new(Uid::from(*uid), mail_flags))
+                } else {
+                    panic!("wrong format of FETCH response. check order of attributes in command");
+                }
+            }
+            Response::Done {
+                status: Status::Ok, ..
+            } => None,
+            Response::Done { information, .. } => {
+                if let Some(information) = information {
+                    panic!("{information}");
+                } else {
+                    panic!("bad FETCH");
+                }
+            }
+            _ => {
+                warn!("ignoring unknown response to FETCH");
+                trace!("{:?}", response.parsed());
+                None
+            }
+        }
+    })
 }
 
 pub async fn fetch<'a, T: SendCommand>(

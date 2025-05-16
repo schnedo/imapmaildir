@@ -24,5 +24,5 @@ impl MailMetadata {
 
 pub trait Repository {
     fn validity(&self) -> &UidValidity;
-    fn list_all(&self) -> impl Stream<Item = MailMetadata>;
+    fn list_all(&mut self) -> impl Stream<Item = MailMetadata>;
 }
