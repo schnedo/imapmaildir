@@ -29,6 +29,12 @@ impl SequenceSet {
     pub fn range(from: u32, to: u32) -> Self {
         Self { from, to: Some(to) }
     }
+
+    pub fn len(&self) -> usize {
+        self.to.map_or(1, |to| {
+            usize::try_from(to - self.from).expect("converting u32 to usize should succeed") + 1
+        })
+    }
 }
 
 impl Display for SequenceSet {
@@ -48,8 +54,7 @@ pub async fn fetch(
     let command = format!("FETCH {sequence_set} (UID, FLAGS, RFC822)");
     debug!("{command}");
     let mut responses = connection.send(&command);
-    // TODO: infer capacity from sequence_set
-    let mut mails = Vec::with_capacity(1);
+    let mut mails = Vec::with_capacity(sequence_set.len());
     while let Some(response) = responses.next().await {
         match response.parsed() {
             Response::Fetch(_, attributes) => {
