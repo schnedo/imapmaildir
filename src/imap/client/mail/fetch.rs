@@ -53,7 +53,7 @@ pub async fn fetch(
 ) -> Vec<RemoteMail> {
     let command = format!("FETCH {sequence_set} (UID, FLAGS, RFC822)");
     debug!("{command}");
-    let mut responses = connection.send(&command);
+    let mut responses = connection.send(command);
     let mut mails = Vec::with_capacity(sequence_set.len());
     while let Some(response) = responses.next().await {
         match response.parsed() {

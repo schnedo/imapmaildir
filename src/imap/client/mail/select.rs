@@ -18,7 +18,7 @@ pub async fn select<'a>(
 ) -> Result<Mailbox, SelectError<'a>> {
     let command = format!("SELECT {mailbox}");
     debug!("{command}");
-    let mut responses = connection.send(&command);
+    let mut responses = connection.send(command);
     let mut new_mailbox = MailboxBuilder::default();
     new_mailbox.name(mailbox.to_string());
     while let Some(response) = responses.next().await {

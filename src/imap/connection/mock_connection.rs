@@ -31,7 +31,7 @@ impl MockConnection {
 impl SendCommand for MockConnection {
     type Responses<'a> = MockResponses;
 
-    fn send<'a>(&'a mut self, _command: &'a str) -> Self::Responses<'a> {
+    fn send<'a>(&'a mut self, _command: String) -> Self::Responses<'a> {
         let buf: Vec<_> = self.responses.by_ref().collect();
         MockResponses::new(Box::new(buf.into_iter()))
     }
@@ -107,7 +107,7 @@ async fn should_just_return_input() {
     ]];
     let mut mock_connection = MockConnection::new(responses);
 
-    let mut responses = mock_connection.send("whatever");
+    let mut responses = mock_connection.send("whatever".into());
 
     let next_response = responses.next().await;
     assert!(next_response.is_some());

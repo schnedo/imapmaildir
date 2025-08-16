@@ -25,14 +25,14 @@ pub struct ResponseStream<'a> {
     state: ResponseStreamState,
     tag_generator: &'a mut TagGenerator,
     tag: String,
-    command: &'a str,
+    command: String,
 }
 
 impl<'a> ResponseStream<'a> {
     pub fn new(
         imap_stream: &'a mut ImapStream,
         tag_generator: &'a mut TagGenerator,
-        command: &'a str,
+        command: String,
     ) -> Self {
         Self {
             imap_stream,
@@ -41,6 +41,19 @@ impl<'a> ResponseStream<'a> {
             tag: String::with_capacity(0),
             command,
         }
+    }
+
+    fn start_sending(&mut self) {
+        let tag = self.tag_generator.next();
+        let request = Request(
+            Cow::Borrowed(tag.as_bytes()),
+            Cow::Borrowed(self.command.as_bytes()),
+        );
+        self.imap_stream
+            .start_send_unpin(&request)
+            .expect("imap sink should be able to receive data");
+        self.tag = tag;
+        self.state = ResponseStreamState::Sending;
     }
 }
 
@@ -55,16 +68,7 @@ impl Stream for ResponseStream<'_> {
                 ResponseStreamState::Start => {
                     ready!(self.imap_stream.poll_ready_unpin(cx))
                         .expect("imap sink should be ready for receiving data");
-                    let tag = self.tag_generator.next();
-                    let request = Request(
-                        Cow::Borrowed(tag.as_bytes()),
-                        Cow::Borrowed(self.command.as_bytes()),
-                    );
-                    self.imap_stream
-                        .start_send_unpin(&request)
-                        .expect("imap sink should be able to receive data");
-                    self.tag = tag;
-                    self.state = ResponseStreamState::Sending;
+                    self.start_sending();
                 }
                 ResponseStreamState::Sending => {
                     ready!(self.imap_stream.poll_flush_unpin(cx))

@@ -49,7 +49,7 @@ impl Connection {
 impl SendCommand for Connection {
     type Responses<'a> = ResponseStream<'a>;
 
-    fn send<'a>(&'a mut self, command: &'a str) -> Self::Responses<'a> {
+    fn send<'a>(&'a mut self, command: String) -> Self::Responses<'a> {
         ResponseStream::new(&mut self.stream, &mut self.tag_generator, command)
     }
 }

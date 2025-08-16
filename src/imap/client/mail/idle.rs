@@ -7,7 +7,7 @@ use crate::imap::connection::{ContinuationCommand as _, SendCommand};
 pub async fn idle(connection: &mut impl SendCommand) -> IdleData {
     let command = "IDLE";
     debug!("{command}");
-    let mut responses = connection.send(command);
+    let mut responses = connection.send(command.into());
     let mut idle_data = IdleData::default();
     while let Some(response) = responses.next().await {
         match response.parsed() {

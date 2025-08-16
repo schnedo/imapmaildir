@@ -17,7 +17,7 @@ impl<T: SendCommand> Client<T> {
         debug!("LOGIN <user> <password>");
         let command = format!("LOGIN {username} {password}");
         let response = {
-            let mut responses = self.connection.send(&command);
+            let mut responses = self.connection.send(command);
             responses
                 .next()
                 .await
