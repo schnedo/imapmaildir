@@ -5,7 +5,7 @@ use log::debug;
 
 use crate::{
     imap::UidValidity,
-    sync::{MailMetadata, Repository},
+    sync::{Mail, MailMetadata, Repository},
 };
 
 use super::{Maildir, State};
@@ -51,5 +51,9 @@ impl Repository for MaildirRepository {
 
     fn list_all(&mut self) -> impl futures::Stream<Item = MailMetadata> {
         iter(self.maildir.list_cur())
+    }
+
+    fn get_all(&mut self) -> impl futures::Stream<Item = impl Mail> {
+        iter(self.maildir.get_cur())
     }
 }

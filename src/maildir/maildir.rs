@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, read_dir, DirBuilder, OpenOptions},
+    fs::{self, read, read_dir, DirBuilder, OpenOptions},
     io::{Error, Write},
     os::unix::fs::{DirBuilderExt as _, MetadataExt},
     path::{Path, PathBuf},
@@ -15,7 +15,7 @@ use tokio::task::{spawn_blocking, JoinHandle};
 
 use crate::{
     imap::RemoteMail,
-    sync::{Flag, MailMetadata},
+    sync::{Flag, Mail, MailMetadata},
 };
 
 pub struct Maildir {
@@ -133,8 +133,55 @@ impl Maildir {
             })
     }
 
+    pub fn get_cur(&self) -> impl Iterator<Item = LocalMail> {
+        read_dir(self.cur.as_path())
+            .expect("cur should be readable")
+            .map(|entry| {
+                let entry = entry.expect("entry of cur should be readable");
+                let filename = entry
+                    .file_name()
+                    .into_string()
+                    .expect("converting filename from OsString to String should be possible");
+                let (filename, flags) = filename.rsplit_once(',').expect("flags should be present");
+                let flags = flags.chars().map(Flag::from).collect();
+                let uid_field = filename
+                    .rsplit_once(':')
+                    .expect("filename should contain :")
+                    .0
+                    .rsplit_once('=')
+                    .expect("filename should contain =");
+                assert_eq!(uid_field.0, "U");
+                let uid = uid_field
+                    .0
+                    .parse::<u32>()
+                    .expect("uid field should be u32")
+                    .into();
+                let content = read(entry.path()).expect("mail should be readable");
+
+                LocalMail {
+                    metadata: MailMetadata::new(uid, flags),
+                    content,
+                }
+            })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.cur.is_empty() && self.new.is_empty() && self.tmp.is_empty()
+    }
+}
+
+struct LocalMail {
+    metadata: MailMetadata,
+    content: Vec<u8>,
+}
+
+impl<'a> Mail<'a> for LocalMail {
+    fn metadata(&'a self) -> &'a MailMetadata {
+        &self.metadata
+    }
+
+    fn content(&'a self) -> &'a [u8] {
+        &self.content
     }
 }
 
