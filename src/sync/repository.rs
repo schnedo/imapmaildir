@@ -16,7 +16,7 @@ pub struct MailMetadata {
     flags: Vec<Flag>,
 }
 
-pub trait Mail<'a> {
+pub trait Mail<'a>: Send {
     fn metadata(&'a self) -> &'a MailMetadata;
     fn content(&'a self) -> &'a [u8];
 }

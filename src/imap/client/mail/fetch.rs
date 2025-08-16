@@ -13,7 +13,7 @@ use crate::{
         connection::{ResponseData, SendCommand},
         Uid,
     },
-    sync::{Flag, MailMetadata},
+    sync::{Flag, Mail, MailMetadata},
 };
 
 // simplified form of real imap sequence set.
@@ -93,7 +93,7 @@ pub fn fetch_metadata<'a, T: SendCommand>(
     })
 }
 
-pub async fn fetch<'a, T: SendCommand>(
+pub fn fetch<'a, T: SendCommand>(
     connection: &'a mut T,
     sequence_set: &SequenceSet,
 ) -> impl Stream<Item = RemoteMail> + use<'a, T> {
@@ -113,8 +113,7 @@ pub async fn fetch<'a, T: SendCommand>(
                         .collect();
 
                     Some(RemoteMail {
-                        uid: *uid,
-                        flags: mail_flags,
+                        metadata: MailMetadata::new(Uid::from(uid), mail_flags),
                         content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
                         response,
                     })
@@ -169,22 +168,17 @@ impl<'a> TryFrom<&'a str> for Flag {
 pub struct RemoteMail {
     #[expect(dead_code)] // need to hold reference to response buffer for other fields
     response: ResponseData,
-    uid: u32,
-    flags: Vec<Flag>,
+    metadata: MailMetadata,
     content: &'static [u8],
 }
 
-impl RemoteMail {
-    pub fn content(&self) -> &[u8] {
+impl<'a> Mail<'a> for RemoteMail {
+    fn metadata(&'a self) -> &'a MailMetadata {
+        &self.metadata
+    }
+
+    fn content(&'a self) -> &'a [u8] {
         self.content
-    }
-
-    pub fn uid(&self) -> u32 {
-        self.uid
-    }
-
-    pub fn flags(&self) -> &[Flag] {
-        self.flags.as_slice()
     }
 }
 

@@ -45,12 +45,12 @@ impl<T: SendCommand> Session<T> {
         idle(&mut self.connection).await;
     }
 
-    pub async fn fetch<'a>(
+    pub fn fetch<'a>(
         &'a mut self,
         sequence_set: &SequenceSet,
     ) -> impl Stream<Item = RemoteMail> + use<'a, T> {
         if self.selected_mailbox.is_some() {
-            fetch(&mut self.connection, sequence_set).await
+            fetch(&mut self.connection, sequence_set)
         } else {
             panic!("no mailbox selected");
         }
@@ -72,6 +72,14 @@ where
     fn list_all(&mut self) -> impl futures::Stream<Item = MailMetadata> {
         let validity = *(self.validity());
         fetch_metadata(
+            &mut self.connection,
+            &SequenceSet::range(0, validity.into()),
+        )
+    }
+
+    fn get_all(&mut self) -> impl Stream<Item = impl crate::sync::Mail> {
+        let validity = *(self.validity());
+        fetch(
             &mut self.connection,
             &SequenceSet::range(0, validity.into()),
         )
