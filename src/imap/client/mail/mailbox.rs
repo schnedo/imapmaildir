@@ -1,5 +1,7 @@
 #![expect(clippy::ref_option)]
 
+use std::fmt::Display;
+
 use derive_builder::Builder;
 use derive_getters::Getters;
 
@@ -41,6 +43,18 @@ impl From<UidValidity> for u32 {
 
 #[derive(Debug, PartialEq)]
 pub struct Uid(u32);
+
+impl From<&u32> for Uid {
+    fn from(value: &u32) -> Self {
+        Self(*value)
+    }
+}
+
+impl Display for Uid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl From<u32> for Uid {
     fn from(value: u32) -> Self {

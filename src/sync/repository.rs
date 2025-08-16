@@ -25,6 +25,14 @@ impl MailMetadata {
     pub fn new(uid: Uid, flags: Vec<Flag>) -> Self {
         Self { uid, flags }
     }
+
+    pub fn uid(&self) -> &Uid {
+        &self.uid
+    }
+
+    pub fn flags(&self) -> &[Flag] {
+        &self.flags
+    }
 }
 
 pub trait Repository {

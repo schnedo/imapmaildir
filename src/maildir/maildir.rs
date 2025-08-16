@@ -13,10 +13,7 @@ use rustix::system::uname;
 use thiserror::Error;
 use tokio::task::{spawn_blocking, JoinHandle};
 
-use crate::{
-    imap::RemoteMail,
-    sync::{Flag, Mail, MailMetadata},
-};
+use crate::sync::{Flag, Mail, MailMetadata};
 
 pub struct Maildir {
     new: Arc<PathBuf>,
@@ -54,7 +51,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store_new(&self, mail: RemoteMail) -> JoinHandle<Result<(), Error>> {
+    pub fn store_new(&self, mail: LocalMail) -> JoinHandle<Result<(), Error>> {
         let new = self.new.clone();
         let tmp = self.tmp.clone();
         spawn_blocking(move || {
@@ -75,13 +72,13 @@ impl Maildir {
             file.sync_all()
                 .expect("writing new tmp mail to disc should succeed");
 
-            let uid = mail.uid();
+            let uid = mail.metadata.uid();
             let meta = file
                 .metadata()
                 .expect("reading tmp file metadata should succeed");
             let size = meta.size();
             let mut flags = String::with_capacity(6);
-            for flag in mail.flags() {
+            for flag in mail.metadata.flags() {
                 if let Ok(char_flag) = flag.try_into() {
                     flags.push(char_flag);
                 }
@@ -170,7 +167,7 @@ impl Maildir {
     }
 }
 
-struct LocalMail {
+pub struct LocalMail {
     metadata: MailMetadata,
     content: Vec<u8>,
 }
