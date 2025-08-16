@@ -153,7 +153,7 @@ impl From<char> for Flag {
 
 #[derive(Error, Debug)]
 #[error("Unknown Maildir flag")]
-struct UnknownMaildirFlagError {}
+pub struct UnknownMaildirFlagError {}
 
 impl TryFrom<&Flag> for char {
     type Error = UnknownMaildirFlagError;
