@@ -1,3 +1,5 @@
+use futures::Stream;
+
 use crate::{imap::connection::SendCommand, sync::Repository};
 
 use super::{
@@ -40,7 +42,10 @@ impl<T: SendCommand> Session<T> {
         idle(&mut self.connection).await;
     }
 
-    pub async fn fetch(&mut self, sequence_set: &SequenceSet) -> Vec<RemoteMail> {
+    pub async fn fetch<'a>(
+        &'a mut self,
+        sequence_set: &SequenceSet,
+    ) -> impl Stream<Item = RemoteMail> + use<'a, T> {
         if self.selected_mailbox.is_some() {
             fetch(&mut self.connection, sequence_set).await
         } else {

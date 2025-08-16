@@ -3,7 +3,7 @@ use std::{
     mem::transmute,
 };
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use imap_proto::{AttributeValue, Response, Status};
 use log::{debug, trace, warn};
 use thiserror::Error;
@@ -47,15 +47,14 @@ impl Display for SequenceSet {
     }
 }
 
-pub async fn fetch(
-    connection: &mut impl SendCommand,
+pub async fn fetch<'a, T: SendCommand>(
+    connection: &'a mut T,
     sequence_set: &SequenceSet,
-) -> Vec<RemoteMail> {
+) -> impl Stream<Item = RemoteMail> + use<'a, T> {
     let command = format!("FETCH {sequence_set} (UID, FLAGS, RFC822)");
     debug!("{command}");
-    let mut responses = connection.send(command);
-    let mut mails = Vec::with_capacity(sequence_set.len());
-    while let Some(response) = responses.next().await {
+    let responses = connection.send(command);
+    responses.filter_map(|response| async move {
         match response.parsed() {
             Response::Fetch(_, attributes) => {
                 if let [AttributeValue::Uid(uid), AttributeValue::Flags(flags), AttributeValue::Rfc822(Some(content))] =
@@ -66,19 +65,22 @@ pub async fn fetch(
                         .iter()
                         .map(|flag| flag.as_ref().try_into().expect("Mail flag should be known"))
                         .collect();
-                    mails.push(RemoteMail {
+
+                    Some(RemoteMail {
                         uid: *uid,
                         flags: mail_flags,
                         content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
                         response,
-                    });
+                    })
                 } else {
                     panic!("wrong format of FETCH response. check order of attributes in command");
                 }
             }
             Response::Done {
                 status: Status::Ok, ..
-            } => {}
+            } => {
+                None
+            }
             Response::Done { information, .. } => {
                 if let Some(information) = information {
                     panic!("{information}");
@@ -89,10 +91,10 @@ pub async fn fetch(
             _ => {
                 warn!("ignoring unknown response to FETCH");
                 trace!("{:?}", response.parsed());
+                None
             }
         }
-    }
-    mails
+    })
 }
 
 #[derive(Error, Debug)]
