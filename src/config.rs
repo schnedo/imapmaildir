@@ -66,12 +66,14 @@ impl Config {
 }
 
 fn statedir() -> PathBuf {
-    if let Ok(state_home) = env::var("XDG_STATE_HOME") {
+    let mut state_home = if let Ok(state_home) = env::var("XDG_STATE_HOME") {
         PathBuf::from_str(&state_home).expect("XDG_STATE_HOME should be a parseable path")
     } else {
         let mut state_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
             .expect("HOME should be a parseable path");
         state_home.push(".local/state");
         state_home
-    }
+    };
+    state_home.push(env!("CARGO_PKG_NAME"));
+    state_home
 }
