@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     let (connection, _) = Connection::connect_to(config.host(), *config.port()).await;
     let client = Client::new(connection);
     let mut session = client.login(config.user(), &config.password()).await?;
-    let mailbox = "INBOX";
+    let mailbox = "blog";
 
     let uid_validity = session.select(mailbox).await?;
     let maildir_repository =
