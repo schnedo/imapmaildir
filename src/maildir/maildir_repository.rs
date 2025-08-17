@@ -55,4 +55,9 @@ impl Repository for MaildirRepository {
     fn get_all(&mut self) -> impl futures::Stream<Item = impl Mail> {
         iter(self.maildir.get_cur())
     }
+
+    fn store(&self, mail: &impl Mail) {
+        self.maildir.store(mail);
+        self.state.store(mail.metadata());
+    }
 }

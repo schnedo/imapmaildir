@@ -90,4 +90,8 @@ where
             panic!("no mailbox selected");
         }
     }
+
+    fn store(&self, mail: &impl crate::sync::Mail) {
+        todo!()
+    }
 }

@@ -7,7 +7,7 @@ use log::debug;
 use rusqlite::{Connection, OpenFlags, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::imap::UidValidity;
+use crate::{imap::UidValidity, sync::MailMetadata};
 
 pub struct State {
     db: Connection,
@@ -78,6 +78,18 @@ impl State {
 
     pub fn uid_validity(&self) -> &UidValidity {
         &self.uid_validity
+    }
+
+    pub fn store(&self, metadata: &MailMetadata) {
+        let mut stmt = self
+            .db
+            .prepare_cached("insert into mail_metadata (uid,flags) values (?1,?2)")
+            .expect("insert mail metadata statement should be preparable");
+        stmt.execute([
+            metadata.uid().to_string(),
+            metadata.flags().bits().to_string(),
+        ])
+        .expect("mail metadata should be insertable");
     }
 }
 
