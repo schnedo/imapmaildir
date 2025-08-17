@@ -13,6 +13,7 @@ futures = "0.3.31"
 imap-proto = "0.16.5"
 log = { version = "0.4.27", features = ["kv", "release_max_level_debug", "std"] }
 nom = "7"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustix = { version = "1.0.5", features = ["fs", "std", "system"], default-features = false }
 serde = { version = "1.0.214", features = ["derive"] }
 thiserror = "2.0.12"

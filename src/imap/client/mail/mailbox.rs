@@ -42,6 +42,12 @@ impl From<UidValidity> for u32 {
     }
 }
 
+impl ToString for UidValidity {
+    fn to_string(&self) -> String {
+        self.0.to_string()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Uid(u32);
 

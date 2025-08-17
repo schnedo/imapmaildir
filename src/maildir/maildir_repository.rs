@@ -36,7 +36,6 @@ impl MaildirRepository {
                 maildir.is_empty(),
                 "managing maildir with already existing mail is not supported"
             );
-            debug!("creating new state file for {mailbox}");
             State::create_new(state_dir, mailbox, uid_validity)
         };
 
