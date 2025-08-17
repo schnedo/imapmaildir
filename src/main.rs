@@ -25,7 +25,9 @@ async fn main() -> Result<()> {
     let maildir_repository =
         MaildirRepository::new(config.maildir(), mailbox, config.statedir(), *uid_validity);
 
-    let _ = Syncer::new(session, maildir_repository);
+    let mut syncer = Syncer::new(session, maildir_repository);
+
+    syncer.init_a_to_b().await;
 
     Ok(())
 }

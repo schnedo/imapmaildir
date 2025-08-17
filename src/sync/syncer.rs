@@ -1,3 +1,5 @@
+use futures::StreamExt;
+
 use super::Repository;
 
 pub struct Syncer<T, U>
@@ -18,10 +20,16 @@ where
         Self { a, b }
     }
 
-    pub fn sync_a_to_b(&self) {
+    pub async fn init_a_to_b(&mut self) {
         assert!(
             self.a.validity() == self.b.validity(),
             "repositories need same validity to sync"
         );
+        let all_mail = self.a.get_all();
+        all_mail
+            .for_each(async |mail| {
+                self.b.store(&mail);
+            })
+            .await;
     }
 }
