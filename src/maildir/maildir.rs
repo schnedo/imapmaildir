@@ -164,12 +164,12 @@ pub struct LocalMail {
     content: Vec<u8>,
 }
 
-impl<'a> Mail<'a> for LocalMail {
-    fn metadata(&'a self) -> &'a MailMetadata {
+impl Mail for LocalMail {
+    fn metadata(&self) -> &MailMetadata {
         &self.metadata
     }
 
-    fn content(&'a self) -> &'a [u8] {
+    fn content(&self) -> &[u8] {
         &self.content
     }
 }

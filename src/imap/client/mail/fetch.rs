@@ -172,12 +172,12 @@ pub struct RemoteMail {
     content: &'static [u8],
 }
 
-impl<'a> Mail<'a> for RemoteMail {
-    fn metadata(&'a self) -> &'a MailMetadata {
+impl Mail for RemoteMail {
+    fn metadata(&self) -> &MailMetadata {
         &self.metadata
     }
 
-    fn content(&'a self) -> &'a [u8] {
+    fn content(&self) -> &[u8] {
         self.content
     }
 }
