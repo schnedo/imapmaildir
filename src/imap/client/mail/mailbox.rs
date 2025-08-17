@@ -18,6 +18,7 @@ pub struct Mailbox {
     #[builder(default)]
     permanent_flags: Vec<String>,
     uid_validity: UidValidity,
+    uid_next: Uid,
 }
 
 #[derive(Clone, Debug, PartialEq, Copy)]
@@ -41,7 +42,7 @@ impl From<UidValidity> for u32 {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Uid(u32);
 
 impl From<&u32> for Uid {
@@ -64,6 +65,12 @@ impl From<u32> for Uid {
 
 impl From<Uid> for u32 {
     fn from(value: Uid) -> Self {
+        value.0
+    }
+}
+
+impl From<&Uid> for u32 {
+    fn from(value: &Uid) -> Self {
         value.0
     }
 }

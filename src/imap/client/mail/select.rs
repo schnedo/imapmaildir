@@ -64,7 +64,9 @@ pub async fn select<'a>(
                     }
                     new_mailbox.permanent_flags(flags);
                 }
-                UidNext(_) => {}
+                UidNext(next) => {
+                    new_mailbox.uid_next(next.into());
+                }
                 UidValidity(validity) => {
                     new_mailbox.uid_validity((*validity).into());
                 }

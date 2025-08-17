@@ -70,18 +70,24 @@ where
     }
 
     fn list_all(&mut self) -> impl futures::Stream<Item = MailMetadata> {
-        let validity = *(self.validity());
-        fetch_metadata(
-            &mut self.connection,
-            &SequenceSet::range(0, validity.into()),
-        )
+        if let Some(mailbox) = &self.selected_mailbox {
+            fetch_metadata(
+                &mut self.connection,
+                &SequenceSet::range(0, mailbox.uid_next().into()),
+            )
+        } else {
+            panic!("no mailbox selected");
+        }
     }
 
     fn get_all(&mut self) -> impl Stream<Item = impl crate::sync::Mail> {
-        let validity = *(self.validity());
-        fetch(
-            &mut self.connection,
-            &SequenceSet::range(0, validity.into()),
-        )
+        if let Some(mailbox) = &self.selected_mailbox {
+            fetch(
+                &mut self.connection,
+                &SequenceSet::range(0, mailbox.uid_next().into()),
+            )
+        } else {
+            panic!("no mailbox selected");
+        }
     }
 }
