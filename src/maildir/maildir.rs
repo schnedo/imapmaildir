@@ -69,7 +69,7 @@ impl Maildir {
             .expect("reading tmp file metadata should succeed");
         let size = meta.size();
         let mut flags = String::with_capacity(6);
-        for flag in mail.metadata.flags() {
+        for flag in mail.metadata.flags().iter() {
             if let Ok(char_flag) = flag.try_into() {
                 flags.push(char_flag);
             }
@@ -191,10 +191,10 @@ impl From<char> for Flag {
 #[error("Unknown Maildir flag")]
 pub struct UnknownMaildirFlagError {}
 
-impl TryFrom<&Flag> for char {
+impl TryFrom<Flag> for char {
     type Error = UnknownMaildirFlagError;
 
-    fn try_from(value: &Flag) -> Result<Self, Self::Error> {
+    fn try_from(value: Flag) -> Result<Self, Self::Error> {
         match value {
             Flag::Seen => Ok('S'),
             Flag::Answered => Ok('R'),

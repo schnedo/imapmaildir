@@ -66,7 +66,10 @@ pub fn fetch_metadata<'a, T: SendCommand>(
                     trace!("{flags:?}");
                     let mail_flags = flags
                         .iter()
-                        .map(|flag| flag.as_ref().try_into().expect("Mail flag should be known"))
+                        .map(|flag| {
+                            <&str as TryInto<Flag>>::try_into(flag.as_ref())
+                                .expect("Mail flag should be known")
+                        })
                         .collect();
 
                     Some(MailMetadata::new(Uid::from(*uid), mail_flags))
@@ -109,7 +112,7 @@ pub fn fetch<'a, T: SendCommand>(
                     trace!("{flags:?}");
                     let mail_flags = flags
                         .iter()
-                        .map(|flag| flag.as_ref().try_into().expect("Mail flag should be known"))
+                        .map(|flag| <&str as TryInto<Flag>>::try_into(flag.as_ref()).expect("Mail flag should be known"))
                         .collect();
 
                     Some(RemoteMail {

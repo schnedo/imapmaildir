@@ -1,7 +1,11 @@
 use futures::Stream;
 
 use crate::imap::{Uid, UidValidity};
+use enumflags2::{bitflags, BitFlags};
 
+#[bitflags]
+#[repr(u8)]
+#[derive(Copy, Clone)]
 pub enum Flag {
     Seen,
     Answered,
@@ -13,7 +17,7 @@ pub enum Flag {
 
 pub struct MailMetadata {
     uid: Uid,
-    flags: Vec<Flag>,
+    flags: BitFlags<Flag>,
 }
 
 pub trait Mail: Send {
@@ -22,7 +26,7 @@ pub trait Mail: Send {
 }
 
 impl MailMetadata {
-    pub fn new(uid: Uid, flags: Vec<Flag>) -> Self {
+    pub fn new(uid: Uid, flags: BitFlags<Flag>) -> Self {
         Self { uid, flags }
     }
 
@@ -30,7 +34,7 @@ impl MailMetadata {
         &self.uid
     }
 
-    pub fn flags(&self) -> &[Flag] {
+    pub fn flags(&self) -> &BitFlags<Flag> {
         &self.flags
     }
 }
