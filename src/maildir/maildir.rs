@@ -76,10 +76,10 @@ impl Maildir {
         }
         fs::rename(
             file_path,
-            self.new
+            self.cur
                 .join(format!("{filename},S={size},U={uid}:2,{flags}")),
         )
-        .expect("moving file from tmp to new should succeed");
+        .expect("moving file from tmp to cur should succeed");
     }
 
     fn generate_filename() -> String {
