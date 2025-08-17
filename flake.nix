@@ -55,6 +55,7 @@
             rustup
             openssl.dev
             pkg-config
+            sqlitebrowser
           ];
 
           # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
