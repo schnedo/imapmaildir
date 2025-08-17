@@ -1,24 +1,22 @@
 use std::{
     fs::{self, read, read_dir, DirBuilder, OpenOptions},
-    io::{Error, Write},
+    io::Write,
     os::unix::fs::{DirBuilderExt as _, MetadataExt},
     path::{Path, PathBuf},
     process,
-    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use log::{info, trace};
 use rustix::system::uname;
 use thiserror::Error;
-use tokio::task::{spawn_blocking, JoinHandle};
 
 use crate::sync::{Flag, Mail, MailMetadata};
 
 pub struct Maildir {
-    new: Arc<PathBuf>,
-    cur: Arc<PathBuf>,
-    tmp: Arc<PathBuf>,
+    new: PathBuf,
+    cur: PathBuf,
+    tmp: PathBuf,
 }
 
 impl Maildir {
@@ -40,54 +38,48 @@ impl Maildir {
             .create(cur.as_path())
             .expect("creation of cur subdir should succeed");
 
-        Self {
-            new: Arc::new(new),
-            cur: Arc::new(cur),
-            tmp: Arc::new(tmp),
-        }
+        Self { new, cur, tmp }
     }
 
     // Algorithm
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store_new(&self, mail: LocalMail) -> JoinHandle<Result<(), Error>> {
-        let new = self.new.clone();
-        let tmp = self.tmp.clone();
-        spawn_blocking(move || {
-            let filename = Self::generate_filename();
-            let file_path = tmp.join(&filename);
+    pub fn store_new(&self, mail: LocalMail) {
+        let filename = Self::generate_filename();
+        let file_path = self.tmp.join(&filename);
 
-            trace!("writing to {file_path:?}");
-            let Ok(mut file) = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&file_path)
-            else {
-                todo!("handle tmp file creation errors");
-            };
+        trace!("writing to {file_path:?}");
+        let Ok(mut file) = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+        else {
+            todo!("handle tmp file creation errors");
+        };
 
-            file.write_all(mail.content())
-                .expect("writing new mail to tmp should succeed");
-            file.sync_all()
-                .expect("writing new tmp mail to disc should succeed");
+        file.write_all(mail.content())
+            .expect("writing new mail to tmp should succeed");
+        file.sync_all()
+            .expect("writing new tmp mail to disc should succeed");
 
-            let uid = mail.metadata.uid();
-            let meta = file
-                .metadata()
-                .expect("reading tmp file metadata should succeed");
-            let size = meta.size();
-            let mut flags = String::with_capacity(6);
-            for flag in mail.metadata.flags() {
-                if let Ok(char_flag) = flag.try_into() {
-                    flags.push(char_flag);
-                }
+        let uid = mail.metadata.uid();
+        let meta = file
+            .metadata()
+            .expect("reading tmp file metadata should succeed");
+        let size = meta.size();
+        let mut flags = String::with_capacity(6);
+        for flag in mail.metadata.flags() {
+            if let Ok(char_flag) = flag.try_into() {
+                flags.push(char_flag);
             }
-            fs::rename(
-                file_path,
-                new.join(format!("{filename},S={size},U={uid}:2,{flags}")),
-            )
-        })
+        }
+        fs::rename(
+            file_path,
+            self.new
+                .join(format!("{filename},S={size},U={uid}:2,{flags}")),
+        )
+        .expect("moving file from tmp to new should succeed");
     }
 
     fn generate_filename() -> String {
