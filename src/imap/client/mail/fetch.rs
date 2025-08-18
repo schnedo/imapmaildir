@@ -54,7 +54,7 @@ pub fn fetch_metadata<'a, T: SendCommand>(
     connection: &'a mut T,
     sequence_set: &SequenceSet,
 ) -> impl Stream<Item = MailMetadata> + use<'a, T> {
-    let command = format!("FETCH {sequence_set} (UID, FLAGS)");
+    let command = format!("UID FETCH {sequence_set} (UID, FLAGS)");
     debug!("{command}");
     let responses = connection.send(command);
     responses.filter_map(|response| async move {
@@ -100,7 +100,7 @@ pub fn fetch<'a, T: SendCommand>(
     connection: &'a mut T,
     sequence_set: &SequenceSet,
 ) -> impl Stream<Item = RemoteMail> + use<'a, T> {
-    let command = format!("FETCH {sequence_set} (UID, FLAGS, RFC822)");
+    let command = format!("UID FETCH {sequence_set} (UID, FLAGS, RFC822)");
     debug!("{command}");
     let responses = connection.send(command);
     responses.filter_map(|response| async move {
