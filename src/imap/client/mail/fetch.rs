@@ -112,7 +112,7 @@ pub fn fetch<'a, T: SendCommand>(
                     trace!("{flags:?}");
                     let mail_flags = flags
                         .iter()
-                        .map(|flag| <&str as TryInto<Flag>>::try_into(flag.as_ref()).expect("Mail flag should be known"))
+                        .filter_map(|flag| <&str as TryInto<Flag>>::try_into(flag.as_ref()).ok())
                         .collect();
 
                     Some(RemoteMail {
@@ -162,7 +162,10 @@ impl<'a> TryFrom<&'a str> for Flag {
             "\\Deleted" => Ok(Flag::Deleted),
             "\\Draft" => Ok(Flag::Draft),
             "\\Recent" => Ok(Flag::Recent),
-            _ => Err(Self::Error { flag: value }),
+            _ => {
+                trace!("Encountered unhandled Flag {value}");
+                Err(Self::Error { flag: value })
+            }
         }
     }
 }
