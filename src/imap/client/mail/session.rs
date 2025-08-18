@@ -73,7 +73,7 @@ where
         if let Some(mailbox) = &self.selected_mailbox {
             fetch_metadata(
                 &mut self.connection,
-                &SequenceSet::range(0, mailbox.uid_next().into()),
+                &SequenceSet::range(1, mailbox.uid_next().into()),
             )
         } else {
             panic!("no mailbox selected");
@@ -84,7 +84,7 @@ where
         if let Some(mailbox) = &self.selected_mailbox {
             fetch(
                 &mut self.connection,
-                &SequenceSet::range(0, mailbox.uid_next().into()),
+                &SequenceSet::range(1, mailbox.uid_next().into()),
             )
         } else {
             panic!("no mailbox selected");
