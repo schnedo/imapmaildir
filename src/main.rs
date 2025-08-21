@@ -26,8 +26,12 @@ async fn main() -> Result<()> {
         .expect("there should be one mailbox set");
 
     let uid_validity = session.select(mailbox).await?;
-    let maildir_repository =
-        MaildirRepository::new(config.maildir(), mailbox, config.statedir(), *uid_validity);
+    let maildir_repository = MaildirRepository::new(
+        config.maildir().join(config.user()).as_path(),
+        mailbox,
+        config.statedir(),
+        *uid_validity,
+    );
 
     let mut syncer = Syncer::new(session, maildir_repository);
 
