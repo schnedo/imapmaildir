@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
 
     let config = Config::load_from_file();
 
-    let (connection, _) = Connection::connect_to(config.host(), *config.port()).await;
+    let (connection, _) = Connection::connect_to(config.host(), config.port()).await;
     let client = Client::new(connection);
     let mut session = client.login(config.user(), &config.password()).await?;
     let mailbox = config

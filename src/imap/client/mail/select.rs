@@ -182,13 +182,13 @@ mod tests {
         assert!(result.is_ok());
         let mailbox = result.unwrap();
         assert_eq!(mailbox.name(), mailbox_name);
-        assert_eq!(mailbox.readonly(), &false);
+        assert!(!mailbox.readonly());
         assert_eq!(
             mailbox.flags(),
             &vec!["\\Answered", "\\Flagged", "\\Deleted", "\\Seen", "\\Draft",]
         );
-        assert_eq!(mailbox.exists(), &exists);
-        assert_eq!(mailbox.recent(), &recent);
+        assert_eq!(mailbox.exists(), exists);
+        assert_eq!(mailbox.recent(), recent);
         assert!(mailbox.unseen().is_none());
         assert_eq!(
             mailbox.permanent_flags(),
