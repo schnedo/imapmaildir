@@ -12,10 +12,10 @@ use crate::imap::{client::mail::mailbox::MailboxBuilder, connection::SendCommand
 
 use super::mailbox::Mailbox;
 
-pub async fn select<'a>(
+pub async fn select(
     connection: &mut impl SendCommand,
-    mailbox: &'a str,
-) -> Result<Mailbox, SelectError<'a>> {
+    mailbox: &str,
+) -> Result<Mailbox, SelectError> {
     let command = format!("SELECT {mailbox}");
     debug!("{command}");
     let mut responses = connection.send(command);
@@ -86,7 +86,9 @@ pub async fn select<'a>(
                     break;
                 }
                 No => {
-                    return Err(SelectError { mailbox });
+                    return Err(SelectError {
+                        mailbox: mailbox.to_string(),
+                    });
                 }
                 Bad => panic!("Bad status response to select. This is a code issue."),
                 _ => panic!("select status can only ever be Ok, No or Bad"),
@@ -107,8 +109,8 @@ pub async fn select<'a>(
 
 #[derive(Error, Debug)]
 #[error("cannot select mailbox {mailbox}. Going back to unselected.")]
-pub struct SelectError<'a> {
-    mailbox: &'a str,
+pub struct SelectError {
+    mailbox: String,
 }
 
 #[cfg(test)]

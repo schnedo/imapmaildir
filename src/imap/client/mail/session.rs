@@ -25,10 +25,7 @@ impl<T: SendCommand> Session<T> {
         }
     }
 
-    pub async fn select<'a, 'b>(
-        &'b mut self,
-        mailbox: &'a str,
-    ) -> Result<&'b UidValidity, SelectError<'a>> {
+    pub async fn select<'b>(&'b mut self, mailbox: &str) -> Result<&'b UidValidity, SelectError> {
         match select(&mut self.connection, mailbox).await {
             Ok(mailbox) => {
                 self.selected_mailbox = Some(mailbox);

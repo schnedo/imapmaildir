@@ -11,14 +11,16 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Getters)]
 pub struct Config {
+    #[serde(default = "statedir")]
+    statedir: PathBuf,
+    #[serde(default = "maildir")]
+    maildir: PathBuf,
     user: String,
     #[getter(skip)]
     password_cmd: String,
     host: String,
     port: u16,
-    maildir: PathBuf,
-    #[serde(default = "statedir")]
-    statedir: PathBuf,
+    mailboxes: Vec<String>,
 }
 
 impl Config {
@@ -65,12 +67,22 @@ impl Config {
     }
 }
 
+fn home() -> PathBuf {
+    PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
+        .expect("HOME should be a parseable path")
+}
+
+fn maildir() -> PathBuf {
+    let mut maildir = home();
+    maildir.push(".mail");
+    maildir
+}
+
 fn statedir() -> PathBuf {
     let mut state_home = if let Ok(state_home) = env::var("XDG_STATE_HOME") {
         PathBuf::from_str(&state_home).expect("XDG_STATE_HOME should be a parseable path")
     } else {
-        let mut state_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
-            .expect("HOME should be a parseable path");
+        let mut state_home = home();
         state_home.push(".local/state");
         state_home
     };
