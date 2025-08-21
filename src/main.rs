@@ -1,3 +1,4 @@
+#![expect(dead_code, unused_variables, unused_imports)]
 mod config;
 mod imap;
 mod logging;
