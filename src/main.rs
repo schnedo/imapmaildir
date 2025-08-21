@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 
     let uid_validity = session.select(mailbox).await?;
     let maildir_repository = MaildirRepository::new(
-        config.maildir().join(config.user()).as_path(),
+        config.maildir().join(config.account()).as_path(),
         mailbox,
         config.statedir(),
         *uid_validity,

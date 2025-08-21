@@ -15,6 +15,8 @@ pub struct Config {
     statedir: PathBuf,
     #[serde(default = "maildir")]
     maildir: PathBuf,
+    #[getter(skip)]
+    account: Option<String>,
     user: String,
     #[getter(skip)]
     password_cmd: String,
@@ -41,6 +43,10 @@ impl Config {
 
         let config_contents = read_to_string(config_dir).expect("config file should be readable");
         toml::from_str(&config_contents).expect("config should be parseable")
+    }
+
+    pub fn account(&self) -> &str {
+        self.account.as_ref().unwrap_or_else(|| self.user())
     }
 
     pub fn password(&self) -> String {
