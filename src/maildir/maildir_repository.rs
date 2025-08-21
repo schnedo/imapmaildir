@@ -23,23 +23,24 @@ impl MaildirRepository {
         uid_validity: UidValidity,
     ) -> Self {
         let maildir = account_dir.join(mailbox);
-        let maildir = Maildir::new(maildir.as_path());
-
-        let state = if let Ok(state) = State::load(state_dir, mailbox) {
-            debug!("existing state file for {mailbox} found");
-            if *state.uid_validity() != uid_validity {
-                todo!("handle uid_validity change");
+        match (
+            maildir
+                .try_exists()
+                .expect("checking maildir existence should not fail"),
+            State::load(state_dir, mailbox),
+        ) {
+            (true, Ok(state)) => {
+                let maildir = Maildir::new(maildir.as_path());
+                Self { maildir, state }
             }
-            state
-        } else {
-            assert!(
-                maildir.is_empty(),
-                "managing maildir with already existing mail is not supported"
-            );
-            State::create_new(state_dir, mailbox, uid_validity)
-        };
-
-        Self { maildir, state }
+            (true, Err(_)) => todo!("unmanaged maildir found"),
+            (false, Ok(_)) => todo!("existing state for new maildir found"),
+            (false, Err(_)) => {
+                let maildir = Maildir::new(maildir.as_path());
+                let state = State::create_new(state_dir, mailbox, uid_validity);
+                Self { maildir, state }
+            }
+        }
     }
 }
 
