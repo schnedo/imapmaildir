@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Display, Formatter, Result},
+    fmt::{Debug, Display, Formatter, Result},
     mem::transmute,
 };
 
@@ -170,12 +170,18 @@ impl<'a> TryFrom<&'a str> for Flag {
     }
 }
 
-#[expect(clippy::struct_excessive_bools)]
 pub struct RemoteMail {
-    #[expect(dead_code)] // need to hold reference to response buffer for other fields
     response: ResponseData,
     metadata: MailMetadata,
     content: &'static [u8],
+}
+
+impl Debug for RemoteMail {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.debug_struct("RemoteMail")
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Mail for RemoteMail {

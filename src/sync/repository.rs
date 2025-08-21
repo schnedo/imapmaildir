@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use futures::Stream;
 
 use crate::imap::{Uid, UidValidity};
@@ -5,7 +7,7 @@ use enumflags2::{bitflags, BitFlags};
 
 #[bitflags]
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Flag {
     Seen,
     Answered,
@@ -15,12 +17,13 @@ pub enum Flag {
     Recent,
 }
 
+#[derive(Debug)]
 pub struct MailMetadata {
     uid: Uid,
     flags: BitFlags<Flag>,
 }
 
-pub trait Mail: Send {
+pub trait Mail: Send + Debug {
     fn metadata(&self) -> &MailMetadata;
     fn content(&self) -> &[u8];
 }

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use futures::stream::iter;
-use log::debug;
+use log::{debug, trace};
 
 use crate::{
     imap::UidValidity,
@@ -57,6 +57,7 @@ impl Repository for MaildirRepository {
     }
 
     fn store(&self, mail: &impl Mail) {
+        trace!("storing mail {mail:?}");
         self.maildir.store(mail);
         self.state.store(mail.metadata());
     }

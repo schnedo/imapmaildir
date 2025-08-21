@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     fs::{self, read, read_dir, DirBuilder, OpenOptions},
     io::Write,
     os::unix::fs::{DirBuilderExt as _, MetadataExt},
@@ -162,6 +163,14 @@ impl Maildir {
 pub struct LocalMail {
     metadata: MailMetadata,
     content: Vec<u8>,
+}
+
+impl Debug for LocalMail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalMail")
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Mail for LocalMail {
