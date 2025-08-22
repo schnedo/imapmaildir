@@ -24,18 +24,13 @@ impl MaildirRepository {
     ) -> Self {
         let maildir = account_dir.join(mailbox);
         match (
-            maildir
-                .try_exists()
-                .expect("checking maildir existence should not fail"),
+            Maildir::load(maildir.as_path()),
             State::load(state_dir, mailbox),
         ) {
-            (true, Ok(state)) => {
-                let maildir = Maildir::new(maildir.as_path());
-                Self { maildir, state }
-            }
-            (true, Err(_)) => todo!("unmanaged maildir found"),
-            (false, Ok(_)) => todo!("existing state for new maildir found"),
-            (false, Err(_)) => {
+            (Ok(maildir), Ok(state)) => Self { maildir, state },
+            (Ok(_), Err(_)) => todo!("unmanaged maildir found"),
+            (Err(_), Ok(_)) => todo!("existing state for new maildir found"),
+            (Err(_), Err(_)) => {
                 let maildir = Maildir::new(maildir.as_path());
                 let state = State::create_new(state_dir, mailbox, uid_validity);
                 Self { maildir, state }

@@ -8,6 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::{anyhow, Result};
 use log::{info, trace};
 use rustix::system::uname;
 use thiserror::Error;
@@ -40,6 +41,21 @@ impl Maildir {
             .expect("creation of cur subdir should succeed");
 
         Self { new, cur, tmp }
+    }
+
+    pub fn load(maildir_path: &Path) -> Result<Self> {
+        let new = maildir_path.join("new");
+        let cur = maildir_path.join("cur");
+        let tmp = maildir_path.join("tmp");
+        match (new.try_exists(), cur.try_exists(), tmp.try_exists()) {
+            (Ok(true), Ok(true), Ok(true)) => Ok(Self { new, cur, tmp }),
+            (Ok(false), Ok(false), Ok(false)) => Err(anyhow!("no mailbox present")),
+            (Ok(_), Ok(_), Ok(_)) => panic!(
+                "partially initialized maildir detected: {}",
+                maildir_path.to_string_lossy()
+            ),
+            (_, _, _) => panic!("issue with reading {}", maildir_path.to_string_lossy()),
+        }
     }
 
     // Algorithm
