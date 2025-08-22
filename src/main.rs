@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
 
         let mut syncer = Syncer::new(session, maildir_repository);
 
-        syncer.init_a_to_b().await;
+        syncer.init_remote_to_local().await;
 
         Ok(())
     }
