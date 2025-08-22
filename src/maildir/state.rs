@@ -68,7 +68,12 @@ impl State {
             .prepare("select (validity) from mailboxes where name = ?1")
             .expect("uid_validity statement should be preparable");
         let uid_validity = stmt
-            .query_one([mailbox], |row| Ok(UidValidity::new(row.get(0)?)))
+            .query_one([mailbox], |row| {
+                Ok(UidValidity::new(
+                    row.get("validity")
+                        .expect("uid_validity should be set in state"),
+                ))
+            })
             .expect("uid_validity should be selectable");
         drop(stmt);
 
