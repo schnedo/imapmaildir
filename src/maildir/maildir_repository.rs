@@ -17,26 +17,35 @@ pub struct MaildirRepository {
 
 impl MaildirRepository {
     pub fn new(
-        account_dir: &Path,
+        account: &str,
         mailbox: &str,
+        mail_dir: &Path,
         state_dir: &Path,
         uid_validity: UidValidity,
     ) -> Self {
-        let maildir = account_dir.join(mailbox);
         match (
-            Maildir::load(maildir.as_path()),
-            State::load(state_dir, mailbox),
+            Maildir::load(mail_dir, account, mailbox),
+            State::load(state_dir, account, mailbox),
         ) {
-            (Ok(maildir), Ok(state)) => Self { maildir, state },
-            (Ok(_), Err(_)) => todo!("unmanaged maildir found: {}", maildir.to_string_lossy()),
+            (Ok(mail), Ok(state)) => Self {
+                maildir: mail,
+                state,
+            },
+            (Ok(_), Err(_)) => todo!(
+                "unmanaged maildir found: {}/{account}/{mailbox}",
+                mail_dir.to_string_lossy()
+            ),
             (Err(_), Ok(_)) => todo!(
-                "existing state for new maildir {mailbox} found: {}",
-                state_dir.join(mailbox).to_string_lossy()
+                "existing state for new maildir found: {}/{account}",
+                state_dir.to_string_lossy()
             ),
             (Err(_), Err(_)) => {
-                let maildir = Maildir::new(maildir.as_path());
-                let state = State::create_new(state_dir, mailbox, uid_validity);
-                Self { maildir, state }
+                let mail = Maildir::new(mail_dir);
+                let state = State::create_new(state_dir, account, mailbox, uid_validity);
+                Self {
+                    maildir: mail,
+                    state,
+                }
             }
         }
     }

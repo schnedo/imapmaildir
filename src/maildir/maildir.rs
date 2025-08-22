@@ -15,6 +15,7 @@ use thiserror::Error;
 
 use crate::sync::{Flag, Mail, MailMetadata};
 
+#[derive(Debug)]
 pub struct Maildir {
     new: PathBuf,
     cur: PathBuf,
@@ -43,18 +44,30 @@ impl Maildir {
         Self { new, cur, tmp }
     }
 
-    pub fn load(maildir_path: &Path) -> Result<Self> {
+    fn unchecked(mail_dir: &Path, account: &str, mailbox: &str) -> Self {
+        let mut maildir_path = mail_dir.join(account);
+        maildir_path.push(mailbox);
         let new = maildir_path.join("new");
         let cur = maildir_path.join("cur");
         let tmp = maildir_path.join("tmp");
-        match (new.try_exists(), cur.try_exists(), tmp.try_exists()) {
-            (Ok(true), Ok(true), Ok(true)) => Ok(Self { new, cur, tmp }),
+        Self { new, cur, tmp }
+    }
+
+    pub fn load(mail_dir: &Path, account: &str, mailbox: &str) -> Result<Self> {
+        let mail = Self::unchecked(mail_dir, account, mailbox);
+        trace!("creating maildir {mail:?}");
+        match (
+            mail.new.try_exists(),
+            mail.cur.try_exists(),
+            mail.tmp.try_exists(),
+        ) {
+            (Ok(true), Ok(true), Ok(true)) => Ok(mail),
             (Ok(false), Ok(false), Ok(false)) => Err(anyhow!("no mailbox present")),
             (Ok(_), Ok(_), Ok(_)) => panic!(
-                "partially initialized maildir detected: {}",
-                maildir_path.to_string_lossy()
+                "partially initialized maildir detected: {}/{account}/{mailbox}",
+                mail_dir.to_string_lossy()
             ),
-            (_, _, _) => panic!("issue with reading {}", maildir_path.to_string_lossy()),
+            (_, _, _) => panic!("issue with reading {}", mail_dir.to_string_lossy()),
         }
     }
 

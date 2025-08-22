@@ -14,8 +14,14 @@ pub struct State {
 }
 
 impl State {
-    pub fn create_new(state_dir: &Path, mailbox: &str, uid_validity: UidValidity) -> Self {
-        let state_file = Self::prepare_state_file(state_dir, mailbox);
+    pub fn create_new(
+        state_dir: &Path,
+        account: &str,
+        mailbox: &str,
+        uid_validity: UidValidity,
+    ) -> Self {
+        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
+        debug!("creating new state file {}", state_file.to_string_lossy());
         let db = Connection::open_with_flags(
             state_file,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -24,40 +30,28 @@ impl State {
                 | OpenFlags::SQLITE_OPEN_URI,
         )
         .expect("State DB should be creatable");
-
+        db.pragma_update(None, "user_version", u32::from(uid_validity))
+            .expect("setting sqlite user_version to uid_validity should succeed");
         db.execute_batch(
-            "create table if not exists mailboxes (
-                name text primary key,
-                validity integer not null
-            ) without rowid;
-            create table if not exists mail_metadata (
+            "create table if not exists mail_metadata (
                 uid integer primary key,
                 flags integer not null
-            );",
+            ) strict;",
         )
         .expect("creation of tables should succeed");
-        let state = Self { db, uid_validity };
-        state.create_mailbox(mailbox, uid_validity);
-        state
+
+        Self { db, uid_validity }
     }
 
-    fn create_mailbox(&self, mailbox: &str, uid_validity: UidValidity) {
-        let mut stmt = self
-            .db
-            .prepare("insert into mailboxes (name,validity) values (?1,?2)")
-            .expect("mailbox insert statement should be preparable");
-        stmt.execute([mailbox, &uid_validity.to_string()])
-            .expect("creation of new mailbox should succeed");
+    fn prepare_state_file(state_dir: &Path, account: &str, mailbox: &str) -> PathBuf {
+        let mut state_dir = state_dir.join(account);
+        create_dir_all(&state_dir).expect("creation of state_dir should succeed");
+        state_dir.push(mailbox);
+        state_dir
     }
 
-    fn prepare_state_file(state_dir: &Path, mailbox: &str) -> PathBuf {
-        debug!("creating state file {mailbox} in {state_dir:?}");
-        create_dir_all(state_dir).expect("creation of state_dir should succeed");
-        state_dir.join(mailbox)
-    }
-
-    pub fn load(state_dir: &Path, mailbox: &str) -> Result<Self> {
-        let state_file = Self::prepare_state_file(state_dir, mailbox);
+    pub fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self> {
+        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
         let db = Connection::open_with_flags(
             state_file,
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -65,13 +59,12 @@ impl State {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
         let mut stmt = db
-            .prepare("select (validity) from mailboxes where name = ?1")
+            .prepare("select user_version from pragma_user_version;")
             .expect("uid_validity statement should be preparable");
         let uid_validity = stmt
-            .query_one([mailbox], |row| {
+            .query_one([], |row| {
                 Ok(UidValidity::new(
-                    row.get("validity")
-                        .expect("uid_validity should be set in state"),
+                    row.get(0).expect("uid_validity should be set in state"),
                 ))
             })
             .expect("uid_validity should be selectable");
