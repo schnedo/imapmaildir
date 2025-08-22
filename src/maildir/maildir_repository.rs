@@ -28,8 +28,11 @@ impl MaildirRepository {
             State::load(state_dir, mailbox),
         ) {
             (Ok(maildir), Ok(state)) => Self { maildir, state },
-            (Ok(_), Err(_)) => todo!("unmanaged maildir found"),
-            (Err(_), Ok(_)) => todo!("existing state for new maildir found"),
+            (Ok(_), Err(_)) => todo!("unmanaged maildir found: {}", maildir.to_string_lossy()),
+            (Err(_), Ok(_)) => todo!(
+                "existing state for new maildir {mailbox} found: {}",
+                state_dir.join(mailbox).to_string_lossy()
+            ),
             (Err(_), Err(_)) => {
                 let maildir = Maildir::new(maildir.as_path());
                 let state = State::create_new(state_dir, mailbox, uid_validity);
