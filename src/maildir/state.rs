@@ -33,10 +33,14 @@ impl State {
         db.pragma_update(None, "user_version", u32::from(uid_validity))
             .expect("setting sqlite user_version to uid_validity should succeed");
         db.execute_batch(
-            "create table if not exists mail_metadata (
+            "pragma journal_mode=wal;
+            pragma synchronous=1;
+            create table if not exists mail_metadata (
                 uid integer primary key,
                 flags integer not null
-            ) strict;",
+            ) strict;
+            pragma optimize;
+",
         )
         .expect("creation of tables should succeed");
 
@@ -58,17 +62,15 @@ impl State {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
-        let mut stmt = db
-            .prepare("select user_version from pragma_user_version;")
-            .expect("uid_validity statement should be preparable");
-        let uid_validity = stmt
-            .query_one([], |row| {
+        db.pragma_update(None, "journal_mode", 1)
+            .expect("journal_mode should be settable to normal");
+        let uid_validity = db
+            .query_one("select user_version from pragma_user_version;", [], |row| {
                 Ok(UidValidity::new(
                     row.get(0).expect("uid_validity should be set in state"),
                 ))
             })
             .expect("uid_validity should be selectable");
-        drop(stmt);
 
         Ok(Self { db, uid_validity })
     }
@@ -87,5 +89,13 @@ impl State {
             metadata.flags().bits().to_string(),
         ])
         .expect("mail metadata should be insertable");
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        self.db
+            .execute("pragma optimize;", [])
+            .expect("sqlite should be optimizable");
     }
 }
