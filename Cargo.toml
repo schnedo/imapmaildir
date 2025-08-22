@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.98"
 bytes = "1.10.1"
+clap = { version = "4.5.45", features = ["derive"] }
 derive-getters = { version = "0.5.0", features = ["auto_copy_getters"] }
 derive_builder = "0.20.2"
 enumflags2 = "0.7.12"
