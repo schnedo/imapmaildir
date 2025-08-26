@@ -23,8 +23,10 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn new(maildir_path: &Path) -> Self {
-        info!("using mailbox in {maildir_path:#?}");
+    pub fn new(maildir_path: &Path, account: &str, mailbox: &str) -> Self {
+        let mut maildir_path = maildir_path.join(account);
+        maildir_path.push(mailbox);
+        info!("creating mailbox in {maildir_path:#?}");
         let mut builder = DirBuilder::new();
         builder.recursive(true).mode(0o700);
 
@@ -55,7 +57,7 @@ impl Maildir {
 
     pub fn load(mail_dir: &Path, account: &str, mailbox: &str) -> Result<Self> {
         let mail = Self::unchecked(mail_dir, account, mailbox);
-        trace!("creating maildir {mail:?}");
+        trace!("loading maildir {mail:?}");
         match (
             mail.new.try_exists(),
             mail.cur.try_exists(),

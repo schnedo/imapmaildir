@@ -40,7 +40,7 @@ impl MaildirRepository {
                 state_dir.to_string_lossy()
             ),
             (Err(_), Err(_)) => {
-                let mail = Maildir::new(mail_dir);
+                let mail = Maildir::new(mail_dir, account, mailbox);
                 let state = State::create_new(state_dir, account, mailbox, uid_validity);
                 Self {
                     maildir: mail,
