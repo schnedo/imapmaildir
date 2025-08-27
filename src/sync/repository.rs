@@ -37,8 +37,12 @@ impl MailMetadata {
         self.uid
     }
 
-    pub fn flags(&self) -> &BitFlags<Flag> {
-        &self.flags
+    pub fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        self.flags = flags;
     }
 }
 

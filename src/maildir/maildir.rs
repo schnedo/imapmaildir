@@ -9,11 +9,17 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use log::{info, trace};
+use enumflags2::BitFlags;
+use log::{info, trace, warn};
 use rustix::system::uname;
 use thiserror::Error;
 
-use crate::sync::{Flag, Mail, MailMetadata};
+use crate::{
+    imap::Uid,
+    sync::{Flag, Mail, MailMetadata},
+};
+
+use super::state::StateEntry;
 
 #[derive(Debug)]
 pub struct Maildir {
@@ -78,8 +84,8 @@ impl Maildir {
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
     pub fn store(&self, mail: &impl Mail) -> String {
-        let filename = Self::generate_filename();
-        let file_path = self.tmp.join(&filename);
+        let file_prefix = Self::generate_file_prefix();
+        let file_path = self.tmp.join(&file_prefix);
 
         trace!("writing to {file_path:?}");
         let Ok(mut file) = OpenOptions::new()
@@ -95,23 +101,30 @@ impl Maildir {
         file.sync_all()
             .expect("writing new tmp mail to disc should succeed");
 
-        let uid = mail.metadata().uid();
-        let mut flags = String::with_capacity(6);
-        for flag in *mail.metadata().flags() {
-            if let Ok(char_flag) = flag.try_into() {
-                flags.push(char_flag);
-            }
-        }
         fs::rename(
             file_path,
-            self.cur.join(format!("{filename},U={uid}:2,{flags}")),
+            self.cur.join(Self::generate_filename(
+                &file_prefix,
+                mail.metadata().uid(),
+                mail.metadata().flags(),
+            )),
         )
         .expect("moving file from tmp to cur should succeed");
 
-        filename
+        file_prefix
     }
 
-    fn generate_filename() -> String {
+    fn generate_filename(file_prefix: &str, uid: Uid, flags: BitFlags<Flag>) -> String {
+        let mut string_flags = String::with_capacity(6);
+        for flag in flags {
+            if let Ok(char_flag) = flag.try_into() {
+                string_flags.push(char_flag);
+            }
+        }
+        format!("{file_prefix},U={uid}:2,{flags}")
+    }
+
+    fn generate_file_prefix() -> String {
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("should be able to get unix time");
@@ -185,6 +198,40 @@ impl Maildir {
 
     pub fn is_empty(&self) -> bool {
         self.cur.is_empty() && self.new.is_empty() && self.tmp.is_empty()
+    }
+
+    pub fn update(&self, entry: &StateEntry, new_flags: BitFlags<Flag>) {
+        let current_mail = self.cur.join(Self::generate_filename(
+            entry.fileprefix(),
+            entry.metadata().uid(),
+            entry.metadata().flags(),
+        ));
+        let new_name = self.cur.join(Self::generate_filename(
+            entry.fileprefix(),
+            entry.metadata().uid(),
+            new_flags,
+        ));
+        match (
+            current_mail
+                .try_exists()
+                .expect("should be able to check if current_mail exists"),
+            new_name
+                .try_exists()
+                .expect("should be able to check if updated flag name exists"),
+        ) {
+            (true, true) => panic!(
+                "updating {} to {} failed, because both files already exist",
+                current_mail.to_string_lossy(),
+                new_name.to_string_lossy()
+            ),
+            (true, false) => {
+                trace!("updating flags of {current_mail:?}");
+                fs::rename(current_mail, new_name)
+                .expect("updating flags in maildir should succeed");
+            },
+            (false, true) => warn!("ignoring update of {} to {}, because old file does not exist while new one does. May be due to prior crash", current_mail.to_string_lossy(), new_name.to_string_lossy()),
+            (false, false) => panic!("Cannot update flags of {}, because it does not exist", current_mail.to_string_lossy()),
+        }
     }
 }
 

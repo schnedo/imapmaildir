@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use derive_getters::Getters;
 use enumflags2::{BitFlag, BitFlags};
 use log::debug;
 use rusqlite::{types::FromSql, Connection, OpenFlags, OptionalExtension, Result, ToSql};
@@ -12,6 +13,7 @@ use crate::{
     sync::{Flag, MailMetadata},
 };
 
+#[derive(Getters)]
 pub struct StateEntry {
     metadata: MailMetadata,
     fileprefix: String,
@@ -23,6 +25,10 @@ impl StateEntry {
             metadata,
             fileprefix,
         }
+    }
+
+    pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        self.metadata.set_flags(flags);
     }
 }
 
@@ -96,6 +102,15 @@ impl State {
 
     pub fn uid_validity(&self) -> &UidValidity {
         &self.uid_validity
+    }
+
+    pub fn update(&self, data: &StateEntry) {
+        let mut stmt = self
+            .db
+            .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
+            .expect("update metadata statement should be preparable");
+        stmt.execute((data.metadata.flags().bits(), u32::from(data.metadata.uid())))
+            .expect("mail metadata should be updateable");
     }
 
     pub fn store(&self, data: &StateEntry) {
