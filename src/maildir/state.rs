@@ -8,6 +8,20 @@ use rusqlite::{Connection, OpenFlags, Result};
 
 use crate::{imap::UidValidity, sync::MailMetadata};
 
+pub struct StateEntry {
+    metadata: MailMetadata,
+    fileprefix: String,
+}
+
+impl StateEntry {
+    pub fn new(metadata: MailMetadata, fileprefix: String) -> Self {
+        Self {
+            metadata,
+            fileprefix,
+        }
+    }
+}
+
 pub struct State {
     db: Connection,
     uid_validity: UidValidity,
@@ -37,7 +51,8 @@ impl State {
             pragma synchronous=1;
             create table if not exists mail_metadata (
                 uid integer primary key,
-                flags integer not null
+                flags integer not null,
+                fileprefix text not null
             ) strict;
             pragma optimize;
 ",
@@ -79,15 +94,16 @@ impl State {
         &self.uid_validity
     }
 
-    pub fn store(&self, metadata: &MailMetadata) {
+    pub fn store(&self, data: &StateEntry) {
         let mut stmt = self
             .db
-            .prepare_cached("insert into mail_metadata (uid,flags) values (?1,?2)")
+            .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")
             .expect("insert mail metadata statement should be preparable");
-        stmt.execute([
-            metadata.uid().to_string(),
-            metadata.flags().bits().to_string(),
-        ])
+        stmt.execute((
+            u32::from(data.metadata.uid()),
+            data.metadata.flags().bits(),
+            &data.fileprefix,
+        ))
         .expect("mail metadata should be insertable");
     }
 }

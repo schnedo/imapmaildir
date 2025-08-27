@@ -17,7 +17,7 @@ pub enum Flag {
     Recent,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct MailMetadata {
     uid: Uid,
     flags: BitFlags<Flag>,

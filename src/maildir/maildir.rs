@@ -77,7 +77,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store(&self, mail: &impl Mail) {
+    pub fn store(&self, mail: &impl Mail) -> String {
         let filename = Self::generate_filename();
         let file_path = self.tmp.join(&filename);
 
@@ -96,10 +96,6 @@ impl Maildir {
             .expect("writing new tmp mail to disc should succeed");
 
         let uid = mail.metadata().uid();
-        let meta = file
-            .metadata()
-            .expect("reading tmp file metadata should succeed");
-        let size = meta.size();
         let mut flags = String::with_capacity(6);
         for flag in *mail.metadata().flags() {
             if let Ok(char_flag) = flag.try_into() {
@@ -108,10 +104,11 @@ impl Maildir {
         }
         fs::rename(
             file_path,
-            self.cur
-                .join(format!("{filename},S={size},U={uid}:2,{flags}")),
+            self.cur.join(format!("{filename},U={uid}:2,{flags}")),
         )
         .expect("moving file from tmp to cur should succeed");
+
+        filename
     }
 
     fn generate_filename() -> String {

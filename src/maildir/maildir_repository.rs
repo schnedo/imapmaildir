@@ -5,6 +5,7 @@ use log::{debug, trace};
 
 use crate::{
     imap::UidValidity,
+    maildir::state::StateEntry,
     sync::{Mail, MailMetadata, Repository},
 };
 
@@ -66,7 +67,8 @@ impl Repository for MaildirRepository {
 
     fn store(&self, mail: &impl Mail) {
         trace!("storing mail {mail:?}");
-        self.maildir.store(mail);
-        self.state.store(mail.metadata());
+        let filename = self.maildir.store(mail);
+        self.state
+            .store(&StateEntry::new(*mail.metadata(), filename));
     }
 }

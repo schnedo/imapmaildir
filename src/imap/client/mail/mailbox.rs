@@ -48,7 +48,7 @@ impl ToString for UidValidity {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct Uid(u32);
 
 impl From<&u32> for Uid {
