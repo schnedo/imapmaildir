@@ -53,7 +53,7 @@ impl MaildirRepository {
 }
 
 impl Repository for MaildirRepository {
-    fn validity(&self) -> &UidValidity {
+    fn validity(&self) -> UidValidity {
         self.state.uid_validity()
     }
 

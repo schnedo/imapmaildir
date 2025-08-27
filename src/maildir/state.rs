@@ -100,8 +100,8 @@ impl State {
         Ok(Self { db, uid_validity })
     }
 
-    pub fn uid_validity(&self) -> &UidValidity {
-        &self.uid_validity
+    pub fn uid_validity(&self) -> UidValidity {
+        self.uid_validity
     }
 
     pub fn update(&self, data: &StateEntry) {
