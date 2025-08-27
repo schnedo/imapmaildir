@@ -9,7 +9,7 @@ mod sync;
 use anyhow::Result;
 use clap::Parser;
 use config::Config;
-use imap::{Client, Connection};
+use imap::{Client, Connection, ImapRepository};
 use maildir::MaildirRepository;
 use nuke::nuke;
 use sync::Syncer;
@@ -33,15 +33,19 @@ async fn main() -> Result<()> {
         nuke(&config);
         Ok(())
     } else {
-        let (connection, _) = Connection::connect_to(config.host(), config.port()).await;
-        let client = Client::new(connection);
-        let mut session = client.login(config.user(), &config.password()).await?;
         let mailbox = config
             .mailboxes()
             .first()
             .expect("there should be one mailbox set");
 
-        let uid_validity = session.select(mailbox).await?;
+        let imap_repository = ImapRepository::try_connect(
+            config.host(),
+            config.port(),
+            config.user(),
+            &config.password(),
+            mailbox,
+        );
+        let uid_validity = imap_repository.validity();
         let maildir_repository = MaildirRepository::new(
             config.account(),
             mailbox,
