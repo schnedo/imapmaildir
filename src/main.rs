@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
             mailbox,
             config.maildir(),
             config.statedir(),
-            *uid_validity,
+            uid_validity,
         );
 
         let mut syncer = Syncer::new(session, maildir_repository);

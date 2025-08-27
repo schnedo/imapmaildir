@@ -203,7 +203,7 @@ mod tests {
         );
         assert_eq!(
             mailbox.uid_validity(),
-            &mailbox::UidValidity::new(uid_validity)
+            mailbox::UidValidity::new(uid_validity)
         );
     }
 }

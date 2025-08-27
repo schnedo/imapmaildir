@@ -25,7 +25,7 @@ impl<T: SendCommand> Session<T> {
         }
     }
 
-    pub async fn select<'b>(&'b mut self, mailbox: &str) -> Result<&'b UidValidity, SelectError> {
+    pub async fn select(&mut self, mailbox: &str) -> Result<UidValidity, SelectError> {
         match select(&mut self.connection, mailbox).await {
             Ok(mailbox) => {
                 self.selected_mailbox = Some(mailbox);
@@ -58,7 +58,7 @@ impl<T> Repository for Session<T>
 where
     T: SendCommand,
 {
-    fn validity(&self) -> &UidValidity {
+    fn validity(&self) -> UidValidity {
         if let Some(mailbox) = &self.selected_mailbox {
             mailbox.uid_validity()
         } else {

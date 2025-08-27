@@ -17,8 +17,19 @@ pub struct Mailbox {
     unseen: Option<u32>,
     #[builder(default)]
     permanent_flags: Vec<String>,
+    #[getter(skip)]
     uid_validity: UidValidity,
+    #[getter(skip)]
     uid_next: Uid,
+}
+
+impl Mailbox {
+    pub fn uid_validity(&self) -> UidValidity {
+        self.uid_validity
+    }
+    pub fn uid_next(&self) -> Uid {
+        self.uid_next
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Copy)]
