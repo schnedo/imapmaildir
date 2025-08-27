@@ -3,10 +3,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use enumflags2::{BitFlag, BitFlags};
 use log::debug;
-use rusqlite::{Connection, OpenFlags, Result};
+use rusqlite::{types::FromSql, Connection, OpenFlags, OptionalExtension, Result, ToSql};
 
-use crate::{imap::UidValidity, sync::MailMetadata};
+use crate::{
+    imap::{Uid, UidValidity},
+    sync::{Flag, MailMetadata},
+};
 
 pub struct StateEntry {
     metadata: MailMetadata,
@@ -105,6 +109,38 @@ impl State {
             &data.fileprefix,
         ))
         .expect("mail metadata should be insertable");
+    }
+
+    pub fn exists(&self, uid: Uid) -> Option<StateEntry> {
+        let mut stmt = self
+            .db
+            .prepare_cached("select * from mail_metadata where uid = ?1")
+            .expect("selection of existing mails should be preparable");
+        stmt.query_one([u32::from(uid)], |row| {
+            Ok(StateEntry {
+                metadata: MailMetadata::new(
+                    row.get(0)
+                        .expect("first index of state entry row should be readable"),
+                    Flag::from_bits_truncate(
+                        row.get(1)
+                            .expect("second index of state entry row should be readable"),
+                    ),
+                ),
+                fileprefix: row
+                    .get(2)
+                    .expect("third index of state entry row should be readable"),
+            })
+        })
+        .optional()
+        .expect("existence of uid should be queryable")
+    }
+}
+
+impl FromSql for Uid {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        i64::column_result(value).map(|as_i64| {
+            Uid::from(u32::try_from(as_i64).expect("parsing uid field in sqlite should succeed"))
+        })
     }
 }
 

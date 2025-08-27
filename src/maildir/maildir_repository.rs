@@ -67,8 +67,12 @@ impl Repository for MaildirRepository {
 
     fn store(&self, mail: &impl Mail) {
         trace!("storing mail {mail:?}");
-        let filename = self.maildir.store(mail);
-        self.state
-            .store(&StateEntry::new(*mail.metadata(), filename));
+        if let Some(entry) = self.state.exists(mail.metadata().uid()) {
+            todo!("handle mail already present in state")
+        } else {
+            let filename = self.maildir.store(mail);
+            self.state
+                .store(&StateEntry::new(*mail.metadata(), filename));
+        }
     }
 }

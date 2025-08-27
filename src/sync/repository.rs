@@ -33,8 +33,8 @@ impl MailMetadata {
         Self { uid, flags }
     }
 
-    pub fn uid(&self) -> &Uid {
-        &self.uid
+    pub fn uid(&self) -> Uid {
+        self.uid
     }
 
     pub fn flags(&self) -> &BitFlags<Flag> {
