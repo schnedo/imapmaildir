@@ -4,6 +4,8 @@ use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 use tokio_util::codec::Framed;
 
+use crate::imap::imap_repository::Connector;
+
 use super::{
     codec::{ImapCodec, ResponseData},
     response_stream::ResponseStream,
@@ -18,8 +20,10 @@ pub struct Connection {
     tag_generator: TagGenerator,
 }
 
-impl Connection {
-    pub async fn connect_to(host: &str, port: u16) -> (Self, ResponseData) {
+impl Connector for Connection {
+    type Connection = Self;
+
+    async fn connect_to(host: &str, port: u16) -> (Self::Connection, ResponseData) {
         debug!("Connecting to server");
         let tls = native_tls::TlsConnector::new().expect("native tls should be available");
         let tls = TlsConnector::from(tls);
@@ -37,7 +41,7 @@ impl Connection {
         trace!("greeting = {response_data:?}");
 
         (
-            Connection {
+            Self {
                 stream,
                 tag_generator: TagGenerator::default(),
             },
@@ -49,7 +53,7 @@ impl Connection {
 impl SendCommand for Connection {
     type Responses<'a> = ResponseStream<'a>;
 
-    fn send<'a>(&'a mut self, command: String) -> Self::Responses<'a> {
+    fn send(&mut self, command: String) -> Self::Responses<'_> {
         ResponseStream::new(&mut self.stream, &mut self.tag_generator, command)
     }
 }

@@ -4,20 +4,27 @@ use anyhow::Result;
 use super::{connection::ResponseData, Client, SendCommand, Session};
 
 pub trait Connector {
-    type Command: SendCommand;
+    type Connection: SendCommand;
 
-    async fn connect_to(host: &str, port: u16) -> (Self::Command, ResponseData);
+    async fn connect_to(host: &str, port: u16) -> (Self::Connection, ResponseData);
 }
 
 pub struct ImapRepository<T: SendCommand> {
     session: Session<T>,
 }
 
-impl<T: Connector> ImapRepository<T::Command> {
-    pub async fn try_connect(host: &str, port: u16, user: &str, password: &str) -> Result<Self> {
-        let (connection, _) = T::connect_to(host, port).await;
+impl<T: SendCommand> ImapRepository<T> {
+    pub async fn try_connect<C: Connector<Connection = T>>(
+        host: &str,
+        port: u16,
+        user: &str,
+        password: &str,
+        mailbox: &str,
+    ) -> Result<Self> {
+        let (connection, _) = C::connect_to(host, port).await;
         let client = Client::new(connection);
-        let session = client.login(user, password).await?;
+        let mut session = client.login(user, password).await?;
+        session.select(mailbox).await?;
         Ok(Self { session })
     }
 }

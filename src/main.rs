@@ -9,9 +9,10 @@ mod sync;
 use anyhow::Result;
 use clap::Parser;
 use config::Config;
-use imap::{Client, Connection};
+use imap::{Client, Connection, ImapRepository};
 use maildir::MaildirRepository;
 use nuke::nuke;
+use sync::Repository;
 use sync::Syncer;
 
 #[derive(Parser, Debug)]
@@ -33,15 +34,21 @@ async fn main() -> Result<()> {
         nuke(&config);
         Ok(())
     } else {
-        let (connection, _) = Connection::connect_to(config.host(), config.port()).await;
-        let client = Client::new(connection);
-        let mut session = client.login(config.user(), &config.password()).await?;
         let mailbox = config
             .mailboxes()
             .first()
             .expect("there should be one mailbox set");
 
-        let uid_validity = session.select(mailbox).await?;
+        let imap_repository = ImapRepository::try_connect::<Connection>(
+            config.host(),
+            config.port(),
+            config.user(),
+            &config.password(),
+            mailbox,
+        )
+        .await
+        .expect("connecting imap repository should not fail");
+        let uid_validity = imap_repository.validity();
         let maildir_repository = MaildirRepository::new(
             config.account(),
             mailbox,
@@ -50,7 +57,7 @@ async fn main() -> Result<()> {
             uid_validity,
         );
 
-        let mut syncer = Syncer::new(session, maildir_repository);
+        let mut syncer = Syncer::new(imap_repository, maildir_repository);
 
         syncer.init_remote_to_local().await;
 
