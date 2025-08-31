@@ -4,11 +4,11 @@ use thiserror::Error;
 
 use crate::imap::{client::mail::Session, connection::SendCommand};
 
-pub struct Client<T: SendCommand> {
+pub struct Authenticator<T: SendCommand> {
     connection: T,
 }
 
-impl<T: SendCommand> Client<T> {
+impl<T: SendCommand> Authenticator<T> {
     pub fn new(connection: T) -> Self {
         Self { connection }
     }
@@ -66,7 +66,7 @@ mod tests {
             information: Some(std::borrow::Cow::Borrowed("Logged in")),
         }]];
         let mock_connection = MockConnection::new(mock_responses);
-        let client = Client::new(mock_connection);
+        let client = Authenticator::new(mock_connection);
 
         let maybe_session = client.login("name", "password").await;
 
@@ -84,7 +84,7 @@ mod tests {
             )),
         }]];
         let mock_connection = MockConnection::new(mock_responses);
-        let client = Client::new(mock_connection);
+        let client = Authenticator::new(mock_connection);
 
         let maybe_session = client.login("name", "password").await;
 

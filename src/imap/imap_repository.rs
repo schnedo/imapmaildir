@@ -1,7 +1,7 @@
 use crate::sync::Repository;
 use anyhow::Result;
 
-use super::{connection::ResponseData, Client, SendCommand, Session};
+use super::{connection::ResponseData, Authenticator, SendCommand, Session};
 
 pub trait Connector {
     type Connection: SendCommand;
@@ -22,7 +22,7 @@ impl<T: SendCommand> ImapRepository<T> {
         mailbox: &str,
     ) -> Result<Self> {
         let (connection, _) = C::connect_to(host, port).await;
-        let client = Client::new(connection);
+        let client = Authenticator::new(connection);
         let mut session = client.login(user, password).await?;
         session.select(mailbox).await?;
         Ok(Self { session })

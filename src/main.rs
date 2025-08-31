@@ -9,7 +9,7 @@ mod sync;
 use anyhow::Result;
 use clap::Parser;
 use config::Config;
-use imap::{Client, Connection, ImapRepository};
+use imap::{Authenticator, Connection, ImapRepository};
 use maildir::MaildirRepository;
 use nuke::nuke;
 use sync::Repository;

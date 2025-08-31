@@ -2,7 +2,7 @@ mod client;
 mod connection;
 mod imap_repository;
 
-pub use client::Client;
+pub use client::Authenticator;
 pub use client::RemoteMail;
 pub use client::SequenceSet;
 pub use client::Session;

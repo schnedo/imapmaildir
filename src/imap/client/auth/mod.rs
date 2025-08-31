@@ -1,3 +1,3 @@
-mod client;
+mod authenticator;
 
-pub use client::Client;
+pub use authenticator::Authenticator;
