@@ -2,7 +2,7 @@ use crate::sync::Repository;
 use anyhow::Result;
 
 use super::{
-    Authenticator, SendCommand, SequenceSet, Session,
+    Authenticator, SendCommand, SequenceSet, Session, Uid,
     client::{Mailbox, fetch, fetch_metadata},
     connection::ResponseData,
 };
@@ -51,7 +51,7 @@ impl<T: SendCommand> Repository for ImapRepository<T> {
             .fetch(&SequenceSet::range(1, self.mailbox.uid_next().into()))
     }
 
-    fn store(&self, mail: &impl crate::sync::Mail) {
+    fn store(&self, mail: &impl crate::sync::Mail) -> Option<Uid> {
         todo!()
     }
 }

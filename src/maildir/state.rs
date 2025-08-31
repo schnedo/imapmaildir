@@ -117,17 +117,35 @@ impl State {
         .expect("mail metadata should be updateable");
     }
 
-    pub fn store(&self, data: &StateEntry) {
-        let mut stmt = self
-            .db
-            .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")
-            .expect("insert mail metadata statement should be preparable");
-        stmt.execute((
-            data.metadata().uid().map_or(0, Into::into),
-            data.metadata.flags().bits(),
-            &data.fileprefix,
-        ))
-        .expect("mail metadata should be insertable");
+    pub fn store(&self, data: &StateEntry) -> Option<Uid> {
+        if let Some(uid) = data.metadata().uid() {
+            let mut stmt = self
+                .db
+                .prepare_cached(
+                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+                )
+                .expect("insert mail metadata statement should be preparable");
+            stmt.execute((
+                u32::from(uid),
+                data.metadata.flags().bits(),
+                &data.fileprefix,
+            ))
+            .expect("mail metadata should be insertable");
+            None
+        } else {
+            let mut stmt = self
+                .db
+                .prepare_cached("insert into mail_metadata (flags,fileprefix) values (?1,?2)")
+                .expect("insert mail metadata statement should be preparable");
+            stmt.execute((data.metadata.flags().bits(), &data.fileprefix))
+                .expect("mail metadata should be insertable");
+            Some(Uid::from(
+                self.db
+                    .last_insert_rowid()
+                    .try_into()
+                    .expect("newly stored mail id should be parsable to Uid"),
+            ))
+        }
     }
 
     pub fn exists(&self, uid: Option<Uid>) -> Option<StateEntry> {

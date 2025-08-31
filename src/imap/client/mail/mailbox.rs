@@ -87,6 +87,20 @@ impl TryFrom<u32> for Uid {
     }
 }
 
+impl TryFrom<i64> for Uid {
+    type Error = &'static str;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if let Ok(num) = value.try_into() {
+            NonZeroU32::new(num)
+                .ok_or("Cannot convert u32 to nonzero")
+                .map(|nz| Self(nz))
+        } else {
+            Err("i64 too large")
+        }
+    }
+}
+
 impl From<Uid> for u32 {
     fn from(value: Uid) -> Self {
         value.0.into()

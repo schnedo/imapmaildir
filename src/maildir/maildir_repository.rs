@@ -4,7 +4,7 @@ use futures::stream::iter;
 use log::{debug, trace};
 
 use crate::{
-    imap::UidValidity,
+    imap::{Uid, UidValidity},
     maildir::state::StateEntry,
     sync::{Mail, MailMetadata, Repository},
 };
@@ -65,8 +65,10 @@ impl Repository for MaildirRepository {
         iter(self.maildir.get_cur())
     }
 
-    fn store(&self, mail: &impl Mail) {
-        if let Some(mut entry) = self.state.exists(mail.metadata().uid()) {
+    fn store(&self, mail: &impl Mail) -> Option<Uid> {
+        if let Some(uid) = mail.metadata().uid()
+            && let Some(mut entry) = self.state.exists(mail.metadata().uid())
+        {
             trace!("handling existing mail {mail:?}");
             if entry.metadata().flags() != mail.metadata().flags() {
                 trace!("updating mail {mail:?}");
@@ -75,11 +77,12 @@ impl Repository for MaildirRepository {
                 entry.set_flags(new_flags);
                 self.state.update(&entry);
             }
+            None
         } else {
             trace!("storing mail {mail:?}");
             let filename = self.maildir.store(mail);
             self.state
-                .store(&StateEntry::new(*mail.metadata(), filename));
+                .store(&StateEntry::new(*mail.metadata(), filename))
         }
     }
 }
