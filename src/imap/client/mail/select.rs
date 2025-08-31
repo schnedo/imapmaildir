@@ -65,7 +65,8 @@ pub async fn select(
                     new_mailbox.permanent_flags(flags);
                 }
                 UidNext(next) => {
-                    new_mailbox.uid_next(next.into());
+                    new_mailbox
+                        .uid_next(next.try_into().expect("server should send valid uidnext"));
                 }
                 UidValidity(validity) => {
                     new_mailbox.uid_validity((*validity).into());

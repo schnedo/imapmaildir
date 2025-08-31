@@ -1,4 +1,5 @@
 use std::{
+    convert::Into,
     fs::create_dir_all,
     path::{Path, PathBuf},
 };
@@ -6,7 +7,7 @@ use std::{
 use derive_getters::Getters;
 use enumflags2::{BitFlag, BitFlags};
 use log::debug;
-use rusqlite::{types::FromSql, Connection, OpenFlags, OptionalExtension, Result, ToSql};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, ToSql, types::FromSql};
 
 use crate::{
     imap::{Uid, UidValidity},
@@ -109,8 +110,11 @@ impl State {
             .db
             .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
             .expect("update metadata statement should be preparable");
-        stmt.execute((data.metadata.flags().bits(), u32::from(data.metadata.uid())))
-            .expect("mail metadata should be updateable");
+        stmt.execute((
+            data.metadata.flags().bits(),
+            data.metadata().uid().map_or(0, Into::into),
+        ))
+        .expect("mail metadata should be updateable");
     }
 
     pub fn store(&self, data: &StateEntry) {
@@ -119,28 +123,29 @@ impl State {
             .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")
             .expect("insert mail metadata statement should be preparable");
         stmt.execute((
-            u32::from(data.metadata.uid()),
+            data.metadata().uid().map_or(0, Into::into),
             data.metadata.flags().bits(),
             &data.fileprefix,
         ))
         .expect("mail metadata should be insertable");
     }
 
-    pub fn exists(&self, uid: Uid) -> Option<StateEntry> {
+    pub fn exists(&self, uid: Option<Uid>) -> Option<StateEntry> {
         let mut stmt = self
             .db
             .prepare_cached("select * from mail_metadata where uid = ?1")
             .expect("selection of existing mails should be preparable");
-        stmt.query_one([u32::from(uid)], |row| {
+        stmt.query_one([uid.map_or(0, Into::into)], |row| {
+            let uid: u32 = row
+                .get(0)
+                .expect("first index of state entry row should be readable");
+            let uid = Uid::try_from(uid).ok();
+            let flags = Flag::from_bits_truncate(
+                row.get(1)
+                    .expect("second index of state entry row should be readable"),
+            );
             Ok(StateEntry {
-                metadata: MailMetadata::new(
-                    row.get(0)
-                        .expect("first index of state entry row should be readable"),
-                    Flag::from_bits_truncate(
-                        row.get(1)
-                            .expect("second index of state entry row should be readable"),
-                    ),
-                ),
+                metadata: MailMetadata::new(uid, flags),
                 fileprefix: row
                     .get(2)
                     .expect("third index of state entry row should be readable"),
@@ -148,14 +153,6 @@ impl State {
         })
         .optional()
         .expect("existence of uid should be queryable")
-    }
-}
-
-impl FromSql for Uid {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        i64::column_result(value).map(|as_i64| {
-            Uid::from(u32::try_from(as_i64).expect("parsing uid field in sqlite should succeed"))
-        })
     }
 }
 

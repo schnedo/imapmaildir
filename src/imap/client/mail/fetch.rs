@@ -10,8 +10,8 @@ use thiserror::Error;
 
 use crate::{
     imap::{
-        connection::{ResponseData, SendCommand},
         Uid,
+        connection::{ResponseData, SendCommand},
     },
     sync::{Flag, Mail, MailMetadata},
 };
@@ -72,7 +72,7 @@ pub fn fetch_metadata<'a, T: SendCommand>(
                         })
                         .collect();
 
-                    Some(MailMetadata::new(Uid::from(*uid), mail_flags))
+                    Some(MailMetadata::new(Uid::try_from(uid).ok(), mail_flags))
                 } else {
                     panic!("wrong format of FETCH response. check order of attributes in command");
                 }
@@ -106,8 +106,11 @@ pub fn fetch<'a, T: SendCommand>(
     responses.filter_map(|response| async move {
         match response.parsed() {
             Response::Fetch(_, attributes) => {
-                if let [AttributeValue::Uid(uid), AttributeValue::Flags(flags), AttributeValue::Rfc822(Some(content))] =
-                    attributes.as_slice()
+                if let [
+                    AttributeValue::Uid(uid),
+                    AttributeValue::Flags(flags),
+                    AttributeValue::Rfc822(Some(content)),
+                ] = attributes.as_slice()
                 {
                     trace!("{flags:?}");
                     let mail_flags = flags
@@ -116,7 +119,7 @@ pub fn fetch<'a, T: SendCommand>(
                         .collect();
 
                     Some(RemoteMail {
-                        metadata: MailMetadata::new(Uid::from(uid), mail_flags),
+                        metadata: MailMetadata::new(Uid::try_from(uid).ok(), mail_flags),
                         content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
                         response,
                     })
@@ -126,9 +129,7 @@ pub fn fetch<'a, T: SendCommand>(
             }
             Response::Done {
                 status: Status::Ok, ..
-            } => {
-                None
-            }
+            } => None,
             Response::Done { information, .. } => {
                 if let Some(information) = information {
                     panic!("{information}");

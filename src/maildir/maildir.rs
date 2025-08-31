@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    fs::{self, read, read_dir, DirBuilder, OpenOptions},
+    fs::{self, DirBuilder, OpenOptions, read, read_dir},
     io::Write,
     os::unix::fs::{DirBuilderExt as _, MetadataExt},
     path::{Path, PathBuf},
@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
 use log::{info, trace, warn};
 use rustix::system::uname;
@@ -114,14 +114,18 @@ impl Maildir {
         file_prefix
     }
 
-    fn generate_filename(file_prefix: &str, uid: Uid, flags: BitFlags<Flag>) -> String {
+    fn generate_filename(file_prefix: &str, uid: Option<Uid>, flags: BitFlags<Flag>) -> String {
         let mut string_flags = String::with_capacity(6);
         for flag in flags {
             if let Ok(char_flag) = flag.try_into() {
                 string_flags.push(char_flag);
             }
         }
-        format!("{file_prefix},U={uid}:2,{flags}")
+        if let Some(uid) = uid {
+            format!("{file_prefix},U={uid}:2,{flags}")
+        } else {
+            format!("{file_prefix}:2,{flags}")
+        }
     }
 
     fn generate_file_prefix() -> String {
@@ -158,7 +162,8 @@ impl Maildir {
                     .0
                     .parse::<u32>()
                     .expect("uid field should be u32")
-                    .into();
+                    .try_into()
+                    .ok();
 
                 MailMetadata::new(uid, flags)
             })
@@ -186,7 +191,8 @@ impl Maildir {
                     .0
                     .parse::<u32>()
                     .expect("uid field should be u32")
-                    .into();
+                    .try_into()
+                    .ok();
                 let content = read(entry.path()).expect("mail should be readable");
 
                 LocalMail {
@@ -227,10 +233,17 @@ impl Maildir {
             (true, false) => {
                 trace!("updating flags of {current_mail:?}");
                 fs::rename(current_mail, new_name)
-                .expect("updating flags in maildir should succeed");
-            },
-            (false, true) => warn!("ignoring update of {} to {}, because old file does not exist while new one does. May be due to prior crash", current_mail.to_string_lossy(), new_name.to_string_lossy()),
-            (false, false) => panic!("Cannot update flags of {}, because it does not exist", current_mail.to_string_lossy()),
+                    .expect("updating flags in maildir should succeed");
+            }
+            (false, true) => warn!(
+                "ignoring update of {} to {}, because old file does not exist while new one does. May be due to prior crash",
+                current_mail.to_string_lossy(),
+                new_name.to_string_lossy()
+            ),
+            (false, false) => panic!(
+                "Cannot update flags of {}, because it does not exist",
+                current_mail.to_string_lossy()
+            ),
         }
     }
 }

@@ -60,38 +60,41 @@ impl ToString for UidValidity {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub struct Uid(Option<NonZeroU32>);
+#[repr(transparent)]
+pub struct Uid(NonZeroU32);
 
-impl From<&u32> for Uid {
-    fn from(value: &u32) -> Self {
-        Self(NonZeroU32::new(*value))
+impl TryFrom<&u32> for Uid {
+    type Error = <Self as TryFrom<u32>>::Error;
+
+    fn try_from(value: &u32) -> Result<Self, Self::Error> {
+        Self::try_from(*value)
     }
 }
 
 impl Display for Uid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(nz) = self.0 {
-            nz.fmt(f)
-        } else {
-            0.fmt(f)
-        }
+        self.0.fmt(f)
     }
 }
 
-impl From<u32> for Uid {
-    fn from(value: u32) -> Self {
-        Self(NonZeroU32::new(value))
+impl TryFrom<u32> for Uid {
+    type Error = &'static str;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Self(
+            NonZeroU32::new(value).ok_or("Cannot convert u32 to nonzero")?,
+        ))
     }
 }
 
 impl From<Uid> for u32 {
     fn from(value: Uid) -> Self {
-        value.0.map_or(0, std::convert::Into::into)
+        value.0.into()
     }
 }
 
 impl From<&Uid> for u32 {
     fn from(value: &Uid) -> Self {
-        value.0.map_or(0, std::convert::Into::into)
+        value.0.into()
     }
 }
