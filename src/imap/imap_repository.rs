@@ -22,8 +22,8 @@ impl<T: SendCommand> ImapRepository<T> {
         mailbox: &str,
     ) -> Result<Self> {
         let (connection, _) = C::connect_to(host, port).await;
-        let client = Authenticator::new(connection);
-        let mut session = client.login(user, password).await?;
+        let authenticator = Authenticator::new(user, password);
+        let mut session = authenticator.authenticate(connection).await?;
         session.select(mailbox).await?;
         Ok(Self { session })
     }

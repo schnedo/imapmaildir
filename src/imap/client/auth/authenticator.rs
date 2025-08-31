@@ -4,20 +4,24 @@ use thiserror::Error;
 
 use crate::imap::{client::mail::Session, connection::SendCommand};
 
-pub struct Authenticator<T: SendCommand> {
-    connection: T,
+pub struct Authenticator<'a> {
+    username: &'a str,
+    password: &'a str,
 }
 
-impl<T: SendCommand> Authenticator<T> {
-    pub fn new(connection: T) -> Self {
-        Self { connection }
+impl<'a> Authenticator<'a> {
+    pub fn new(username: &'a str, password: &'a str) -> Self {
+        Self { username, password }
     }
 
-    pub async fn login(mut self, username: &str, password: &str) -> Result<Session<T>, LoginError> {
+    pub async fn authenticate<T: SendCommand>(
+        &self,
+        mut connection: T,
+    ) -> Result<Session<T>, LoginError> {
         debug!("LOGIN <user> <password>");
-        let command = format!("LOGIN {username} {password}");
+        let command = format!("LOGIN {} {}", self.username, self.password);
         let response = {
-            let mut responses = self.connection.send(command);
+            let mut responses = connection.send(command);
             responses
                 .next()
                 .await
@@ -33,7 +37,7 @@ impl<T: SendCommand> Authenticator<T> {
             match status {
                 imap_proto::Status::Ok => {
                     trace!("{code:?}");
-                    Ok(Session::new(self.connection))
+                    Ok(Session::new(connection))
                 },
                 imap_proto::Status::No => Err(LoginError),
                 imap_proto::Status::Bad => panic!("Login command unknown or invalid arguments. This is an unrecoverable issue in code."),
@@ -66,9 +70,9 @@ mod tests {
             information: Some(std::borrow::Cow::Borrowed("Logged in")),
         }]];
         let mock_connection = MockConnection::new(mock_responses);
-        let client = Authenticator::new(mock_connection);
+        let authenticator = Authenticator::new("name", "password");
 
-        let maybe_session = client.login("name", "password").await;
+        let maybe_session = authenticator.authenticate(mock_connection).await;
 
         assert!(matches!(maybe_session, Ok(Session { .. })));
     }
@@ -84,9 +88,9 @@ mod tests {
             )),
         }]];
         let mock_connection = MockConnection::new(mock_responses);
-        let client = Authenticator::new(mock_connection);
+        let authenticator = Authenticator::new("name", "password");
 
-        let maybe_session = client.login("name", "password").await;
+        let maybe_session = authenticator.authenticate(mock_connection).await;
 
         assert!(matches!(maybe_session, Err(LoginError)));
     }
