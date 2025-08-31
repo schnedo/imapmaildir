@@ -1,6 +1,6 @@
 #![expect(clippy::ref_option)]
 
-use std::fmt::Display;
+use std::{fmt::Display, num::NonZeroU32};
 
 use derive_builder::Builder;
 use derive_getters::Getters;
@@ -60,34 +60,38 @@ impl ToString for UidValidity {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub struct Uid(u32);
+pub struct Uid(Option<NonZeroU32>);
 
 impl From<&u32> for Uid {
     fn from(value: &u32) -> Self {
-        Self(*value)
+        Self(NonZeroU32::new(*value))
     }
 }
 
 impl Display for Uid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        if let Some(nz) = self.0 {
+            nz.fmt(f)
+        } else {
+            0.fmt(f)
+        }
     }
 }
 
 impl From<u32> for Uid {
     fn from(value: u32) -> Self {
-        Self(value)
+        Self(NonZeroU32::new(value))
     }
 }
 
 impl From<Uid> for u32 {
     fn from(value: Uid) -> Self {
-        value.0
+        value.0.map_or(0, std::convert::Into::into)
     }
 }
 
 impl From<&Uid> for u32 {
     fn from(value: &Uid) -> Self {
-        value.0
+        value.0.map_or(0, std::convert::Into::into)
     }
 }
