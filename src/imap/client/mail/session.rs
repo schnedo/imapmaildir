@@ -14,28 +14,15 @@ use super::{
 
 pub struct Session<T: SendCommand> {
     connection: T,
-    selected_mailbox: Option<Mailbox>,
 }
 
 impl<T: SendCommand> Session<T> {
     pub fn new(connection: T) -> Self {
-        Self {
-            connection,
-            selected_mailbox: None,
-        }
+        Self { connection }
     }
 
-    pub async fn select(&mut self, mailbox: &str) -> Result<UidValidity, SelectError> {
-        match select(&mut self.connection, mailbox).await {
-            Ok(mailbox) => {
-                self.selected_mailbox = Some(mailbox);
-                Ok(self.selected_mailbox.as_ref().unwrap().uid_validity())
-            }
-            Err(e) => {
-                self.selected_mailbox = None;
-                Err(e)
-            }
-        }
+    pub async fn select(&mut self, mailbox: &str) -> Result<Mailbox, SelectError> {
+        select(&mut self.connection, mailbox).await
     }
 
     pub async fn idle(&mut self) {
@@ -46,49 +33,24 @@ impl<T: SendCommand> Session<T> {
         &'a mut self,
         sequence_set: &SequenceSet,
     ) -> impl Stream<Item = RemoteMail> + use<'a, T> {
-        if self.selected_mailbox.is_some() {
-            fetch(&mut self.connection, sequence_set)
-        } else {
-            panic!("no mailbox selected");
-        }
+        fetch(&mut self.connection, sequence_set)
+    }
+
+    pub fn fetch_metadata(
+        &mut self,
+        sequence_set: &SequenceSet,
+    ) -> impl futures::Stream<Item = crate::sync::MailMetadata> + use<'_, T> {
+        fetch_metadata(&mut self.connection, sequence_set)
     }
 }
 
-impl<T> Repository for Session<T>
-where
-    T: SendCommand,
-{
-    fn validity(&self) -> UidValidity {
-        if let Some(mailbox) = &self.selected_mailbox {
-            mailbox.uid_validity()
-        } else {
-            panic!("no mailbox selected");
-        }
-    }
+impl<T: SendCommand> SendCommand for Session<T> {
+    type Responses<'a>
+        = T::Responses<'a>
+    where
+        Self: 'a;
 
-    fn list_all(&mut self) -> impl futures::Stream<Item = MailMetadata> {
-        if let Some(mailbox) = &self.selected_mailbox {
-            fetch_metadata(
-                &mut self.connection,
-                &SequenceSet::range(1, mailbox.uid_next().into()),
-            )
-        } else {
-            panic!("no mailbox selected");
-        }
-    }
-
-    fn get_all(&mut self) -> impl Stream<Item = impl crate::sync::Mail> {
-        if let Some(mailbox) = &self.selected_mailbox {
-            fetch(
-                &mut self.connection,
-                &SequenceSet::range(1, mailbox.uid_next().into()),
-            )
-        } else {
-            panic!("no mailbox selected");
-        }
-    }
-
-    fn store(&self, mail: &impl crate::sync::Mail) {
-        todo!()
+    fn send(&mut self, command: String) -> Self::Responses<'_> {
+        self.connection.send(command)
     }
 }

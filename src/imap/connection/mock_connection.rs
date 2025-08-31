@@ -31,7 +31,7 @@ impl MockConnection {
 impl SendCommand for MockConnection {
     type Responses<'a> = MockResponses;
 
-    fn send<'a>(&'a mut self, _command: String) -> Self::Responses<'a> {
+    fn send(&mut self, _command: String) -> Self::Responses<'_> {
         let buf: Vec<_> = self.responses.by_ref().collect();
         MockResponses::new(Box::new(buf.into_iter()))
     }

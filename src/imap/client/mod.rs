@@ -2,6 +2,10 @@ mod auth;
 mod mail;
 
 pub use auth::Authenticator;
+pub use mail::fetch;
+pub use mail::fetch_metadata;
+pub use mail::select;
+pub use mail::Mailbox;
 pub use mail::RemoteMail;
 pub use mail::SequenceSet;
 pub use mail::Session;

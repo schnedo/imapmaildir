@@ -1,7 +1,11 @@
 use crate::sync::Repository;
 use anyhow::Result;
 
-use super::{connection::ResponseData, Authenticator, SendCommand, Session};
+use super::{
+    Authenticator, SendCommand, SequenceSet, Session,
+    client::{Mailbox, fetch, fetch_metadata},
+    connection::ResponseData,
+};
 
 pub trait Connector {
     type Connection: SendCommand;
@@ -11,6 +15,7 @@ pub trait Connector {
 
 pub struct ImapRepository<T: SendCommand> {
     session: Session<T>,
+    mailbox: Mailbox,
 }
 
 impl<T: SendCommand> ImapRepository<T> {
@@ -24,25 +29,28 @@ impl<T: SendCommand> ImapRepository<T> {
         let (connection, _) = C::connect_to(host, port).await;
         let authenticator = Authenticator::new(user, password);
         let mut session = authenticator.authenticate(connection).await?;
-        session.select(mailbox).await?;
-        Ok(Self { session })
+        let mailbox = session.select(mailbox).await?;
+        Ok(Self { session, mailbox })
     }
 }
 
 impl<T: SendCommand> Repository for ImapRepository<T> {
     fn validity(&self) -> super::UidValidity {
-        self.session.validity()
+        self.mailbox.uid_validity()
     }
 
     fn list_all(&mut self) -> impl futures::Stream<Item = crate::sync::MailMetadata> {
-        self.session.list_all()
+        let sequence_set = SequenceSet::range(1, self.mailbox.uid_next().into());
+        self.session.fetch_metadata(&sequence_set)
     }
 
     fn get_all(&mut self) -> impl futures::Stream<Item = impl crate::sync::Mail> {
-        self.session.get_all()
+        let sequence_set = SequenceSet::range(1, self.mailbox.uid_next().into());
+        self.session
+            .fetch(&SequenceSet::range(1, self.mailbox.uid_next().into()))
     }
 
     fn store(&self, mail: &impl crate::sync::Mail) {
-        self.session.store(mail);
+        todo!()
     }
 }
