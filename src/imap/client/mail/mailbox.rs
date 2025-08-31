@@ -59,7 +59,7 @@ impl ToString for UidValidity {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
 #[repr(transparent)]
 pub struct Uid(NonZeroU32);
 

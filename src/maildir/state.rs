@@ -7,7 +7,9 @@ use std::{
 use derive_getters::Getters;
 use enumflags2::{BitFlag, BitFlags};
 use log::debug;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, ToSql, types::FromSql};
+use rusqlite::{
+    Connection, Error, MappedRows, OpenFlags, OptionalExtension, Result, Row, ToSql, types::FromSql,
+};
 
 use crate::{
     imap::{Uid, UidValidity},
@@ -161,24 +163,39 @@ impl State {
             .prepare_cached("select * from mail_metadata where uid = ?1")
             .expect("selection of existing mails should be preparable");
         stmt.query_one([uid.map_or(0, Into::into)], |row| {
-            let uid: u32 = row
-                .get(0)
-                .expect("first index of state entry row should be readable");
-            let uid = Uid::try_from(uid).ok();
-            let flags = Flag::from_bits_truncate(
-                row.get(1)
-                    .expect("second index of state entry row should be readable"),
-            );
-            Ok(StateEntry {
-                uid,
-                flags,
-                fileprefix: row
-                    .get(2)
-                    .expect("third index of state entry row should be readable"),
-            })
+            Ok(row.try_into().expect("stateentry should be parsable"))
         })
         .optional()
         .expect("existence of uid should be queryable")
+    }
+
+    pub fn for_each(&self, cb: impl Fn(&StateEntry)) {
+        let mut stmt = self
+            .db
+            .prepare("select (uid,flags,fileprefix) from mail_metadata;")
+            .expect("select all mail_metadata should be preparable");
+        let rows = stmt
+            .query_map([], |row| row.try_into())
+            .expect("all metadata should be selectable");
+        for row in rows {
+            let entry = row.expect("stateentry should be parsable");
+            cb(&entry);
+        }
+    }
+}
+
+impl TryFrom<&Row<'_>> for StateEntry {
+    type Error = Error;
+
+    fn try_from(value: &Row) -> Result<Self, Self::Error> {
+        let uid: u32 = value.get(0)?;
+        let uid = Uid::try_from(uid).ok();
+        let flags = Flag::from_bits_truncate(value.get(1)?);
+        Ok(Self {
+            uid,
+            flags,
+            fileprefix: value.get(2)?,
+        })
     }
 }
 

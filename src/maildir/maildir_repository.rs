@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use enumflags2::BitFlags;
 use futures::stream::iter;
@@ -6,8 +6,8 @@ use log::{debug, trace};
 
 use crate::{
     imap::{Uid, UidValidity},
-    maildir::state::StateEntry,
-    sync::{Flag, Mail, MailMetadata, Repository},
+    maildir::{maildir::LocalMail, state::StateEntry},
+    sync::{Change, Flag, Mail, MailMetadata, Repository},
 };
 
 use super::{Maildir, State};
@@ -114,5 +114,16 @@ impl Repository for MaildirRepository {
                 filename,
             ))
         }
+    }
+
+    fn detect_changes<T: MailMetadata, U: Mail<Metadata = T>>(&self) -> Vec<Change<T, U>> {
+        let changes = vec![];
+        let maildir_metadata = self.maildir.list_cur();
+        let mut maildir_uids = HashSet::with_capacity(maildir_metadata.size_hint().0);
+        for mail_metadata in maildir_metadata {
+            maildir_uids.insert(mail_metadata.uid());
+        }
+        self.state.for_each(|entry| {});
+        changes
     }
 }

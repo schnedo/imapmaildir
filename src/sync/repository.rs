@@ -30,9 +30,16 @@ pub trait MailMetadata: Clone + Eq + Hash {
     fn set_flags(&mut self, flags: BitFlags<Flag>);
 }
 
+pub enum Change<T: MailMetadata, U: Mail<Metadata = T>> {
+    New(U),
+    Deleted(Uid),
+    Updated(T),
+}
+
 pub trait Repository {
     fn validity(&self) -> UidValidity;
     fn list_all(&self) -> impl Stream<Item = impl MailMetadata>;
     fn get_all(&self) -> impl Stream<Item = impl Mail>;
     fn store(&self, mail: &impl Mail) -> Option<Uid>;
+    fn detect_changes<T: MailMetadata, U: Mail<Metadata = T>>(&self) -> Vec<Change<T, U>>;
 }

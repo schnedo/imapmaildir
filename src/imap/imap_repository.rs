@@ -1,4 +1,7 @@
-use crate::sync::Repository;
+use crate::{
+    imap::RemoteMail,
+    sync::{Change, Mail, MailMetadata, Repository},
+};
 use anyhow::Result;
 
 use super::{
@@ -53,5 +56,9 @@ impl<T: SendCommand> Repository for ImapRepository<T> {
 
     fn store(&self, mail: &impl crate::sync::Mail) -> Option<Uid> {
         todo!()
+    }
+
+    fn detect_changes<U: MailMetadata, V: Mail<Metadata = U>>(&self) -> Vec<Change<U, V>> {
+        todo!();
     }
 }
