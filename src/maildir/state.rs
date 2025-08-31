@@ -11,25 +11,39 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, ToSql, types::F
 
 use crate::{
     imap::{Uid, UidValidity},
+    maildir::maildir_repository::LocalMailMetadata,
     sync::{Flag, MailMetadata},
 };
 
-#[derive(Getters)]
 pub struct StateEntry {
-    metadata: MailMetadata,
+    uid: Option<Uid>,
+    flags: BitFlags<Flag>,
     fileprefix: String,
 }
 
 impl StateEntry {
-    pub fn new(metadata: MailMetadata, fileprefix: String) -> Self {
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, fileprefix: String) -> Self {
         Self {
-            metadata,
+            uid,
+            flags,
             fileprefix,
         }
     }
 
     pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
-        self.metadata.set_flags(flags);
+        self.flags = flags
+    }
+
+    pub fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    pub fn fileprefix(&self) -> &str {
+        self.fileprefix.as_str()
+    }
+
+    pub fn uid(&self) -> Option<Uid> {
+        self.uid
     }
 }
 
@@ -110,34 +124,27 @@ impl State {
             .db
             .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
             .expect("update metadata statement should be preparable");
-        stmt.execute((
-            data.metadata.flags().bits(),
-            data.metadata().uid().map_or(0, Into::into),
-        ))
-        .expect("mail metadata should be updateable");
+        stmt.execute((data.flags.bits(), data.uid.map_or(0, Into::into)))
+            .expect("mail metadata should be updateable");
     }
 
     pub fn store(&self, data: &StateEntry) -> Option<Uid> {
-        if let Some(uid) = data.metadata().uid() {
+        if let Some(uid) = data.uid {
             let mut stmt = self
                 .db
                 .prepare_cached(
                     "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
                 )
                 .expect("insert mail metadata statement should be preparable");
-            stmt.execute((
-                u32::from(uid),
-                data.metadata.flags().bits(),
-                &data.fileprefix,
-            ))
-            .expect("mail metadata should be insertable");
+            stmt.execute((u32::from(uid), data.flags.bits(), &data.fileprefix))
+                .expect("mail metadata should be insertable");
             None
         } else {
             let mut stmt = self
                 .db
                 .prepare_cached("insert into mail_metadata (flags,fileprefix) values (?1,?2)")
                 .expect("insert mail metadata statement should be preparable");
-            stmt.execute((data.metadata.flags().bits(), &data.fileprefix))
+            stmt.execute((data.flags.bits(), &data.fileprefix))
                 .expect("mail metadata should be insertable");
             Some(Uid::from(
                 self.db
@@ -163,7 +170,8 @@ impl State {
                     .expect("second index of state entry row should be readable"),
             );
             Ok(StateEntry {
-                metadata: MailMetadata::new(uid, flags),
+                uid,
+                flags,
                 fileprefix: row
                     .get(2)
                     .expect("third index of state entry row should be readable"),

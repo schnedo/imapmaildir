@@ -16,6 +16,7 @@ use thiserror::Error;
 
 use crate::{
     imap::Uid,
+    maildir::maildir_repository::LocalMailMetadata,
     sync::{Flag, Mail, MailMetadata},
 };
 
@@ -140,7 +141,7 @@ impl Maildir {
         format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
 
-    pub fn list_cur(&self) -> impl Iterator<Item = MailMetadata> {
+    pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> {
         read_dir(self.cur.as_path())
             .expect("cur should be readable")
             .map(|entry| {
@@ -165,7 +166,7 @@ impl Maildir {
                     .try_into()
                     .ok();
 
-                MailMetadata::new(uid, flags)
+                LocalMailMetadata::new(uid, flags)
             })
     }
 
@@ -196,7 +197,7 @@ impl Maildir {
                 let content = read(entry.path()).expect("mail should be readable");
 
                 LocalMail {
-                    metadata: MailMetadata::new(uid, flags),
+                    metadata: LocalMailMetadata::new(uid, flags),
                     content,
                 }
             })
@@ -209,12 +210,12 @@ impl Maildir {
     pub fn update(&self, entry: &StateEntry, new_flags: BitFlags<Flag>) {
         let current_mail = self.cur.join(Self::generate_filename(
             entry.fileprefix(),
-            entry.metadata().uid(),
-            entry.metadata().flags(),
+            entry.uid(),
+            entry.flags(),
         ));
         let new_name = self.cur.join(Self::generate_filename(
             entry.fileprefix(),
-            entry.metadata().uid(),
+            entry.uid(),
             new_flags,
         ));
         match (
@@ -249,7 +250,7 @@ impl Maildir {
 }
 
 pub struct LocalMail {
-    metadata: MailMetadata,
+    metadata: LocalMailMetadata,
     content: Vec<u8>,
 }
 
@@ -262,8 +263,10 @@ impl Debug for LocalMail {
 }
 
 impl Mail for LocalMail {
-    fn metadata(&self) -> &MailMetadata {
-        &self.metadata
+    type Metadata = LocalMailMetadata;
+
+    fn metadata(&self) -> Self::Metadata {
+        self.metadata
     }
 
     fn content(&self) -> &[u8] {

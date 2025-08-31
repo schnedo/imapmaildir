@@ -1,7 +1,7 @@
 use futures::Stream;
 
 use crate::{
-    imap::connection::SendCommand,
+    imap::{client::mail::fetch::RemoteMailMetadata, connection::SendCommand},
     sync::{MailMetadata, Repository},
 };
 
@@ -36,10 +36,10 @@ impl<T: SendCommand> Session<T> {
         fetch(&self.connection, sequence_set)
     }
 
-    pub fn fetch_metadata(
-        &self,
+    pub fn fetch_metadata<'a>(
+        &'a self,
         sequence_set: &SequenceSet,
-    ) -> impl futures::Stream<Item = crate::sync::MailMetadata> + use<'_, T> {
+    ) -> impl futures::Stream<Item = RemoteMailMetadata> + use<'a, T> {
         fetch_metadata(&self.connection, sequence_set)
     }
 }

@@ -40,7 +40,7 @@ impl<T: SendCommand> Repository for ImapRepository<T> {
         self.mailbox.uid_validity()
     }
 
-    fn list_all(&self) -> impl futures::Stream<Item = crate::sync::MailMetadata> {
+    fn list_all(&self) -> impl futures::Stream<Item = impl crate::sync::MailMetadata> {
         let sequence_set = SequenceSet::range(1, self.mailbox.uid_next().into());
         self.session.fetch_metadata(&sequence_set)
     }

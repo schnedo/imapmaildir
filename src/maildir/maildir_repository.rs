@@ -1,12 +1,13 @@
 use std::path::Path;
 
+use enumflags2::BitFlags;
 use futures::stream::iter;
 use log::{debug, trace};
 
 use crate::{
     imap::{Uid, UidValidity},
     maildir::state::StateEntry,
-    sync::{Mail, MailMetadata, Repository},
+    sync::{Flag, Mail, MailMetadata, Repository},
 };
 
 use super::{Maildir, State};
@@ -14,6 +15,32 @@ use super::{Maildir, State};
 pub struct MaildirRepository {
     maildir: Maildir,
     state: State,
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct LocalMailMetadata {
+    uid: Option<Uid>,
+    flags: BitFlags<Flag>,
+}
+
+impl LocalMailMetadata {
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>) -> Self {
+        Self { uid, flags }
+    }
+}
+
+impl MailMetadata for LocalMailMetadata {
+    fn uid(&self) -> Option<Uid> {
+        self.uid
+    }
+
+    fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        self.flags = flags;
+    }
 }
 
 impl MaildirRepository {
@@ -57,7 +84,7 @@ impl Repository for MaildirRepository {
         self.state.uid_validity()
     }
 
-    fn list_all(&self) -> impl futures::Stream<Item = MailMetadata> {
+    fn list_all(&self) -> impl futures::Stream<Item = impl MailMetadata> {
         iter(self.maildir.list_cur())
     }
 
@@ -70,7 +97,7 @@ impl Repository for MaildirRepository {
             && let Some(mut entry) = self.state.exists(mail.metadata().uid())
         {
             trace!("handling existing mail {mail:?}");
-            if entry.metadata().flags() != mail.metadata().flags() {
+            if entry.flags() != mail.metadata().flags() {
                 trace!("updating mail {mail:?}");
                 let new_flags = mail.metadata().flags();
                 self.maildir.update(&entry, new_flags);
@@ -81,8 +108,11 @@ impl Repository for MaildirRepository {
         } else {
             trace!("storing mail {mail:?}");
             let filename = self.maildir.store(mail);
-            self.state
-                .store(&StateEntry::new(*mail.metadata(), filename))
+            self.state.store(&StateEntry::new(
+                mail.metadata().uid(),
+                mail.metadata().flags(),
+                filename,
+            ))
         }
     }
 }

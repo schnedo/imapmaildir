@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, hash::Hash};
 
 use futures::Stream;
 
@@ -17,38 +17,22 @@ pub enum Flag {
     Recent,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct MailMetadata {
-    uid: Option<Uid>,
-    flags: BitFlags<Flag>,
-}
-
 pub trait Mail: Send + Debug {
-    fn metadata(&self) -> &MailMetadata;
+    type Metadata: MailMetadata;
+
+    fn metadata(&self) -> Self::Metadata;
     fn content(&self) -> &[u8];
 }
 
-impl MailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>) -> Self {
-        Self { uid, flags }
-    }
-
-    pub fn uid(&self) -> Option<Uid> {
-        self.uid
-    }
-
-    pub fn flags(&self) -> BitFlags<Flag> {
-        self.flags
-    }
-
-    pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
-        self.flags = flags;
-    }
+pub trait MailMetadata: Clone + Eq + Hash {
+    fn uid(&self) -> Option<Uid>;
+    fn flags(&self) -> BitFlags<Flag>;
+    fn set_flags(&mut self, flags: BitFlags<Flag>);
 }
 
 pub trait Repository {
     fn validity(&self) -> UidValidity;
-    fn list_all(&self) -> impl Stream<Item = MailMetadata>;
+    fn list_all(&self) -> impl Stream<Item = impl MailMetadata>;
     fn get_all(&self) -> impl Stream<Item = impl Mail>;
     fn store(&self, mail: &impl Mail) -> Option<Uid>;
 }

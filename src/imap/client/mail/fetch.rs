@@ -3,6 +3,7 @@ use std::{
     mem::transmute,
 };
 
+use enumflags2::BitFlags;
 use futures::{Stream, StreamExt};
 use imap_proto::{AttributeValue, Response, Status};
 use log::{debug, trace, warn};
@@ -53,7 +54,7 @@ impl Display for SequenceSet {
 pub fn fetch_metadata<'a, T: SendCommand>(
     connection: &'a T,
     sequence_set: &SequenceSet,
-) -> impl Stream<Item = MailMetadata> + use<'a, T> {
+) -> impl Stream<Item = RemoteMailMetadata> + use<'a, T> {
     let command = format!("UID FETCH {sequence_set} (UID, FLAGS)");
     debug!("{command}");
     let responses = connection.send(command);
@@ -72,7 +73,10 @@ pub fn fetch_metadata<'a, T: SendCommand>(
                         })
                         .collect();
 
-                    Some(MailMetadata::new(Uid::try_from(uid).ok(), mail_flags))
+                    Some(RemoteMailMetadata {
+                        uid: Uid::try_from(uid).ok(),
+                        flags: mail_flags,
+                    })
                 } else {
                     panic!("wrong format of FETCH response. check order of attributes in command");
                 }
@@ -119,7 +123,10 @@ pub fn fetch<'a, T: SendCommand>(
                         .collect();
 
                     Some(RemoteMail {
-                        metadata: MailMetadata::new(Uid::try_from(uid).ok(), mail_flags),
+                        metadata: RemoteMailMetadata {
+                            uid: Uid::try_from(uid).ok(),
+                            flags: mail_flags,
+                        },
                         content: unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) },
                         response,
                     })
@@ -171,9 +178,29 @@ impl<'a> TryFrom<&'a str> for Flag {
     }
 }
 
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct RemoteMailMetadata {
+    uid: Option<Uid>,
+    flags: BitFlags<Flag>,
+}
+
+impl MailMetadata for RemoteMailMetadata {
+    fn uid(&self) -> Option<Uid> {
+        self.uid
+    }
+
+    fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        panic!("setting flags on RemoteMailMetadata should not be necessary")
+    }
+}
+
 pub struct RemoteMail {
     response: ResponseData,
-    metadata: MailMetadata,
+    metadata: RemoteMailMetadata,
     content: &'static [u8],
 }
 
@@ -186,8 +213,10 @@ impl Debug for RemoteMail {
 }
 
 impl Mail for RemoteMail {
-    fn metadata(&self) -> &MailMetadata {
-        &self.metadata
+    type Metadata = RemoteMailMetadata;
+
+    fn metadata(&self) -> Self::Metadata {
+        self.metadata
     }
 
     fn content(&self) -> &[u8] {
