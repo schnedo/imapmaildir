@@ -1,22 +1,24 @@
+use std::cell::RefCell;
+
 use futures::StreamExt;
 use log::{debug, trace};
 use tokio::net::TcpStream;
-use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
+use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use tokio_util::codec::Framed;
 
 use crate::imap::imap_repository::Connector;
 
 use super::{
+    SendCommand,
     codec::{ImapCodec, ResponseData},
     response_stream::ResponseStream,
     tag_generator::TagGenerator,
-    SendCommand,
 };
 
 pub type ImapStream = Framed<TlsStream<TcpStream>, ImapCodec>;
 
 pub struct Connection {
-    stream: ImapStream,
+    stream: RefCell<ImapStream>,
     tag_generator: TagGenerator,
 }
 
@@ -42,7 +44,7 @@ impl Connector for Connection {
 
         (
             Self {
-                stream,
+                stream: RefCell::new(stream),
                 tag_generator: TagGenerator::default(),
             },
             response_data,
@@ -53,7 +55,8 @@ impl Connector for Connection {
 impl SendCommand for Connection {
     type Responses<'a> = ResponseStream<'a>;
 
-    fn send(&mut self, command: String) -> Self::Responses<'_> {
-        ResponseStream::new(&mut self.stream, &mut self.tag_generator, command)
+    fn send(&self, command: String) -> Self::Responses<'_> {
+        let stream = self.stream.borrow_mut();
+        ResponseStream::new(stream, &self.tag_generator, command)
     }
 }

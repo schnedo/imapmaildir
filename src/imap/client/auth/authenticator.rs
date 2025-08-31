@@ -16,7 +16,7 @@ impl<'a> Authenticator<'a> {
 
     pub async fn authenticate<T: SendCommand>(
         &self,
-        mut connection: T,
+        connection: T,
     ) -> Result<Session<T>, LoginError> {
         debug!("LOGIN <user> <password>");
         let command = format!("LOGIN {} {}", self.username, self.password);
@@ -38,9 +38,11 @@ impl<'a> Authenticator<'a> {
                 imap_proto::Status::Ok => {
                     trace!("{code:?}");
                     Ok(Session::new(connection))
-                },
+                }
                 imap_proto::Status::No => Err(LoginError),
-                imap_proto::Status::Bad => panic!("Login command unknown or invalid arguments. This is an unrecoverable issue in code."),
+                imap_proto::Status::Bad => panic!(
+                    "Login command unknown or invalid arguments. This is an unrecoverable issue in code."
+                ),
                 _ => panic!("response to login should only ever be Ok, No or Bad"),
             }
         } else {

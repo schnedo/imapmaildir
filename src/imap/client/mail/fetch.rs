@@ -51,7 +51,7 @@ impl Display for SequenceSet {
 }
 
 pub fn fetch_metadata<'a, T: SendCommand>(
-    connection: &'a mut T,
+    connection: &'a T,
     sequence_set: &SequenceSet,
 ) -> impl Stream<Item = MailMetadata> + use<'a, T> {
     let command = format!("UID FETCH {sequence_set} (UID, FLAGS)");
@@ -97,7 +97,7 @@ pub fn fetch_metadata<'a, T: SendCommand>(
 }
 
 pub fn fetch<'a, T: SendCommand>(
-    connection: &'a mut T,
+    connection: &'a T,
     sequence_set: &SequenceSet,
 ) -> impl Stream<Item = RemoteMail> + use<'a, T> {
     let command = format!("UID FETCH {sequence_set} (UID, FLAGS, RFC822)");

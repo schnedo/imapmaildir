@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::RefCell,
     mem::transmute,
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -8,31 +9,33 @@ use std::{
 use futures::{Stream, StreamExt};
 use imap_proto::{RequestId, Response, Status};
 
-use super::{codec::ResponseData, ContinuationCommand, SendCommand};
+use super::{ContinuationCommand, SendCommand, codec::ResponseData};
 
 type ListOfResponseList = Box<dyn Iterator<Item = Box<dyn Iterator<Item = ResponseData>>>>;
 pub struct MockConnection {
-    responses: ListOfResponseList,
+    responses: RefCell<ListOfResponseList>,
 }
 
 impl MockConnection {
     pub fn new(
         responses: impl IntoIterator<Item = impl IntoIterator<Item = Response<'static>> + 'static>
-            + 'static,
+        + 'static,
     ) -> Self {
         let responses = Box::new(responses.into_iter().map(|inner| {
             let inner_iter = inner.into_iter().map(ResponseData::new);
             Box::new(inner_iter) as Box<dyn Iterator<Item = ResponseData>>
         }));
-        Self { responses }
+        Self {
+            responses: RefCell::new(responses),
+        }
     }
 }
 
 impl SendCommand for MockConnection {
     type Responses<'a> = MockResponses;
 
-    fn send(&mut self, _command: String) -> Self::Responses<'_> {
-        let buf: Vec<_> = self.responses.by_ref().collect();
+    fn send(&self, _command: String) -> Self::Responses<'_> {
+        let buf: Vec<_> = self.responses.borrow_mut().by_ref().collect();
         MockResponses::new(Box::new(buf.into_iter()))
     }
 }
@@ -105,7 +108,7 @@ async fn should_just_return_input() {
             information: Some(Cow::Borrowed("information")),
         },
     ]];
-    let mut mock_connection = MockConnection::new(responses);
+    let mock_connection = MockConnection::new(responses);
 
     let mut responses = mock_connection.send("whatever".into());
 

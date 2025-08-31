@@ -11,5 +11,6 @@ pub trait SendCommand {
     where
         Self: 'a;
 
-    fn send(&mut self, command: String) -> Self::Responses<'_>;
+    #[must_use]
+    fn send(&self, command: String) -> Self::Responses<'_>;
 }

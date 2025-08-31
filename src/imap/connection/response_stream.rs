@@ -1,7 +1,8 @@
 use std::{
     borrow::Cow,
+    cell::RefMut,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use futures::{SinkExt as _, Stream, TryStreamExt as _};
@@ -21,17 +22,17 @@ enum ResponseStreamState {
 }
 
 pub struct ResponseStream<'a> {
-    imap_stream: &'a mut ImapStream,
+    imap_stream: RefMut<'a, ImapStream>,
     state: ResponseStreamState,
-    tag_generator: &'a mut TagGenerator,
+    tag_generator: &'a TagGenerator,
     tag: String,
     command: String,
 }
 
 impl<'a> ResponseStream<'a> {
     pub fn new(
-        imap_stream: &'a mut ImapStream,
-        tag_generator: &'a mut TagGenerator,
+        imap_stream: RefMut<'a, ImapStream>,
+        tag_generator: &'a TagGenerator,
         command: String,
     ) -> Self {
         Self {
@@ -82,8 +83,7 @@ impl Stream for ResponseStream<'_> {
                             if let Some(tag) = data.request_id() {
                                 self.state = ResponseStreamState::Done;
                                 assert_eq!(
-                                    tag.0,
-                                    self.tag,
+                                    tag.0, self.tag,
                                     "Response tag did not match request tag. This should never happen and indicates that something is seriously wrong.",
                                 );
                             }
