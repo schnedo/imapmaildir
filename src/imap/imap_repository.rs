@@ -16,6 +16,7 @@ pub trait Connector {
 pub struct ImapRepository<T: SendCommand> {
     session: Session<T>,
     mailbox: Mailbox,
+    // TODO: track remote changes with modseq
 }
 
 impl<T: SendCommand> ImapRepository<T> {
