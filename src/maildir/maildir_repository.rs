@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, fmt::Display, path::Path, str::FromStr};
 
 use enumflags2::BitFlags;
 use futures::stream::iter;
@@ -17,15 +17,64 @@ pub struct MaildirRepository {
     state: State,
 }
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
     uid: Option<Uid>,
     flags: BitFlags<Flag>,
+    fileprefix: String,
 }
 
 impl LocalMailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>) -> Self {
-        Self { uid, flags }
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, fileprefix: String) -> Self {
+        Self {
+            uid,
+            flags,
+            fileprefix,
+        }
+    }
+}
+
+impl Display for LocalMailMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut string_flags = String::with_capacity(6);
+        for flag in self.flags {
+            if let Ok(char_flag) = flag.try_into() {
+                string_flags.push(char_flag);
+            }
+        }
+        if let Some(uid) = self.uid {
+            write!(f, "{},U={uid}:2,{string_flags}", self.fileprefix)
+        } else {
+            write!(f, "{}:2,{string_flags}", self.fileprefix)
+        }
+    }
+}
+
+impl FromStr for LocalMailMetadata {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (head, flags) = s.rsplit_once(":2,").ok_or("filename should contain :2,")?;
+        let flags = flags.chars().map(Flag::from).collect();
+        let head = head.rsplit_once(':').ok_or("filename should contain :")?.0;
+        if let Some((fileprefix, uid)) = head.rsplit_once(",U=") {
+            let uid = uid
+                .parse::<u32>()
+                .map_err(|_| "uid field should be u32")?
+                .try_into()
+                .ok();
+            Ok(Self {
+                uid,
+                flags,
+                fileprefix: fileprefix.to_string(),
+            })
+        } else {
+            Ok(Self {
+                uid: None,
+                flags,
+                fileprefix: head.to_string(),
+            })
+        }
     }
 }
 

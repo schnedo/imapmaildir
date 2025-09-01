@@ -215,8 +215,8 @@ impl Debug for RemoteMail {
 impl Mail for RemoteMail {
     type Metadata = RemoteMailMetadata;
 
-    fn metadata(&self) -> Self::Metadata {
-        self.metadata
+    fn metadata(&self) -> &Self::Metadata {
+        &self.metadata
     }
 
     fn content(&self) -> &[u8] {

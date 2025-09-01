@@ -150,23 +150,7 @@ impl Maildir {
                     .file_name()
                     .into_string()
                     .expect("converting filename from OsString to String should be possible");
-                let (filename, flags) = filename.rsplit_once(',').expect("flags should be present");
-                let flags = flags.chars().map(Flag::from).collect();
-                let uid_field = filename
-                    .rsplit_once(':')
-                    .expect("filename should contain :")
-                    .0
-                    .rsplit_once('=')
-                    .expect("filename should contain =");
-                assert_eq!(uid_field.0, "U");
-                let uid = uid_field
-                    .0
-                    .parse::<u32>()
-                    .expect("uid field should be u32")
-                    .try_into()
-                    .ok();
-
-                LocalMailMetadata::new(uid, flags)
+                filename.parse().expect("filename should be parsable")
             })
     }
 
@@ -179,25 +163,10 @@ impl Maildir {
                     .file_name()
                     .into_string()
                     .expect("converting filename from OsString to String should be possible");
-                let (filename, flags) = filename.rsplit_once(',').expect("flags should be present");
-                let flags = flags.chars().map(Flag::from).collect();
-                let uid_field = filename
-                    .rsplit_once(':')
-                    .expect("filename should contain :")
-                    .0
-                    .rsplit_once('=')
-                    .expect("filename should contain =");
-                assert_eq!(uid_field.0, "U");
-                let uid = uid_field
-                    .0
-                    .parse::<u32>()
-                    .expect("uid field should be u32")
-                    .try_into()
-                    .ok();
                 let content = read(entry.path()).expect("mail should be readable");
 
                 LocalMail {
-                    metadata: LocalMailMetadata::new(uid, flags),
+                    metadata: filename.parse().expect("filename should be parsable"),
                     content,
                 }
             })
@@ -265,8 +234,8 @@ impl Debug for LocalMail {
 impl Mail for LocalMail {
     type Metadata = LocalMailMetadata;
 
-    fn metadata(&self) -> Self::Metadata {
-        self.metadata
+    fn metadata(&self) -> &Self::Metadata {
+        &self.metadata
     }
 
     fn content(&self) -> &[u8] {

@@ -20,7 +20,7 @@ pub enum Flag {
 pub trait Mail: Send + Debug {
     type Metadata: MailMetadata;
 
-    fn metadata(&self) -> Self::Metadata;
+    fn metadata(&self) -> &Self::Metadata;
     fn content(&self) -> &[u8];
 }
 
