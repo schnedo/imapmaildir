@@ -17,38 +17,6 @@ use crate::{
     sync::{Flag, MailMetadata},
 };
 
-pub struct StateEntry {
-    uid: Option<Uid>,
-    flags: BitFlags<Flag>,
-    fileprefix: String,
-}
-
-impl StateEntry {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, fileprefix: String) -> Self {
-        Self {
-            uid,
-            flags,
-            fileprefix,
-        }
-    }
-
-    pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
-        self.flags = flags
-    }
-
-    pub fn flags(&self) -> BitFlags<Flag> {
-        self.flags
-    }
-
-    pub fn fileprefix(&self) -> &str {
-        self.fileprefix.as_str()
-    }
-
-    pub fn uid(&self) -> Option<Uid> {
-        self.uid
-    }
-}
-
 pub struct State {
     db: Connection,
     uid_validity: UidValidity,
@@ -121,24 +89,24 @@ impl State {
         self.uid_validity
     }
 
-    pub fn update(&self, data: &StateEntry) {
+    pub fn update(&self, data: &LocalMailMetadata) {
         let mut stmt = self
             .db
             .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
             .expect("update metadata statement should be preparable");
-        stmt.execute((data.flags.bits(), data.uid.map_or(0, Into::into)))
+        stmt.execute((data.flags().bits(), data.uid().map_or(0, Into::into)))
             .expect("mail metadata should be updateable");
     }
 
-    pub fn store(&self, data: &StateEntry) -> Option<Uid> {
-        if let Some(uid) = data.uid {
+    pub fn store(&self, data: &LocalMailMetadata) -> Option<Uid> {
+        if let Some(uid) = data.uid() {
             let mut stmt = self
                 .db
                 .prepare_cached(
                     "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
                 )
                 .expect("insert mail metadata statement should be preparable");
-            stmt.execute((u32::from(uid), data.flags.bits(), &data.fileprefix))
+            stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))
                 .expect("mail metadata should be insertable");
             None
         } else {
@@ -146,7 +114,7 @@ impl State {
                 .db
                 .prepare_cached("insert into mail_metadata (flags,fileprefix) values (?1,?2)")
                 .expect("insert mail metadata statement should be preparable");
-            stmt.execute((data.flags.bits(), &data.fileprefix))
+            stmt.execute((data.flags().bits(), &data.fileprefix()))
                 .expect("mail metadata should be insertable");
             Some(Uid::from(
                 self.db
@@ -157,7 +125,7 @@ impl State {
         }
     }
 
-    pub fn exists(&self, uid: Option<Uid>) -> Option<StateEntry> {
+    pub fn exists(&self, uid: Option<Uid>) -> Option<LocalMailMetadata> {
         let mut stmt = self
             .db
             .prepare_cached("select * from mail_metadata where uid = ?1")
@@ -169,7 +137,7 @@ impl State {
         .expect("existence of uid should be queryable")
     }
 
-    pub fn for_each(&self, cb: impl Fn(&StateEntry)) {
+    pub fn for_each(&self, cb: impl Fn(&LocalMailMetadata)) {
         let mut stmt = self
             .db
             .prepare("select (uid,flags,fileprefix) from mail_metadata;")
@@ -184,18 +152,14 @@ impl State {
     }
 }
 
-impl TryFrom<&Row<'_>> for StateEntry {
+impl TryFrom<&Row<'_>> for LocalMailMetadata {
     type Error = Error;
 
     fn try_from(value: &Row) -> Result<Self, Self::Error> {
         let uid: u32 = value.get(0)?;
         let uid = Uid::try_from(uid).ok();
         let flags = Flag::from_bits_truncate(value.get(1)?);
-        Ok(Self {
-            uid,
-            flags,
-            fileprefix: value.get(2)?,
-        })
+        Ok(Self::new(uid, flags, value.get(2)?))
     }
 }
 

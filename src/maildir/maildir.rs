@@ -20,8 +20,6 @@ use crate::{
     sync::{Flag, Mail, MailMetadata},
 };
 
-use super::state::StateEntry;
-
 #[derive(Debug)]
 pub struct Maildir {
     new: PathBuf,
@@ -176,7 +174,7 @@ impl Maildir {
         self.cur.is_empty() && self.new.is_empty() && self.tmp.is_empty()
     }
 
-    pub fn update(&self, entry: &StateEntry, new_flags: BitFlags<Flag>) {
+    pub fn update(&self, entry: &LocalMailMetadata, new_flags: BitFlags<Flag>) {
         let current_mail = self.cur.join(Self::generate_filename(
             entry.fileprefix(),
             entry.uid(),

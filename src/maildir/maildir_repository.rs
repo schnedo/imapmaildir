@@ -6,7 +6,7 @@ use log::{debug, trace};
 
 use crate::{
     imap::{Uid, UidValidity},
-    maildir::{maildir::LocalMail, state::StateEntry},
+    maildir::maildir::LocalMail,
     sync::{Change, Flag, Mail, MailMetadata, Repository},
 };
 
@@ -31,6 +31,10 @@ impl LocalMailMetadata {
             flags,
             fileprefix,
         }
+    }
+
+    pub fn fileprefix(&self) -> &str {
+        &self.fileprefix
     }
 }
 
@@ -157,7 +161,7 @@ impl Repository for MaildirRepository {
         } else {
             trace!("storing mail {mail:?}");
             let filename = self.maildir.store(mail);
-            self.state.store(&StateEntry::new(
+            self.state.store(&LocalMailMetadata::new(
                 mail.metadata().uid(),
                 mail.metadata().flags(),
                 filename,
