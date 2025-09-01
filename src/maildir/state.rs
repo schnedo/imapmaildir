@@ -22,6 +22,8 @@ pub struct State {
     uid_validity: UidValidity,
 }
 
+// TODO: use separate state entry struct with not optional uid?
+// TODO: remove storage of fileprefix
 impl State {
     pub fn create_new(
         state_dir: &Path,
