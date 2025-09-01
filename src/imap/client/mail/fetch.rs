@@ -196,6 +196,10 @@ impl MailMetadata for RemoteMailMetadata {
     fn set_flags(&mut self, flags: BitFlags<Flag>) {
         panic!("setting flags on RemoteMailMetadata should not be necessary")
     }
+
+    fn filename(&self) -> String {
+        panic!("filename should never be accessed for RemoteMailMetadata")
+    }
 }
 
 pub struct RemoteMail {

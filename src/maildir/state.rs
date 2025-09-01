@@ -137,7 +137,7 @@ impl State {
         .expect("existence of uid should be queryable")
     }
 
-    pub fn for_each(&self, cb: impl Fn(&LocalMailMetadata)) {
+    pub fn for_each(&self, mut cb: impl FnMut(&LocalMailMetadata)) {
         let mut stmt = self
             .db
             .prepare("select (uid,flags,fileprefix) from mail_metadata;")

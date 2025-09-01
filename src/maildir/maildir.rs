@@ -127,6 +127,10 @@ impl Maildir {
         }
     }
 
+    pub fn resolve(&self, filename: &str) -> PathBuf {
+        self.cur.join(filename)
+    }
+
     fn generate_file_prefix() -> String {
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -219,6 +223,12 @@ impl Maildir {
 pub struct LocalMail {
     metadata: LocalMailMetadata,
     content: Vec<u8>,
+}
+
+impl LocalMail {
+    pub fn new(content: Vec<u8>, metadata: LocalMailMetadata) -> Self {
+        Self { metadata, content }
+    }
 }
 
 impl Debug for LocalMail {

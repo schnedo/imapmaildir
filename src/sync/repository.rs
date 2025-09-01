@@ -28,12 +28,13 @@ pub trait MailMetadata: Clone + Eq + Hash {
     fn uid(&self) -> Option<Uid>;
     fn flags(&self) -> BitFlags<Flag>;
     fn set_flags(&mut self, flags: BitFlags<Flag>);
+    fn filename(&self) -> String;
 }
 
-pub enum Change<T: MailMetadata, U: Mail<Metadata = T>> {
-    New(U),
+pub enum Change<T: Mail> {
+    New(T),
     Deleted(Uid),
-    Updated(T),
+    Updated(T::Metadata),
 }
 
 pub trait Repository {
@@ -41,5 +42,5 @@ pub trait Repository {
     fn list_all(&self) -> impl Stream<Item = impl MailMetadata>;
     fn get_all(&self) -> impl Stream<Item = impl Mail>;
     fn store(&self, mail: &impl Mail) -> Option<Uid>;
-    fn detect_changes<T: MailMetadata, U: Mail<Metadata = T>>(&self) -> Vec<Change<T, U>>;
+    fn detect_changes(&self) -> Vec<Change<impl Mail>>;
 }

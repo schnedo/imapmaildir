@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Display, path::Path, str::FromStr};
+use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
 
 use enumflags2::BitFlags;
 use futures::stream::iter;
@@ -94,6 +94,10 @@ impl MailMetadata for LocalMailMetadata {
     fn set_flags(&mut self, flags: BitFlags<Flag>) {
         self.flags = flags;
     }
+
+    fn filename(&self) -> String {
+        self.to_string()
+    }
 }
 
 impl MaildirRepository {
@@ -169,14 +173,32 @@ impl Repository for MaildirRepository {
         }
     }
 
-    fn detect_changes<T: MailMetadata, U: Mail<Metadata = T>>(&self) -> Vec<Change<T, U>> {
-        let changes = vec![];
+    fn detect_changes(&self) -> Vec<Change<impl Mail>> {
+        let mut changes = vec![];
         let maildir_metadata = self.maildir.list_cur();
-        let mut maildir_uids = HashSet::with_capacity(maildir_metadata.size_hint().0);
+        let mut maildir_mails = HashMap::with_capacity(maildir_metadata.size_hint().0);
         for mail_metadata in maildir_metadata {
-            maildir_uids.insert(mail_metadata.uid());
+            maildir_mails.insert(mail_metadata.uid(), mail_metadata);
         }
-        self.state.for_each(|entry| {});
+        self.state.for_each(|entry| {
+            if let Some(data) = maildir_mails.remove(&entry.uid()) {
+                if data.flags() != entry.flags() {
+                    changes.push(Change::Updated(data));
+                }
+            } else {
+                changes.push(Change::Deleted(
+                    entry.uid().expect("stored uid should not be missing"),
+                ));
+            }
+        });
+        for maildata in maildir_mails.into_values() {
+            changes.push(Change::New(LocalMail::new(
+                fs::read(self.maildir.resolve(&maildata.filename()))
+                    .expect("mail contents should be readable"),
+                maildata,
+            )));
+        }
+
         changes
     }
 }

@@ -58,7 +58,9 @@ impl<T: SendCommand> Repository for ImapRepository<T> {
         todo!()
     }
 
-    fn detect_changes<U: MailMetadata, V: Mail<Metadata = U>>(&self) -> Vec<Change<U, V>> {
+    fn detect_changes(&self) -> Vec<Change<impl Mail>> {
         todo!();
+        #[expect(unreachable_code)]
+        Vec::<Change<RemoteMail>>::new()
     }
 }
