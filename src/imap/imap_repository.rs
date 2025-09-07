@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use crate::{
     imap::RemoteMail,
     sync::{Change, Mail, MailMetadata, Repository},
@@ -19,7 +21,6 @@ pub trait Connector {
 pub struct ImapRepository<T: SendCommand> {
     session: Session<T>,
     mailbox: Mailbox,
-    // TODO: track remote changes with modseq
 }
 
 impl<T: SendCommand> ImapRepository<T> {

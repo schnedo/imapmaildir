@@ -1,8 +1,10 @@
+use std::num::NonZeroU64;
+
 use futures::StreamExt as _;
 use imap_proto::{
     MailboxDatum::{Exists, Flags, Recent},
     Response::{Data, Done, MailboxData},
-    ResponseCode::{PermanentFlags, ReadOnly, UidNext, UidValidity, Unseen},
+    ResponseCode::{HighestModSeq, PermanentFlags, ReadOnly, UidNext, UidValidity, Unseen},
     Status::{Bad, No, Ok},
 };
 use log::{debug, trace, warn};
@@ -16,11 +18,12 @@ pub async fn select(
     connection: &mut impl SendCommand,
     mailbox: &str,
 ) -> Result<Mailbox, SelectError> {
-    let command = format!("SELECT {mailbox}");
+    let command = format!("SELECT {mailbox} (CONDSTORE)");
     debug!("{command}");
     let mut responses = connection.send(command);
     let mut new_mailbox = MailboxBuilder::default();
     new_mailbox.name(mailbox.to_string());
+
     while let Some(response) = responses.next().await {
         match response.parsed() {
             MailboxData(mailbox_datum) => match mailbox_datum {
@@ -70,6 +73,13 @@ pub async fn select(
                 }
                 UidValidity(validity) => {
                     new_mailbox.uid_validity((*validity).into());
+                }
+                HighestModSeq(modseq) => {
+                    new_mailbox.highest_modseq(
+                        (*modseq)
+                            .try_into()
+                            .expect("Project expects RFC 4551 compatible IMAP server"),
+                    );
                 }
                 _ => {
                     warn!("ignoring unknown data response to SELECT");
@@ -130,6 +140,8 @@ mod tests {
         let recent = 4;
         let uid_validity = 1_234_214;
         let uid_next = 4321;
+        let expected_highest_modseq = 70500;
+
         let responses = [[
             Response::MailboxData(Flags(vec![
                 Cow::Borrowed("\\Answered"),
@@ -164,7 +176,7 @@ mod tests {
             },
             Response::Data {
                 status: Ok,
-                code: Some(ResponseCode::HighestModSeq(70500)),
+                code: Some(ResponseCode::HighestModSeq(expected_highest_modseq)),
                 information: Some(Cow::Borrowed("")),
             },
             Response::Done {
@@ -183,6 +195,10 @@ mod tests {
         assert!(result.is_ok());
         let mailbox = result.unwrap();
         assert_eq!(mailbox.name(), mailbox_name);
+        assert_eq!(
+            mailbox.highest_modseq(),
+            NonZeroU64::new(expected_highest_modseq).expect("HighestModSeq should be non zero")
+        );
         assert!(!mailbox.readonly());
         assert_eq!(
             mailbox.flags(),

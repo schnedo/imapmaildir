@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use futures::Stream;
 
 use crate::{

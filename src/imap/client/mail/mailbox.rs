@@ -1,6 +1,9 @@
 #![expect(clippy::ref_option)]
 
-use std::{fmt::Display, num::NonZeroU32};
+use std::{
+    fmt::Display,
+    num::{NonZeroU32, NonZeroU64},
+};
 
 use derive_builder::Builder;
 use derive_getters::Getters;
@@ -21,6 +24,8 @@ pub struct Mailbox {
     uid_validity: UidValidity,
     #[getter(skip)]
     uid_next: Uid,
+    #[getter(skip)]
+    highest_modseq: NonZeroU64,
 }
 
 impl Mailbox {
@@ -29,6 +34,10 @@ impl Mailbox {
     }
     pub fn uid_next(&self) -> Uid {
         self.uid_next
+    }
+
+    pub fn highest_modseq(&self) -> NonZeroU64 {
+        self.highest_modseq
     }
 }
 
