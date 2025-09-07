@@ -34,10 +34,7 @@ impl<'a, T: SendCommand> ImapRepository<'a, T> {
         mailbox: &str,
         state: &'a State,
     ) -> Result<Self> {
-        let (connection, _) = C::connect_to(host, port).await;
-        let authenticator = Authenticator::new(user, password);
-        let mut session = authenticator.authenticate(connection).await?;
-        let mailbox = session.select(mailbox).await?;
+        let (session, mailbox) = Self::setup::<C>(host, port, user, password, mailbox).await?;
         state.set_uid_validity(mailbox.uid_validity());
         Ok(Self {
             session,
@@ -53,16 +50,27 @@ impl<'a, T: SendCommand> ImapRepository<'a, T> {
         mailbox: &str,
         state: &'a State,
     ) -> Result<Self> {
-        let (connection, _) = C::connect_to(host, port).await;
-        let authenticator = Authenticator::new(user, password);
-        let mut session = authenticator.authenticate(connection).await?;
-        let mailbox = session.select(mailbox).await?;
+        let (session, mailbox) = Self::setup::<C>(host, port, user, password, mailbox).await?;
         assert_eq!(mailbox.uid_validity(), state.uid_validity());
         Ok(Self {
             session,
             mailbox,
             state,
         })
+    }
+
+    async fn setup<C: Connector<Connection = T>>(
+        host: &str,
+        port: u16,
+        user: &str,
+        password: &str,
+        mailbox: &str,
+    ) -> Result<(Session<T>, Mailbox)> {
+        let (connection, _) = C::connect_to(host, port).await;
+        let authenticator = Authenticator::new(user, password);
+        let mut session = authenticator.authenticate(connection).await?;
+        let mailbox = session.select(mailbox).await?;
+        Ok((session, mailbox))
     }
 }
 
