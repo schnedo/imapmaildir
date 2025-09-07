@@ -1,6 +1,7 @@
 use std::{
     fmt::{Debug, Display, Formatter, Result},
     mem::transmute,
+    num::NonZeroU64,
 };
 
 use enumflags2::BitFlags;
