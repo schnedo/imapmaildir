@@ -11,8 +11,10 @@ use anyhow::Result;
 use clap::Parser;
 use config::Config;
 use imap::{Authenticator, Connection, ImapRepository};
+use log::info;
 use maildir::MaildirRepository;
 use nuke::nuke;
+use state::State;
 use sync::Repository;
 use sync::Syncer;
 
@@ -39,26 +41,43 @@ async fn main() -> Result<()> {
             .mailboxes()
             .first()
             .expect("there should be one mailbox set");
+        let account = config.account();
+        let state_dir = config.statedir();
 
-        let imap_repository = ImapRepository::try_connect::<Connection>(
-            config.host(),
-            config.port(),
-            config.user(),
-            &config.password(),
-            mailbox,
-        )
-        .await
-        .expect("connecting imap repository should not fail");
-        let uid_validity = imap_repository.validity();
-        let maildir_repository = MaildirRepository::new(
-            config.account(),
-            mailbox,
-            config.maildir(),
-            config.statedir(),
-            uid_validity,
-        );
+        let state = State::load(state_dir, account, mailbox);
+        let state_existed = state.is_ok();
+        let state = state.unwrap_or_else(|_| State::init(state_dir, account, mailbox));
 
-        let mut syncer = Syncer::new(imap_repository, maildir_repository);
+        let mut syncer = if state_existed {
+            let maildir_repository =
+                MaildirRepository::load(config.account(), mailbox, config.maildir(), &state);
+            let imap_repository = ImapRepository::try_connect::<Connection>(
+                config.host(),
+                config.port(),
+                config.user(),
+                &config.password(),
+                mailbox,
+                &state,
+            )
+            .await
+            .expect("connecting imap repository should succeed");
+            Syncer::new(imap_repository, maildir_repository)
+        } else {
+            info!("initializing {account} {mailbox}");
+            let imap_repository = ImapRepository::init::<Connection>(
+                config.host(),
+                config.port(),
+                config.user(),
+                &config.password(),
+                mailbox,
+                &state,
+            )
+            .await
+            .expect("connecting imap repository should not fail");
+            let maildir_repository =
+                MaildirRepository::init(config.account(), mailbox, config.maildir(), &state);
+            Syncer::new(imap_repository, maildir_repository)
+        };
 
         syncer.init_remote_to_local().await;
 

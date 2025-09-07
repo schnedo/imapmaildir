@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     convert::Into,
     fs::create_dir_all,
     path::{Path, PathBuf},
@@ -17,44 +18,60 @@ use crate::{
     sync::{Flag, MailMetadata},
 };
 
+#[derive(Getters)]
 pub struct State {
+    #[getter(skip)]
     db: Connection,
-    uid_validity: UidValidity,
+    modseq: Cell<i64>,
 }
 
 impl State {
-    pub fn create_new(
-        state_dir: &Path,
-        account: &str,
-        mailbox: &str,
-        uid_validity: UidValidity,
-    ) -> Self {
-        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
-        debug!("creating new state file {}", state_file.to_string_lossy());
+    pub fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
+        let state_file = Self::prepare_state_file(state_dir, &account, &mailbox);
+        debug!(
+            "try loading existing state file {}",
+            state_file.to_string_lossy()
+        );
         let db = Connection::open_with_flags(
             state_file,
             OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
-        )
-        .expect("State DB should be creatable");
-        db.pragma_update(None, "user_version", u32::from(uid_validity))
-            .expect("setting sqlite user_version to uid_validity should succeed");
+        )?;
+
+        let modseq = db
+            .query_one("select * from pragma_user_version", [], |row| {
+                let modseq: i64 = row.get(0)?;
+                Ok(Cell::new(modseq))
+            })
+            .expect("getting modseq should succeed");
+        Ok(Self { db, modseq })
+    }
+
+    pub fn init(state_dir: &Path, account: &str, mailbox: &str) -> Self {
+        let state_file = Self::prepare_state_file(state_dir, &account, &mailbox);
+        debug!("creating new state file {}", state_file.to_string_lossy());
+        let db = Connection::open(state_file).expect("State DB should be creatable");
         db.execute_batch(
             "pragma journal_mode=wal;
+            pragma user_version=0;
             pragma synchronous=1;
-            create table if not exists mail_metadata (
+            create table mail_metadata (
                 uid integer primary key,
                 flags integer not null,
                 fileprefix text not null
             ) strict;
-            pragma optimize;
-",
+            create table uid_validity (
+                uid_validity integer primary key
+            ) strict;
+            pragma optimize;",
         )
         .expect("creation of tables should succeed");
 
-        Self { db, uid_validity }
+        Self {
+            db,
+            modseq: Cell::new(0),
+        }
     }
 
     fn prepare_state_file(state_dir: &Path, account: &str, mailbox: &str) -> PathBuf {
@@ -64,29 +81,29 @@ impl State {
         state_dir
     }
 
-    pub fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self> {
-        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
-        let db = Connection::open_with_flags(
-            state_file,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_URI,
-        )?;
-        db.pragma_update(None, "journal_mode", 1)
-            .expect("journal_mode should be settable to normal");
-        let uid_validity = db
-            .query_one("select user_version from pragma_user_version;", [], |row| {
-                Ok(UidValidity::new(
-                    row.get(0).expect("uid_validity should be set in state"),
-                ))
+    pub fn uid_validity(&self) -> UidValidity {
+        self.db
+            .query_one("select * from uid_validity", (), |row| {
+                let validity: u32 = row.get(0)?;
+                Ok(UidValidity::from(validity))
             })
-            .expect("uid_validity should be selectable");
-
-        Ok(Self { db, uid_validity })
+            .expect("uid_validity should be selectable")
     }
 
-    pub fn uid_validity(&self) -> UidValidity {
-        self.uid_validity
+    pub fn set_uid_validity(&self, uid_validity: UidValidity) {
+        self.db
+            .execute(
+                "insert into uid_validity (uid_validity) values (?1)",
+                [u32::from(uid_validity)],
+            )
+            .expect("uid should be settable");
+    }
+
+    pub fn set_modseq(&self, value: i64) {
+        self.db
+            .pragma_update(None, "user_version", value)
+            .expect("setting modseq should succeed");
+        self.modseq.replace(value);
     }
 
     pub fn update(&self, data: &LocalMailMetadata) {

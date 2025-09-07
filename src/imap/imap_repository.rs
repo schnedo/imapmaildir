@@ -2,6 +2,7 @@ use std::num::NonZeroU64;
 
 use crate::{
     imap::RemoteMail,
+    state::State,
     sync::{Change, Mail, MailMetadata, Repository},
 };
 use anyhow::Result;
@@ -18,28 +19,54 @@ pub trait Connector {
     async fn connect_to(host: &str, port: u16) -> (Self::Connection, ResponseData);
 }
 
-pub struct ImapRepository<T: SendCommand> {
+pub struct ImapRepository<'a, T: SendCommand> {
     session: Session<T>,
     mailbox: Mailbox,
+    state: &'a State,
 }
 
-impl<T: SendCommand> ImapRepository<T> {
+impl<'a, T: SendCommand> ImapRepository<'a, T> {
+    pub async fn init<C: Connector<Connection = T>>(
+        host: &str,
+        port: u16,
+        user: &str,
+        password: &str,
+        mailbox: &str,
+        state: &'a State,
+    ) -> Result<Self> {
+        let (connection, _) = C::connect_to(host, port).await;
+        let authenticator = Authenticator::new(user, password);
+        let mut session = authenticator.authenticate(connection).await?;
+        let mailbox = session.select(mailbox).await?;
+        state.set_uid_validity(mailbox.uid_validity());
+        Ok(Self {
+            session,
+            mailbox,
+            state,
+        })
+    }
     pub async fn try_connect<C: Connector<Connection = T>>(
         host: &str,
         port: u16,
         user: &str,
         password: &str,
         mailbox: &str,
+        state: &'a State,
     ) -> Result<Self> {
         let (connection, _) = C::connect_to(host, port).await;
         let authenticator = Authenticator::new(user, password);
         let mut session = authenticator.authenticate(connection).await?;
         let mailbox = session.select(mailbox).await?;
-        Ok(Self { session, mailbox })
+        assert_eq!(mailbox.uid_validity(), state.uid_validity());
+        Ok(Self {
+            session,
+            mailbox,
+            state,
+        })
     }
 }
 
-impl<T: SendCommand> Repository for ImapRepository<T> {
+impl<T: SendCommand> Repository for ImapRepository<'_, T> {
     fn validity(&self) -> super::UidValidity {
         self.mailbox.uid_validity()
     }

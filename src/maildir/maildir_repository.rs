@@ -13,9 +13,9 @@ use crate::{
 
 use super::Maildir;
 
-pub struct MaildirRepository {
+pub struct MaildirRepository<'a> {
     maildir: Maildir,
-    state: State,
+    state: &'a State,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -101,43 +101,35 @@ impl MailMetadata for LocalMailMetadata {
     }
 }
 
-impl MaildirRepository {
-    pub fn new(
-        account: &str,
-        mailbox: &str,
-        mail_dir: &Path,
-        state_dir: &Path,
-        uid_validity: UidValidity,
-    ) -> Self {
-        match (
-            Maildir::load(mail_dir, account, mailbox),
-            State::load(state_dir, account, mailbox),
-        ) {
-            (Ok(mail), Ok(state)) => Self {
-                maildir: mail,
-                state,
-            },
-            (Ok(_), Err(_)) => todo!(
+impl<'a> MaildirRepository<'a> {
+    pub fn init(account: &str, mailbox: &str, mail_dir: &Path, state: &'a State) -> Self {
+        if let Ok(mail) = Maildir::load(mail_dir, account, mailbox) {
+            todo!(
                 "unmanaged maildir found: {}/{account}/{mailbox}",
                 mail_dir.to_string_lossy()
-            ),
-            (Err(_), Ok(_)) => todo!(
-                "existing state for new maildir found: {}/{account}",
-                state_dir.to_string_lossy()
-            ),
-            (Err(_), Err(_)) => {
-                let mail = Maildir::new(mail_dir, account, mailbox);
-                let state = State::create_new(state_dir, account, mailbox, uid_validity);
-                Self {
-                    maildir: mail,
-                    state,
-                }
+            )
+        } else {
+            let mail = Maildir::new(mail_dir, account, mailbox);
+            Self {
+                maildir: mail,
+                state,
             }
+        }
+    }
+
+    pub fn load(account: &str, mailbox: &str, mail_dir: &Path, state: &'a State) -> Self {
+        if let Ok(mail) = Maildir::load(mail_dir, account, mailbox) {
+            Self {
+                maildir: mail,
+                state,
+            }
+        } else {
+            todo!("missing maildir for existing state")
         }
     }
 }
 
-impl Repository for MaildirRepository {
+impl Repository for MaildirRepository<'_> {
     fn validity(&self) -> UidValidity {
         self.state.uid_validity()
     }
