@@ -4,13 +4,19 @@ use futures::StreamExt as _;
 use imap_proto::{
     MailboxDatum::{Exists, Flags, Recent},
     Response::{Data, Done, MailboxData},
-    ResponseCode::{HighestModSeq, PermanentFlags, ReadOnly, UidNext, UidValidity, Unseen},
-    Status::{Bad, No, Ok},
+    ResponseCode, Status,
 };
 use log::{debug, trace, warn};
 use thiserror::Error;
 
-use crate::imap::{client::mail::mailbox::MailboxBuilder, connection::SendCommand};
+use crate::{
+    imap::{
+        UidValidity,
+        client::mail::mailbox::MailboxBuilder,
+        connection::{self, SendCommand},
+    },
+    state::ModSeq,
+};
 
 use super::mailbox::Mailbox;
 
@@ -18,7 +24,26 @@ pub async fn select(
     connection: &mut impl SendCommand,
     mailbox: &str,
 ) -> Result<Mailbox, SelectError> {
-    let command = format!("SELECT {mailbox} (CONDSTORE)");
+    let command = format!("SELECT {mailbox}");
+    do_select(connection, mailbox, command).await
+}
+
+// todo: add known uids and message number to uid mapping (see rfc 7162)
+pub async fn qresync_select(
+    connection: &mut impl SendCommand,
+    mailbox: &str,
+    uid_validity: UidValidity,
+    highest_modseq: ModSeq,
+) -> Result<Mailbox, SelectError> {
+    let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
+    do_select(connection, mailbox, command).await
+}
+
+async fn do_select(
+    connection: &mut impl SendCommand,
+    mailbox: &str,
+    command: String,
+) -> Result<Mailbox, SelectError> {
     debug!("{command}");
     let mut responses = connection.send(command);
     let mut new_mailbox = MailboxBuilder::default();
@@ -46,35 +71,35 @@ pub async fn select(
                 }
             },
             Data {
-                status: Ok,
+                status: Status::Ok,
                 code: None,
                 information: Some(information),
             } => {
                 debug!("{information}");
             }
             Data {
-                status: Ok,
+                status: Status::Ok,
                 code: Some(code),
                 information,
             } => match code {
-                Unseen(unseen) => {
+                ResponseCode::Unseen(unseen) => {
                     new_mailbox.unseen(*unseen);
                 }
-                PermanentFlags(cows) => {
+                ResponseCode::PermanentFlags(cows) => {
                     let mut flags = Vec::with_capacity(cows.len());
                     for cow in cows {
                         flags.push(cow.to_string());
                     }
                     new_mailbox.permanent_flags(flags);
                 }
-                UidNext(next) => {
+                ResponseCode::UidNext(next) => {
                     new_mailbox
                         .uid_next(next.try_into().expect("server should send valid uidnext"));
                 }
-                UidValidity(validity) => {
+                ResponseCode::UidValidity(validity) => {
                     new_mailbox.uid_validity((*validity).into());
                 }
-                HighestModSeq(modseq) => {
+                ResponseCode::HighestModSeq(modseq) => {
                     new_mailbox.highest_modseq(
                         (*modseq)
                             .try_into()
@@ -90,18 +115,18 @@ pub async fn select(
                 }
             },
             Done { status, code, .. } => match status {
-                Ok => {
-                    if let Some(ReadOnly) = code {
+                Status::Ok => {
+                    if let Some(ResponseCode::ReadOnly) = code {
                         new_mailbox.readonly(true);
                     }
                     break;
                 }
-                No => {
+                Status::No => {
                     return Err(SelectError {
                         mailbox: mailbox.to_string(),
                     });
                 }
-                Bad => panic!("Bad status response to select. This is a code issue."),
+                Status::Bad => panic!("Bad status response to select. This is a code issue."),
                 _ => panic!("select status can only ever be Ok, No or Bad"),
             },
             _ => {
@@ -151,8 +176,8 @@ mod tests {
                 Cow::Borrowed("\\Draft"),
             ])),
             Response::Data {
-                status: Ok,
-                code: Some(PermanentFlags(vec![
+                status: Status::Ok,
+                code: Some(ResponseCode::PermanentFlags(vec![
                     Cow::Borrowed("\\Answered"),
                     Cow::Borrowed("\\Flagged"),
                     Cow::Borrowed("\\Deleted"),
@@ -165,23 +190,23 @@ mod tests {
             Response::MailboxData(Exists(exists)),
             Response::MailboxData(Recent(recent)),
             Response::Data {
-                status: Ok,
-                code: Some(UidValidity(uid_validity)),
+                status: Status::Ok,
+                code: Some(ResponseCode::UidValidity(uid_validity)),
                 information: Some(Cow::Borrowed("UIDs valid")),
             },
             Response::Data {
-                status: Ok,
-                code: Some(UidNext(uid_next)),
+                status: Status::Ok,
+                code: Some(ResponseCode::UidNext(uid_next)),
                 information: Some(Cow::Borrowed("Predicted next UID")),
             },
             Response::Data {
-                status: Ok,
+                status: Status::Ok,
                 code: Some(ResponseCode::HighestModSeq(expected_highest_modseq)),
                 information: Some(Cow::Borrowed("")),
             },
             Response::Done {
                 tag: RequestId("0001".to_string()),
-                status: Ok,
+                status: Status::Ok,
                 code: Some(ResponseCode::ReadWrite),
                 information: Some(Cow::Borrowed("Select completed (0.001 + 0.000 secs).")),
             },

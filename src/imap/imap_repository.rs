@@ -34,7 +34,11 @@ impl<'a, T: SendCommand> ImapRepository<'a, T> {
         mailbox: &str,
         state: &'a State,
     ) -> Result<Self> {
-        let (session, mailbox) = Self::setup::<C>(host, port, user, password, mailbox).await?;
+        let mut session = Self::setup_unselected::<C>(host, port, user, password, mailbox).await?;
+        let mailbox = session
+            .select(mailbox)
+            .await
+            .expect("mailbox should be selectable");
         state.set_uid_validity(mailbox.uid_validity());
         Ok(Self {
             session,
@@ -42,7 +46,7 @@ impl<'a, T: SendCommand> ImapRepository<'a, T> {
             state,
         })
     }
-    pub async fn try_connect<C: Connector<Connection = T>>(
+    pub async fn connect<C: Connector<Connection = T>>(
         host: &str,
         port: u16,
         user: &str,
@@ -50,7 +54,11 @@ impl<'a, T: SendCommand> ImapRepository<'a, T> {
         mailbox: &str,
         state: &'a State,
     ) -> Result<Self> {
-        let (session, mailbox) = Self::setup::<C>(host, port, user, password, mailbox).await?;
+        let mut session = Self::setup_unselected::<C>(host, port, user, password, mailbox).await?;
+        let mailbox = session
+            .qresync_select(mailbox, state.uid_validity(), state.modseq())
+            .await
+            .expect("mailbox should be selectable");
         assert_eq!(mailbox.uid_validity(), state.uid_validity());
         Ok(Self {
             session,
@@ -59,18 +67,21 @@ impl<'a, T: SendCommand> ImapRepository<'a, T> {
         })
     }
 
-    async fn setup<C: Connector<Connection = T>>(
+    async fn setup_unselected<C: Connector<Connection = T>>(
         host: &str,
         port: u16,
         user: &str,
         password: &str,
         mailbox: &str,
-    ) -> Result<(Session<T>, Mailbox)> {
+    ) -> Result<Session<T>> {
         let (connection, _) = C::connect_to(host, port).await;
         let authenticator = Authenticator::new(user, password);
         let mut session = authenticator.authenticate(connection).await?;
-        let mailbox = session.select(mailbox).await?;
-        Ok((session, mailbox))
+        session
+            .enable_qresync()
+            .await
+            .expect("server should support qresync");
+        Ok(session)
     }
 }
 

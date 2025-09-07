@@ -1,6 +1,7 @@
 use std::{
     cell::Cell,
     convert::Into,
+    fmt::Display,
     fs::create_dir_all,
     path::{Path, PathBuf},
 };
@@ -18,11 +19,31 @@ use crate::{
     sync::{Flag, MailMetadata},
 };
 
-#[derive(Getters)]
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct ModSeq(i64);
+
+impl From<i64> for ModSeq {
+    fn from(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ModSeq> for i64 {
+    fn from(value: ModSeq) -> Self {
+        value.0
+    }
+}
+
+impl Display for ModSeq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub struct State {
-    #[getter(skip)]
     db: Connection,
-    modseq: Cell<i64>,
+    modseq: Cell<ModSeq>,
 }
 
 impl State {
@@ -42,7 +63,7 @@ impl State {
         let modseq = db
             .query_one("select * from pragma_user_version", [], |row| {
                 let modseq: i64 = row.get(0)?;
-                Ok(Cell::new(modseq))
+                Ok(Cell::new(modseq.into()))
             })
             .expect("getting modseq should succeed");
         Ok(Self { db, modseq })
@@ -70,7 +91,7 @@ impl State {
 
         Self {
             db,
-            modseq: Cell::new(0),
+            modseq: Cell::new(0.into()),
         }
     }
 
@@ -99,11 +120,15 @@ impl State {
             .expect("uid should be settable");
     }
 
-    pub fn set_modseq(&self, value: i64) {
+    pub fn set_modseq(&self, value: ModSeq) {
         self.db
-            .pragma_update(None, "user_version", value)
+            .pragma_update(None, "user_version", i64::from(value))
             .expect("setting modseq should succeed");
         self.modseq.replace(value);
+    }
+
+    pub fn modseq(&self) -> ModSeq {
+        self.modseq.get()
     }
 
     pub fn update(&self, data: &LocalMailMetadata) {

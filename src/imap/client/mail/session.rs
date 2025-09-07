@@ -1,9 +1,16 @@
-use std::num::NonZeroU64;
+use std::{borrow::Cow, num::NonZeroU64};
 
-use futures::Stream;
+use futures::{Stream, StreamExt};
+use imap_proto::{Capability, Response, Status};
+use log::{trace, warn};
+use rustix::path::Arg;
 
 use crate::{
-    imap::{client::mail::fetch::RemoteMailMetadata, connection::SendCommand},
+    imap::{
+        client::mail::{fetch::RemoteMailMetadata, qresync_select},
+        connection::SendCommand,
+    },
+    state::ModSeq,
     sync::{MailMetadata, Repository},
 };
 
@@ -25,6 +32,43 @@ impl<T: SendCommand> Session<T> {
 
     pub async fn select(&mut self, mailbox: &str) -> Result<Mailbox, SelectError> {
         select(&mut self.connection, mailbox).await
+    }
+
+    pub async fn qresync_select(
+        &mut self,
+        mailbox: &str,
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
+    ) -> Result<Mailbox, SelectError> {
+        qresync_select(&mut self.connection, mailbox, uid_validity, highest_modseq).await
+    }
+
+    pub async fn enable_qresync(&mut self) -> Result<(), &'static str> {
+        let command = "ENABLE QRESYNC";
+        let mut responses = self.connection.send(command.to_string());
+
+        while let Some(response) = responses.next().await {
+            match response.parsed() {
+                Response::Capabilities(cows) => {
+                    trace!("enabled {cows:?}");
+                }
+                Response::Done {
+                    status: Status::Ok, ..
+                } => {}
+                Response::Done { information, .. } => {
+                    if let Some(information) = information {
+                        panic!("{information}");
+                    } else {
+                        panic!("bad FETCH");
+                    }
+                }
+                _ => {
+                    warn!("ignoring unknown response to ENABLE");
+                    trace!("{:?}", response.parsed());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn idle(&mut self) {

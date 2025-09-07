@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
         let mut syncer = if state_existed {
             let maildir_repository =
                 MaildirRepository::load(config.account(), mailbox, config.maildir(), &state);
-            let imap_repository = ImapRepository::try_connect::<Connection>(
+            let imap_repository = ImapRepository::connect::<Connection>(
                 config.host(),
                 config.port(),
                 config.user(),

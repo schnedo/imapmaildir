@@ -50,6 +50,12 @@ impl UidValidity {
     }
 }
 
+impl Display for UidValidity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl From<u32> for UidValidity {
     fn from(value: u32) -> Self {
         Self(value)
@@ -59,12 +65,6 @@ impl From<u32> for UidValidity {
 impl From<UidValidity> for u32 {
     fn from(value: UidValidity) -> Self {
         value.0
-    }
-}
-
-impl ToString for UidValidity {
-    fn to_string(&self) -> String {
-        self.0.to_string()
     }
 }
 
