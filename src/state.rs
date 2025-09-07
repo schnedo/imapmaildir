@@ -13,7 +13,7 @@ use rusqlite::{
 
 use crate::{
     imap::{Uid, UidValidity},
-    maildir::maildir_repository::LocalMailMetadata,
+    maildir::LocalMailMetadata,
     sync::{Flag, MailMetadata},
 };
 

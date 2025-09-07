@@ -7,10 +7,11 @@ use log::{debug, trace};
 use crate::{
     imap::{Uid, UidValidity},
     maildir::maildir::LocalMail,
+    state::State,
     sync::{Change, Flag, Mail, MailMetadata, Repository},
 };
 
-use super::{Maildir, State};
+use super::Maildir;
 
 pub struct MaildirRepository {
     maildir: Maildir,
