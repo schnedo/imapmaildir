@@ -9,5 +9,7 @@ pub use client::Session;
 pub use client::Uid;
 pub use client::UidValidity;
 pub use connection::Connection;
+pub use connection::ImapCodec;
 pub use connection::SendCommand;
+pub use connection::TagGenerator;
 pub use imap_repository::ImapRepository;

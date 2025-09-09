@@ -525,6 +525,7 @@ dependencies = [
  "enumflags2",
  "env_logger",
  "futures",
+ "futures-util",
  "imap-proto",
  "log",
  "nom",
