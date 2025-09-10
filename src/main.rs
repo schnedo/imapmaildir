@@ -22,15 +22,15 @@ use futures::stream::SplitSink;
 use futures::{Sink, SinkExt, StreamExt};
 use futures_util::sink::Send;
 use imap_proto::{Request, Response};
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use tokio_util::codec::Framed;
 
 use crate::config::Config;
-use crate::imap::{ImapCodec, TagGenerator};
+use crate::imap::{ImapCodec, ResponseData, TagGenerator};
 use crate::nuke::nuke;
 
 #[derive(Parser, Debug)]
@@ -52,51 +52,129 @@ enum Capability {
     QResync,
 }
 
-fn update_from(
-    capabilities: &mut BitFlags<Capability>,
-    new_capabilities: &[imap_proto::Capability],
-) {
-    for capability in new_capabilities {
-        match capability {
-            imap_proto::Capability::Imap4rev1 => {
-                capabilities.insert(Capability::Imap4rev1);
-            }
-            imap_proto::Capability::Auth(cow) => {
-                trace!("unhandled auth capabilty {cow}");
-            }
-            imap_proto::Capability::Atom(cow) => match cow.as_ref() {
-                "CONDSTORE" => {
-                    capabilities.insert(Capability::Condstore);
-                }
-                "ENABLE" => {
-                    capabilities.insert(Capability::Enable);
-                }
-                "IDLE" => {
-                    capabilities.insert(Capability::Idle);
-                }
-                "QRESYNC" => {
-                    capabilities.insert(Capability::QResync);
-                }
-                _ => {
-                    trace!("unhandled capability {cow}");
-                }
-            },
-        }
-    }
-    trace!("updated capabilities to {capabilities:?}");
+#[derive(Default)]
+struct ImapState {
+    capabilities: Mutex<BitFlags<Capability>>,
 }
 
-type Callbacks = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), ()>>>>>;
+impl ImapState {
+    fn handle_untagged_response(&self, response: &Response<'_>) {
+        trace!("handling untagged response {response:?}");
+        match response {
+            imap_proto::Response::Capabilities(items)
+            | imap_proto::Response::Data {
+                status: imap_proto::Status::Ok,
+                code: Some(imap_proto::ResponseCode::Capabilities(items)),
+                information: _,
+            } => {
+                self.update_capabilities(items);
+            }
+            imap_proto::Response::Continue { code, information } => todo!(),
+            imap_proto::Response::Data {
+                status,
+                code,
+                information,
+            } => todo!(),
+            imap_proto::Response::Expunge(_) => todo!(),
+            imap_proto::Response::Vanished { earlier, uids } => todo!(),
+            imap_proto::Response::Fetch(_, attribute_values) => todo!(),
+            imap_proto::Response::MailboxData(mailbox_datum) => todo!(),
+            imap_proto::Response::Quota(quota) => todo!(),
+            imap_proto::Response::QuotaRoot(quota_root) => todo!(),
+            imap_proto::Response::Id(hash_map) => todo!(),
+            imap_proto::Response::Acl(acl) => todo!(),
+            imap_proto::Response::ListRights(list_rights) => todo!(),
+            imap_proto::Response::MyRights(my_rights) => todo!(),
+            _ => warn!("ignoring unknown untagged response: {response:?}"),
+        }
+    }
+
+    fn update_capabilities(&self, capabilities: &[imap_proto::Capability]) {
+        let mut caps = self
+            .capabilities
+            .lock()
+            .expect("capabilities should be lockable");
+        for capability in capabilities {
+            match capability {
+                imap_proto::Capability::Imap4rev1 => {
+                    caps.insert(Capability::Imap4rev1);
+                }
+                imap_proto::Capability::Auth(cow) => {
+                    trace!("unhandled auth capabilty {cow}");
+                }
+                imap_proto::Capability::Atom(cow) => match cow.as_ref() {
+                    "CONDSTORE" => {
+                        caps.insert(Capability::Condstore);
+                    }
+                    "ENABLE" => {
+                        caps.insert(Capability::Enable);
+                    }
+                    "IDLE" => {
+                        caps.insert(Capability::Idle);
+                    }
+                    "QRESYNC" => {
+                        caps.insert(Capability::QResync);
+                    }
+                    _ => {
+                        trace!("unhandled capability {cow}");
+                    }
+                },
+            }
+        }
+        trace!("updated capabilities to {capabilities:?}");
+    }
+}
+
 struct Client {
-    commands_in_flight: Callbacks,
-    capabilities: BitFlags<Capability>,
-    tag_generator: TagGenerator,
-    tx: mpsc::Sender<(String, String)>,
+    connection: Connection,
+    state: Arc<ImapState>,
 }
 
 impl Client {
-    #[expect(clippy::too_many_lines)]
     async fn start(host: &str, port: u16) -> Self {
+        let (untagged_response_sender, mut untagged_response_receiver) = mpsc::channel(32);
+        let connection = Connection::start(host, port, untagged_response_sender).await;
+        let this = Self {
+            connection,
+            state: Arc::new(ImapState::default()),
+        };
+        let state = this.state.clone();
+
+        tokio::spawn(async move {
+            while let Some(response) = untagged_response_receiver.recv().await {
+                state.handle_untagged_response(response.parsed());
+            }
+        });
+
+        this
+    }
+
+    async fn login(&mut self, username: &str, password: &str) {
+        debug!("LOGIN <user> <password>");
+        self.connection
+            .send(&format!("LOGIN {username} {password}"))
+            .await
+            .expect("communication to io task should not have been canceled")
+            .expect("login should succeed");
+    }
+}
+
+#[derive(Debug)]
+enum TaggedResponseError {
+    No { information: Option<String> },
+    Bad { information: Option<String> },
+}
+type SendReturnValue = Result<ResponseData, TaggedResponseError>;
+type Callbacks = Arc<Mutex<HashMap<String, oneshot::Sender<SendReturnValue>>>>;
+struct Connection {
+    commands_in_flight: Callbacks,
+    capabilities: BitFlags<Capability>,
+    tag_generator: TagGenerator,
+    send_tx: mpsc::Sender<(String, String)>,
+}
+
+impl Connection {
+    async fn start(host: &str, port: u16, untagged_response_sender: Sender<ResponseData>) -> Self {
         debug!("Connecting to server");
         let tls = native_tls::TlsConnector::new().expect("native tls should be available");
         let tls = TlsConnector::from(tls);
@@ -105,16 +183,15 @@ impl Client {
         let stream = (tls.connect(host, stream).await).expect("upgrading to tls should succeed");
 
         let mut stream = Framed::new(stream, ImapCodec::default());
-        let (tx, mut rx) = mpsc::channel::<(String, String)>(2);
+        let (send_tx, mut send_rx) = mpsc::channel::<(String, String)>(2);
 
         let commands_in_flight: Callbacks = Arc::new(Mutex::new(HashMap::new()));
-        let mut capabilities = BitFlags::default();
         let in_flight = commands_in_flight.clone();
 
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    Some((tag, command)) = rx.recv() => {
+                    Some((tag, command)) = send_rx.recv() => {
                         trace!("sending {tag:?}");
                         let request = Request(
                             Cow::Borrowed(tag.as_bytes()),
@@ -128,77 +205,37 @@ impl Client {
                     Some(response) = stream.next() => {
                         let response = response.expect("response should be receivable");
                         trace!("{:?}", response.parsed());
-                        match response.parsed() {
-                            imap_proto::Response::Capabilities(items)
-                            | imap_proto::Response::Data {
-                                status: imap_proto::Status::Ok,
-                                code: Some(imap_proto::ResponseCode::Capabilities(items)),
-                                information: _,
-                            } => {
-                                update_from(&mut capabilities, items);
-                            }
-                            imap_proto::Response::Done {
-                                tag,
-                                status,
-                                code,
-                                information,
-                            } => {
-                                trace!("ended {tag:?} {status:?} {information:?}");
+                        if let imap_proto::Response::Done {
+                            tag,
+                            status,
+                            code,
+                            information,
+                        } = response.parsed() {
+                            trace!("ended {tag:?} {status:?} {information:?}");
+                            if let Some(cb) = in_flight
+                                .lock()
+                                .expect("locking commands_in_flight for response should succeed")
+                                .remove(&tag.0)
+                            {
                                 match status {
                                     imap_proto::Status::Ok => {
-                                        if let Some(code) = code {
-                                            match code {
-                                                imap_proto::ResponseCode::Alert => todo!(),
-                                                imap_proto::ResponseCode::BadCharset(cows) => todo!(),
-                                                imap_proto::ResponseCode::Capabilities(items) => {
-                                                    update_from(&mut capabilities, items);
-                                                },
-                                                imap_proto::ResponseCode::HighestModSeq(_) => todo!(),
-                                                imap_proto::ResponseCode::Parse => todo!(),
-                                                imap_proto::ResponseCode::PermanentFlags(cows) => todo!(),
-                                                imap_proto::ResponseCode::ReadOnly => todo!(),
-                                                imap_proto::ResponseCode::ReadWrite => todo!(),
-                                                imap_proto::ResponseCode::TryCreate => todo!(),
-                                                imap_proto::ResponseCode::UidNext(_) => todo!(),
-                                                imap_proto::ResponseCode::UidValidity(_) => todo!(),
-                                                imap_proto::ResponseCode::Unseen(_) => todo!(),
-                                                imap_proto::ResponseCode::AppendUid(_, uid_set_members) => todo!(),
-                                                imap_proto::ResponseCode::CopyUid(_, uid_set_members, uid_set_members1) => todo!(),
-                                                imap_proto::ResponseCode::UidNotSticky => todo!(),
-                                                imap_proto::ResponseCode::MetadataLongEntries(_) => todo!(),
-                                                imap_proto::ResponseCode::MetadataMaxSize(_) => todo!(),
-                                                imap_proto::ResponseCode::MetadataTooMany => todo!(),
-                                                imap_proto::ResponseCode::MetadataNoPrivate => todo!(),
-                                                _ => todo!(),
-                                            }
-                                        }
-                                        if let Some(cb) = in_flight.lock().expect("locking commands_in_flight for response should succeed").remove(&tag.0) {
-                                            cb.send(Ok(())).expect("sending response out of io task should succeed");
-                                        }
+                                        cb.send(Ok(response))
+                                            .expect("sending response out of network task should succeed");
+                                    }
+                                    imap_proto::Status::No => {
+                                        cb.send(Err(TaggedResponseError::No{information: information.as_ref().map(ToString::to_string)}))
+                                            .expect("sending response out of network task should succeed");
                                     },
-                                    imap_proto::Status::No => todo!(),
-                                    imap_proto::Status::Bad => todo!(),
-                                    imap_proto::Status::PreAuth => todo!(),
-                                    imap_proto::Status::Bye => todo!(),
+                                    imap_proto::Status::Bad => {
+                                        cb.send(Err(TaggedResponseError::Bad{information: information.as_ref().map(ToString::to_string)}))
+                                            .expect("sending response out of network task should succeed");
+                                    },
+                                    imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
+                                    imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
                                 }
-                            },
-                            imap_proto::Response::Continue { code, information } => todo!(),
-                            imap_proto::Response::Data {
-                                status,
-                                code,
-                                information,
-                            } => todo!(),
-                            imap_proto::Response::Expunge(_) => todo!(),
-                            imap_proto::Response::Vanished { earlier, uids } => todo!(),
-                            imap_proto::Response::Fetch(_, attribute_values) => todo!(),
-                            imap_proto::Response::MailboxData(mailbox_datum) => todo!(),
-                            imap_proto::Response::Quota(quota) => todo!(),
-                            imap_proto::Response::QuotaRoot(quota_root) => todo!(),
-                            imap_proto::Response::Id(hash_map) => todo!(),
-                            imap_proto::Response::Acl(acl) => todo!(),
-                            imap_proto::Response::ListRights(list_rights) => todo!(),
-                            imap_proto::Response::MyRights(my_rights) => todo!(),
-                            _ => todo!(),
+                            }
+                        } else {
+                            untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
                         }
                     }
                 }
@@ -209,30 +246,22 @@ impl Client {
             commands_in_flight,
             capabilities: BitFlags::default(),
             tag_generator: TagGenerator::default(),
-            tx,
+            send_tx,
         }
     }
 
-    async fn send(&mut self, command: &str) -> Result<Result<(), ()>, oneshot::Canceled> {
-        let (a, b) = oneshot::channel();
+    async fn send(&mut self, command: &str) -> Result<SendReturnValue, oneshot::Canceled> {
+        let (sender, receiver) = oneshot::channel();
         let tag = self.tag_generator.next();
         self.commands_in_flight
             .lock()
             .expect("sender should be able to acquire lock")
-            .insert(tag.clone(), a);
-        self.tx
+            .insert(tag.clone(), sender);
+        self.send_tx
             .send((tag, command.to_string()))
             .await
             .expect("sending request to io task should succeed");
-        b.into_future().await
-    }
-
-    async fn login(&mut self, username: &str, password: &str) {
-        debug!("LOGIN <user> <password>");
-        self.send(&format!("LOGIN {username} {password}"))
-            .await
-            .expect("communication to io task should not have been canceled")
-            .expect("login should succeed");
+        receiver.into_future().await
     }
 }
 
@@ -249,10 +278,10 @@ async fn main() -> Result<()> {
     } else {
         let host: &str = config.host();
         let port = config.port();
-        let mut client = Client::start(host, port).await;
         let username = config.user();
-        let password = config.password();
-        client.login(username, &password).await;
+        let password = &config.password();
+        let mut client = Client::start(host, port).await;
+        client.login(username, password).await;
 
         Ok(())
     }
