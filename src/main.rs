@@ -121,7 +121,7 @@ impl ImapState {
                 },
             }
         }
-        trace!("updated capabilities to {capabilities:?}");
+        trace!("updated capabilities to {caps:?}");
     }
 }
 
