@@ -151,11 +151,23 @@ impl Client {
 
     async fn login(&mut self, username: &str, password: &str) {
         debug!("LOGIN <user> <password>");
-        self.connection
+        let response = self
+            .connection
             .send(&format!("LOGIN {username} {password}"))
             .await
-            .expect("communication to io task should not have been canceled")
+            .expect("communication to network task should not have been canceled")
             .expect("login should succeed");
+        if let Some(imap_proto::ResponseCode::Capabilities(items)) =
+            response.unsafe_get_tagged_response_code()
+        {
+            self.state.update_capabilities(items);
+        } else {
+            self.connection
+                .send("CAPABILITY")
+                .await
+                .expect("communication to network task should not have been canceled")
+                .expect("capabilities should succeed");
+        }
     }
 }
 
