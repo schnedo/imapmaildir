@@ -155,7 +155,6 @@ impl Client {
             .connection
             .send(&format!("LOGIN {username} {password}"))
             .await
-            .expect("communication to network task should not have been canceled")
             .expect("login should succeed");
         if let Some(imap_proto::ResponseCode::Capabilities(items)) =
             response.unsafe_get_tagged_response_code()
@@ -165,7 +164,6 @@ impl Client {
             self.connection
                 .send("CAPABILITY")
                 .await
-                .expect("communication to network task should not have been canceled")
                 .expect("capabilities should succeed");
         }
     }
@@ -262,7 +260,7 @@ impl Connection {
         }
     }
 
-    async fn send(&mut self, command: &str) -> Result<SendReturnValue, oneshot::Canceled> {
+    async fn send(&mut self, command: &str) -> SendReturnValue {
         let (sender, receiver) = oneshot::channel();
         let tag = self.tag_generator.next();
         self.commands_in_flight
@@ -273,7 +271,9 @@ impl Connection {
             .send((tag, command.to_string()))
             .await
             .expect("sending request to io task should succeed");
-        receiver.into_future().await
+        receiver
+            .await
+            .expect("channel to network task should still be open")
     }
 }
 
