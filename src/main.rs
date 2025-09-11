@@ -69,7 +69,6 @@ impl ImapState {
             } => {
                 self.update_capabilities(items);
             }
-            imap_proto::Response::Continue { code, information } => todo!(),
             imap_proto::Response::Data {
                 status,
                 code,
@@ -199,7 +198,7 @@ impl Connection {
             loop {
                 tokio::select! {
                     Some((tag, command)) = outbound_rx.recv() => {
-                        trace!("sending {tag:?}");
+                        trace!("{tag:?}: sending");
                         let request = Request(
                             Cow::Borrowed(tag.as_bytes()),
                             Cow::Borrowed(command.as_bytes()),
@@ -212,34 +211,38 @@ impl Connection {
                     Some(response) = stream.next() => {
                         let response = response.expect("response should be receivable");
                         trace!("{:?}", response.parsed());
-                        if let imap_proto::Response::Done {
-                            tag,
-                            status,
-                            code,
-                            information,
-                        } = response.parsed() {
-                            trace!("ended {tag:?} {status:?} {information:?}");
-                            match status {
-                                imap_proto::Status::Ok => {
-                                    inbound_tx.send(Ok(response))
-                                        .await
-                                        .expect("sending response out of network task should succeed");
+                        match response.parsed() {
+                            Response::Done { tag, status, code, information } => {
+                                trace!("{tag:?} {status:?} {information:?}");
+                                match status {
+                                    imap_proto::Status::Ok => {
+                                        inbound_tx.send(Ok(response))
+                                            .await
+                                            .expect("sending response out of network task should succeed");
+                                    }
+                                    imap_proto::Status::No => {
+                                        inbound_tx.send(Err(TaggedResponseError::No{information: information.as_ref().map(ToString::to_string)}))
+                                            .await
+                                            .expect("sending response out of network task should succeed");
+                                    },
+                                    imap_proto::Status::Bad => {
+                                        inbound_tx.send(Err(TaggedResponseError::Bad{information: information.as_ref().map(ToString::to_string)}))
+                                            .await
+                                            .expect("sending response out of network task should succeed");
+                                    },
+                                    imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
+                                    imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
                                 }
-                                imap_proto::Status::No => {
-                                    inbound_tx.send(Err(TaggedResponseError::No{information: information.as_ref().map(ToString::to_string)}))
-                                        .await
-                                        .expect("sending response out of network task should succeed");
-                                },
-                                imap_proto::Status::Bad => {
-                                    inbound_tx.send(Err(TaggedResponseError::Bad{information: information.as_ref().map(ToString::to_string)}))
-                                        .await
-                                        .expect("sending response out of network task should succeed");
-                                },
-                                imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
-                                imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
-                            }
-                        } else {
-                            untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
+                            } ,
+                            Response::Continue { code, information } => {
+                                trace!("+ {information:?}");
+                                inbound_tx.send(Ok(response))
+                                    .await
+                                    .expect("sending response out of network task should succeed");
+                            },
+                            _ => {
+                                untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
+                            },
                         }
                     }
                 }
