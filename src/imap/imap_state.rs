@@ -1,18 +1,6 @@
 use std::sync::Mutex;
 
-use enumflags2::{BitFlags, bitflags};
 use log::{trace, warn};
-
-#[bitflags]
-#[repr(u8)]
-#[derive(Copy, Clone, Debug)]
-pub enum Capability {
-    Condstore,
-    Enable,
-    Idle,
-    Imap4rev1,
-    QResync,
-}
 
 #[derive(Default)]
 pub struct ImapState {

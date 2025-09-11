@@ -30,7 +30,7 @@ use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use tokio_util::codec::Framed;
 
 use crate::config::Config;
-use crate::imap::Client;
+use crate::imap::NotAuthenticatedClient;
 use crate::nuke::nuke;
 
 #[derive(Parser, Debug)]
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
         let port = config.port();
         let username = config.user();
         let password = &config.password();
-        let mut client = Client::start(host, port).await;
+        let mut client = NotAuthenticatedClient::start(host, port).await;
         client.login(username, password).await;
 
         Ok(())
