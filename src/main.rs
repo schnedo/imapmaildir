@@ -175,12 +175,11 @@ enum TaggedResponseError {
     Bad { information: Option<String> },
 }
 type SendReturnValue = Result<ResponseData, TaggedResponseError>;
-type Callbacks = Arc<Mutex<HashMap<String, oneshot::Sender<SendReturnValue>>>>;
+type Callbacks = Arc<Mutex<Option<oneshot::Sender<SendReturnValue>>>>;
 struct Connection {
-    commands_in_flight: Callbacks,
-    capabilities: BitFlags<Capability>,
     tag_generator: TagGenerator,
-    send_tx: mpsc::Sender<(String, String)>,
+    outbound_tx: mpsc::Sender<(String, String)>,
+    inbound_rx: mpsc::Receiver<SendReturnValue>,
 }
 
 impl Connection {
@@ -193,15 +192,13 @@ impl Connection {
         let stream = (tls.connect(host, stream).await).expect("upgrading to tls should succeed");
 
         let mut stream = Framed::new(stream, ImapCodec::default());
-        let (send_tx, mut send_rx) = mpsc::channel::<(String, String)>(2);
-
-        let commands_in_flight: Callbacks = Arc::new(Mutex::new(HashMap::new()));
-        let in_flight = commands_in_flight.clone();
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<(String, String)>(2);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<SendReturnValue>(2);
 
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    Some((tag, command)) = send_rx.recv() => {
+                    Some((tag, command)) = outbound_rx.recv() => {
                         trace!("sending {tag:?}");
                         let request = Request(
                             Cow::Borrowed(tag.as_bytes()),
@@ -222,27 +219,24 @@ impl Connection {
                             information,
                         } = response.parsed() {
                             trace!("ended {tag:?} {status:?} {information:?}");
-                            if let Some(cb) = in_flight
-                                .lock()
-                                .expect("locking commands_in_flight for response should succeed")
-                                .remove(&tag.0)
-                            {
-                                match status {
-                                    imap_proto::Status::Ok => {
-                                        cb.send(Ok(response))
-                                            .expect("sending response out of network task should succeed");
-                                    }
-                                    imap_proto::Status::No => {
-                                        cb.send(Err(TaggedResponseError::No{information: information.as_ref().map(ToString::to_string)}))
-                                            .expect("sending response out of network task should succeed");
-                                    },
-                                    imap_proto::Status::Bad => {
-                                        cb.send(Err(TaggedResponseError::Bad{information: information.as_ref().map(ToString::to_string)}))
-                                            .expect("sending response out of network task should succeed");
-                                    },
-                                    imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
-                                    imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
+                            match status {
+                                imap_proto::Status::Ok => {
+                                    inbound_tx.send(Ok(response))
+                                        .await
+                                        .expect("sending response out of network task should succeed");
                                 }
+                                imap_proto::Status::No => {
+                                    inbound_tx.send(Err(TaggedResponseError::No{information: information.as_ref().map(ToString::to_string)}))
+                                        .await
+                                        .expect("sending response out of network task should succeed");
+                                },
+                                imap_proto::Status::Bad => {
+                                    inbound_tx.send(Err(TaggedResponseError::Bad{information: information.as_ref().map(ToString::to_string)}))
+                                        .await
+                                        .expect("sending response out of network task should succeed");
+                                },
+                                imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
+                                imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
                             }
                         } else {
                             untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
@@ -253,25 +247,20 @@ impl Connection {
         });
 
         Self {
-            commands_in_flight,
-            capabilities: BitFlags::default(),
             tag_generator: TagGenerator::default(),
-            send_tx,
+            outbound_tx,
+            inbound_rx,
         }
     }
 
     async fn send(&mut self, command: &str) -> SendReturnValue {
-        let (sender, receiver) = oneshot::channel();
         let tag = self.tag_generator.next();
-        self.commands_in_flight
-            .lock()
-            .expect("sender should be able to acquire lock")
-            .insert(tag.clone(), sender);
-        self.send_tx
+        self.outbound_tx
             .send((tag, command.to_string()))
             .await
             .expect("sending request to io task should succeed");
-        receiver
+        self.inbound_rx
+            .recv()
             .await
             .expect("channel to network task should still be open")
     }
