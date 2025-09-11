@@ -72,10 +72,9 @@ impl Decoder for ImapCodec {
                 nom::Err::Error(nom::error::Error { code, .. })
                 | nom::Err::Failure(nom::error::Error { code, .. }),
             ) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("{code:?} during parsing of {buf:?}"),
-                ));
+                return Err(io::Error::other(format!(
+                    "{code:?} during parsing of {buf:?}"
+                )));
             }
         };
         let raw = buf.split_to(rsp_len).freeze();
@@ -120,8 +119,7 @@ impl ResponseData {
         }
     }
 
-    #[expect(clippy::needless_lifetimes)]
-    pub fn parsed<'a>(&'a self) -> &'a Response<'a> {
+    pub fn parsed(&self) -> &Response<'_> {
         &self.response
     }
 

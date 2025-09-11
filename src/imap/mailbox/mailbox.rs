@@ -14,6 +14,7 @@ pub struct Mailbox {
     exists: u32,
     recent: u32,
     #[builder(setter(strip_option), default)]
+    #[getter(skip)]
     unseen: Option<u32>,
     #[builder(default)]
     permanent_flags: Vec<String>,
@@ -35,5 +36,9 @@ impl Mailbox {
 
     pub fn highest_modseq(&self) -> NonZeroU64 {
         self.highest_modseq
+    }
+
+    pub fn unseen(&self) -> Option<u32> {
+        self.unseen
     }
 }

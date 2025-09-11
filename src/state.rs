@@ -48,7 +48,7 @@ pub struct State {
 
 impl State {
     pub fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir, &account, &mailbox);
+        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
         debug!(
             "try loading existing state file {}",
             state_file.to_string_lossy()
@@ -70,7 +70,7 @@ impl State {
     }
 
     pub fn init(state_dir: &Path, account: &str, mailbox: &str) -> Self {
-        let state_file = Self::prepare_state_file(state_dir, &account, &mailbox);
+        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
         debug!("creating new state file {}", state_file.to_string_lossy());
         let db = Connection::open(state_file).expect("State DB should be creatable");
         db.execute_batch(
@@ -158,12 +158,12 @@ impl State {
                 .expect("insert mail metadata statement should be preparable");
             stmt.execute((data.flags().bits(), &data.fileprefix()))
                 .expect("mail metadata should be insertable");
-            Some(Uid::from(
+            Some(
                 self.db
                     .last_insert_rowid()
                     .try_into()
                     .expect("newly stored mail id should be parsable to Uid"),
-            ))
+            )
         }
     }
 

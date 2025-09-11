@@ -35,7 +35,7 @@ impl TryFrom<i64> for Uid {
         if let Ok(num) = value.try_into() {
             NonZeroU32::new(num)
                 .ok_or("Cannot convert u32 to nonzero")
-                .map(|nz| Self(nz))
+                .map(Self)
         } else {
             Err("i64 too large")
         }

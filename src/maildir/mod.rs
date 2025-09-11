@@ -1,4 +1,3 @@
-#[expect(clippy::module_inception)]
 mod maildir;
 mod maildir_repository;
 

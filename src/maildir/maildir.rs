@@ -31,7 +31,7 @@ impl Maildir {
     pub fn new(maildir_path: &Path, account: &str, mailbox: &str) -> Self {
         let mut maildir_path = maildir_path.join(account);
         maildir_path.push(mailbox);
-        info!("creating mailbox in {maildir_path:#?}");
+        info!("creating mailbox in {:#}", maildir_path.display());
         let mut builder = DirBuilder::new();
         builder.recursive(true).mode(0o700);
 
@@ -86,7 +86,7 @@ impl Maildir {
         let file_prefix = Self::generate_file_prefix();
         let file_path = self.tmp.join(&file_prefix);
 
-        trace!("writing to {file_path:?}");
+        trace!("writing to {}", file_path.display());
         let Ok(mut file) = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -203,7 +203,7 @@ impl Maildir {
                 new_name.to_string_lossy()
             ),
             (true, false) => {
-                trace!("updating flags of {current_mail:?}");
+                trace!("updating flags of {:}", current_mail.display());
                 fs::rename(current_mail, new_name)
                     .expect("updating flags in maildir should succeed");
             }
