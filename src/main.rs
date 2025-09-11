@@ -56,8 +56,14 @@ async fn main() -> Result<()> {
         let port = config.port();
         let username = config.user();
         let password = &config.password();
-        let mut client = NotAuthenticatedClient::start(host, port).await;
-        client.login(username, password).await;
+        let mailbox = config
+            .mailboxes()
+            .first()
+            .expect("there should be a mailbox configured");
+
+        let client = NotAuthenticatedClient::start(host, port).await;
+        let client = client.login(username, password).await;
+        let client = client.select(mailbox).await;
 
         Ok(())
     }
