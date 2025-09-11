@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 #[derive(Clone, Debug, PartialEq, Copy)]
+#[repr(transparent)]
 pub struct UidValidity(u32);
 
 impl UidValidity {

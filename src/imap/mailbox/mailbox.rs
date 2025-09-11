@@ -3,7 +3,7 @@ use std::num::NonZeroU64;
 use derive_builder::Builder;
 use derive_getters::Getters;
 
-use crate::imap::mailbox::{uid::Uid, uid_validity::UidValidity};
+use crate::imap::mailbox::{ModSeq, uid::Uid, uid_validity::UidValidity};
 
 #[derive(Builder, Debug, Getters)]
 pub struct Mailbox {
@@ -23,7 +23,7 @@ pub struct Mailbox {
     #[getter(skip)]
     uid_next: Uid,
     #[getter(skip)]
-    highest_modseq: NonZeroU64,
+    highest_modseq: ModSeq,
 }
 
 impl Mailbox {
@@ -34,7 +34,7 @@ impl Mailbox {
         self.uid_next
     }
 
-    pub fn highest_modseq(&self) -> NonZeroU64 {
+    pub fn highest_modseq(&self) -> ModSeq {
         self.highest_modseq
     }
 
