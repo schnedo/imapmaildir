@@ -1,16 +1,10 @@
 mod client;
+mod codec;
 mod connection;
-mod imap_repository;
+mod imap_state;
+mod mailbox;
+mod tag_generator;
 
-pub use client::Authenticator;
-pub use client::RemoteMail;
-pub use client::SequenceSet;
-pub use client::Session;
-pub use client::Uid;
-pub use client::UidValidity;
-pub use connection::Connection;
-pub use connection::ImapCodec;
-pub use connection::ResponseData;
-pub use connection::SendCommand;
-pub use connection::TagGenerator;
-pub use imap_repository::ImapRepository;
+pub use client::Client;
+pub use mailbox::Uid;
+pub use mailbox::UidValidity;
