@@ -4,6 +4,12 @@ use std::{fmt::Display, num::NonZeroU32};
 #[repr(transparent)]
 pub struct Uid(NonZeroU32);
 
+impl Uid {
+    pub fn max() -> Self {
+        Self(NonZeroU32::MAX)
+    }
+}
+
 impl TryFrom<&u32> for Uid {
     type Error = <Self as TryFrom<u32>>::Error;
 

@@ -46,6 +46,10 @@ impl SequenceSet {
     pub fn from_ranges(ranges: Vec<SequenceRange>) -> Self {
         Self { ranges }
     }
+
+    pub fn all() -> Self {
+        Self::with_range(1, u32::MAX)
+    }
 }
 
 impl Display for SequenceSet {

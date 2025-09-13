@@ -1,6 +1,6 @@
 use std::mem::transmute;
 
-use log::{debug, trace};
+use log::{debug, info, trace};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -58,9 +58,15 @@ impl SelectedClient {
                                 let content =
                                     unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
                                 let remote_mail = RemoteMail::new(response, metadata, content);
-                                mail_tx.send(remote_mail).await;
+                                mail_tx
+                                    .send(remote_mail)
+                                    .await
+                                    .expect("mail channel should still be open");
                             } else {
-                                metadata_tx.send(metadata).await;
+                                metadata_tx
+                                    .send(metadata)
+                                    .await
+                                    .expect("mail metadata channel should still be open");
                             }
                         } else {
                             panic!(
@@ -98,6 +104,11 @@ impl SelectedClient {
 
     pub fn mail_rx(&mut self) -> &mut mpsc::Receiver<RemoteMail> {
         &mut self.mail_rx
+    }
+
+    pub async fn init(&mut self) {
+        info!("initializing new imap repository");
+        self.fetch_mail(&SequenceSet::all()).await;
     }
 }
 
