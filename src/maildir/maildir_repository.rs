@@ -13,9 +13,9 @@ use crate::{
 
 use super::Maildir;
 
-pub struct MaildirRepository<'a> {
+pub struct MaildirRepository {
     maildir: Maildir,
-    state: &'a State,
+    state: State,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -101,8 +101,8 @@ impl MailMetadata for LocalMailMetadata {
     }
 }
 
-impl<'a> MaildirRepository<'a> {
-    pub fn init(account: &str, mailbox: &str, mail_dir: &Path, state: &'a State) -> Self {
+impl MaildirRepository {
+    pub fn init(account: &str, mailbox: &str, mail_dir: &Path, state: State) -> Self {
         if let Ok(mail) = Maildir::load(mail_dir, account, mailbox) {
             todo!(
                 "unmanaged maildir found: {}/{account}/{mailbox}",
@@ -117,7 +117,7 @@ impl<'a> MaildirRepository<'a> {
         }
     }
 
-    pub fn load(account: &str, mailbox: &str, mail_dir: &Path, state: &'a State) -> Self {
+    pub fn load(account: &str, mailbox: &str, mail_dir: &Path, state: State) -> Self {
         if let Ok(mail) = Maildir::load(mail_dir, account, mailbox) {
             Self {
                 maildir: mail,

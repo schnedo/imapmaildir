@@ -70,28 +70,26 @@ async fn main() -> Result<()> {
         let client = NotAuthenticatedClient::connect(host, port).await;
         let client = client.login(username, password).await;
 
-        if let Ok(state) = State::load(state_dir, account, mailbox).await {
-            todo!("handle already initialized account");
-        } else {
-            let state = State::init(state_dir, account, mailbox)
-                .await
-                .expect("state should be creatable");
-            let (mut client, mut mail_rx) = client.select(state.clone(), mailbox).await;
-            let mailbox = mailbox.clone();
-            let state_dir = state_dir.clone();
-            let account = account.to_string();
-            let mail_dir = mail_dir.clone();
-            let writing_task = tokio::task::spawn(async move {
-                let maildir_repository =
-                    MaildirRepository::init(&account, &mailbox, &mail_dir, &state);
-                while let Some(mail) = mail_rx.recv().await {
-                    maildir_repository.store(&mail).await;
-                }
-            });
-            yield_now().await;
-            client.init().await;
-            writing_task.await?;
-        }
+        let (client, mut mail_rx, maildir_repository) =
+            if let Ok(state) = State::load(state_dir, account, mailbox).await {
+                let (client, mail_rx) = client.qresync_select(state.clone(), mailbox).await;
+                let maildir_repository = MaildirRepository::load(account, mailbox, mail_dir, state);
+                (client, mail_rx, maildir_repository)
+            } else {
+                let state = State::init(state_dir, account, mailbox)
+                    .await
+                    .expect("state should be creatable");
+                let (client, mail_rx) = client.select(state.clone(), mailbox).await;
+                let maildir_repository = MaildirRepository::init(account, mailbox, mail_dir, state);
+                (client, mail_rx, maildir_repository)
+            };
+
+        tokio::task::spawn(async move {
+            while let Some(mail) = mail_rx.recv().await {
+                maildir_repository.store(&mail).await;
+            }
+        })
+        .await?;
 
         Ok(())
     }

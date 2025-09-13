@@ -3,7 +3,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
-        client::{SelectedClient, capability::Capabilities},
+        client::{
+            SelectedClient,
+            capability::{Capabilities, Capability},
+        },
         codec::ResponseData,
         connection::Connection,
         mailbox::{MailboxBuilder, RemoteMail},
@@ -35,7 +38,32 @@ impl AuthenticatedClient {
         state: State,
         mailbox: &str,
     ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
+        assert!(self.capabilities.contains(Capability::Condstore));
         let command = format!("SELECT {mailbox} (CONDSTORE)");
+        let (mut client, mail_rx) = self.do_select(state, mailbox, &command).await;
+        client.init().await;
+
+        (client, mail_rx)
+    }
+
+    // todo: add optional qresync parameters
+    pub async fn qresync_select(
+        mut self,
+        state: State,
+        mailbox: &str,
+    ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
+        assert!(self.capabilities.contains(Capability::QResync));
+        let command = "ENABLE QRESYNC";
+        debug!("{command}");
+        self.connection
+            .send(command)
+            .await
+            .expect("enabling qresync should succeed");
+        let command = format!(
+            "SELECT {mailbox} (QRESYNC ({} {}))",
+            state.uid_validity().await,
+            state.highest_modseq().await
+        );
         self.do_select(state, mailbox, &command).await
     }
 

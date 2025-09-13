@@ -158,7 +158,7 @@ impl State {
         trace!("setting cached uid_validity {uid_validity}");
         self.execute(move |db| {
             db.execute(
-                "insert into uid_validity (uid_validity) values (?1)",
+                "insert or ignore into uid_validity (uid_validity) values (?1)",
                 [u32::from(uid_validity)],
             )
         })
@@ -173,7 +173,7 @@ impl State {
             .expect("setting modseq should succeed");
     }
 
-    pub async fn modseq(&self) -> ModSeq {
+    pub async fn highest_modseq(&self) -> ModSeq {
         trace!("getting cached highest_modseq");
         self.execute(|db| {
             db.query_one("select * from pragma_user_version", [], |row| {
