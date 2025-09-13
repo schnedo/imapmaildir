@@ -1,11 +1,14 @@
 use log::{debug, trace, warn};
 use tokio::sync::mpsc;
 
-use crate::imap::{
-    client::{SelectedClient, capability::Capabilities},
-    codec::ResponseData,
-    connection::Connection,
-    mailbox::{MailboxBuilder, RemoteMail},
+use crate::{
+    imap::{
+        client::{SelectedClient, capability::Capabilities},
+        codec::ResponseData,
+        connection::Connection,
+        mailbox::{MailboxBuilder, RemoteMail},
+    },
+    state::State,
 };
 
 pub struct AuthenticatedClient {
@@ -27,13 +30,18 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(self, mailbox: &str) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
+    pub async fn select(
+        self,
+        state: State,
+        mailbox: &str,
+    ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
         let command = format!("SELECT {mailbox} (CONDSTORE)");
-        self.do_select(mailbox, &command).await
+        self.do_select(state, mailbox, &command).await
     }
 
     async fn do_select(
         mut self,
+        state: State,
         mailbox: &str,
         command: &str,
     ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
@@ -95,9 +103,17 @@ impl AuthenticatedClient {
                             .uid_next(next.try_into().expect("server should send valid uidnext"));
                     }
                     imap_proto::ResponseCode::UidValidity(validity) => {
-                        new_mailbox.uid_validity((*validity).into());
+                        state.set_uid_validity(validity.into()).await;
+                        new_mailbox.uid_validity(validity.into());
                     }
                     imap_proto::ResponseCode::HighestModSeq(modseq) => {
+                        state
+                            .set_highest_modseq(
+                                modseq
+                                    .try_into()
+                                    .expect("received highest modseq should be legal"),
+                            )
+                            .await;
                         new_mailbox.highest_modseq(
                             (*modseq)
                                 .try_into()
@@ -128,6 +144,7 @@ impl AuthenticatedClient {
             self.connection,
             self.untagged_response_receiver,
             self.capabilities,
+            state,
             mailbox,
         )
     }

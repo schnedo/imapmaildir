@@ -22,6 +22,8 @@ use crate::{
 
 pub type DbTask = dyn FnOnce(&mut Connection) + Send;
 pub type BoxedDbTask = Box<DbTask>;
+
+#[derive(Clone)]
 pub struct State {
     db_tx: mpsc::Sender<BoxedDbTask>,
 }
@@ -164,7 +166,7 @@ impl State {
         .expect("uid should be settable");
     }
 
-    pub async fn set_modseq(&self, value: ModSeq) {
+    pub async fn set_highest_modseq(&self, value: ModSeq) {
         trace!("setting cached highest_modseq {value}");
         self.execute(move |db| db.pragma_update(None, "user_version", u64::from(value)))
             .await

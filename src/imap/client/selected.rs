@@ -12,6 +12,7 @@ use crate::{
         connection::Connection,
         mailbox::{Mailbox, RemoteMail, RemoteMailMetadata, SequenceSet},
     },
+    state::State,
     sync::Flag,
 };
 
@@ -19,6 +20,7 @@ pub struct SelectedClient {
     connection: Connection,
     capabilities: Capabilities,
     mailbox: Arc<Mailbox>,
+    state: State,
     metadata_rx: mpsc::Receiver<RemoteMailMetadata>,
 }
 impl SelectedClient {
@@ -26,6 +28,7 @@ impl SelectedClient {
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         capabilities: Capabilities,
+        state: State,
         mailbox: Mailbox,
     ) -> (Self, mpsc::Receiver<RemoteMail>) {
         let (mail_tx, mail_rx) = mpsc::channel(32);
@@ -99,6 +102,7 @@ impl SelectedClient {
                 connection,
                 capabilities,
                 mailbox,
+                state,
                 metadata_rx,
             },
             mail_rx,
