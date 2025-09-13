@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
         let account = config.account();
         let mail_dir = config.maildir();
 
-        let client = NotAuthenticatedClient::start(host, port).await;
+        let client = NotAuthenticatedClient::connect(host, port).await;
         let client = client.login(username, password).await;
 
         if let Ok(state) = State::load(state_dir, account, mailbox).await {

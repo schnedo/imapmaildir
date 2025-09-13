@@ -20,7 +20,7 @@ pub struct NotAuthenticatedClient {
 }
 
 impl NotAuthenticatedClient {
-    pub async fn start(host: &str, port: u16) -> Self {
+    pub async fn connect(host: &str, port: u16) -> Self {
         let (untagged_response_sender, mut untagged_response_receiver) = mpsc::channel(32);
         let mut connection = Connection::start(host, port, untagged_response_sender).await;
 
