@@ -1,4 +1,5 @@
 use enumflags2::BitFlags;
+use log::trace;
 use std::fmt::{Debug, Formatter, Result};
 
 use crate::{
@@ -10,6 +11,12 @@ use crate::{
 pub struct RemoteMailMetadata {
     uid: Option<Uid>,
     flags: BitFlags<Flag>,
+}
+
+impl RemoteMailMetadata {
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>) -> Self {
+        Self { uid, flags }
+    }
 }
 
 impl MailMetadata for RemoteMailMetadata {
@@ -33,6 +40,20 @@ pub struct RemoteMail {
     response: ResponseData,
     metadata: RemoteMailMetadata,
     content: &'static [u8],
+}
+
+impl RemoteMail {
+    pub fn new(
+        response: ResponseData,
+        metadata: RemoteMailMetadata,
+        content: &'static [u8],
+    ) -> Self {
+        Self {
+            response,
+            metadata,
+            content,
+        }
+    }
 }
 
 impl Debug for RemoteMail {

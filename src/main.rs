@@ -63,7 +63,9 @@ async fn main() -> Result<()> {
 
         let client = NotAuthenticatedClient::start(host, port).await;
         let client = client.login(username, password).await;
-        let client = client.select(mailbox).await;
+        let mut client = client.select(mailbox).await;
+
+        while let Some(mail) = client.mail_rx().recv().await {}
 
         Ok(())
     }
