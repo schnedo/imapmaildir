@@ -5,7 +5,7 @@ use crate::imap::{
     client::{SelectedClient, capability::Capabilities},
     codec::ResponseData,
     connection::Connection,
-    mailbox::MailboxBuilder,
+    mailbox::{MailboxBuilder, RemoteMail},
 };
 
 pub struct AuthenticatedClient {
@@ -27,7 +27,7 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(mut self, mailbox: &str) -> SelectedClient {
+    pub async fn select(mut self, mailbox: &str) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
         let command = format!("SELECT {mailbox}");
         debug!("{command}");
         self.connection

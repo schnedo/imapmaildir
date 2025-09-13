@@ -19,7 +19,6 @@ pub struct SelectedClient {
     connection: Connection,
     capabilities: Capabilities,
     mailbox: Arc<Mailbox>,
-    mail_rx: mpsc::Receiver<RemoteMail>,
     metadata_rx: mpsc::Receiver<RemoteMailMetadata>,
 }
 impl SelectedClient {
@@ -28,7 +27,7 @@ impl SelectedClient {
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         capabilities: Capabilities,
         mailbox: Mailbox,
-    ) -> Self {
+    ) -> (Self, mpsc::Receiver<RemoteMail>) {
         let (mail_tx, mail_rx) = mpsc::channel(32);
         let (metadata_tx, metadata_rx) = mpsc::channel(32);
         let mailbox = Arc::new(mailbox);
@@ -96,13 +95,15 @@ impl SelectedClient {
             }
         });
 
-        Self {
-            connection,
-            capabilities,
-            mailbox,
+        (
+            Self {
+                connection,
+                capabilities,
+                mailbox,
+                metadata_rx,
+            },
             mail_rx,
-            metadata_rx,
-        }
+        )
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
@@ -112,10 +113,6 @@ impl SelectedClient {
             .send(&command)
             .await
             .expect("fetching mails should succeed");
-    }
-
-    pub fn mail_rx(&mut self) -> &mut mpsc::Receiver<RemoteMail> {
-        &mut self.mail_rx
     }
 
     pub async fn init(&mut self) {
