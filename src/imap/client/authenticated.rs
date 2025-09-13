@@ -27,11 +27,19 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(mut self, mailbox: &str) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
-        let command = format!("SELECT {mailbox}");
+    pub async fn select(self, mailbox: &str) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
+        let command = format!("SELECT {mailbox} (CONDSTORE)");
+        self.do_select(mailbox, &command).await
+    }
+
+    async fn do_select(
+        mut self,
+        mailbox: &str,
+        command: &str,
+    ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
         debug!("{command}");
         self.connection
-            .send(&command)
+            .send(command)
             .await
             .expect("selecting a mailbox should succeed");
 

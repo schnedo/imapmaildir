@@ -69,11 +69,12 @@ async fn main() -> Result<()> {
 
         let client = NotAuthenticatedClient::start(host, port).await;
         let client = client.login(username, password).await;
-        let (mut client, mut mail_rx) = client.select(mailbox).await;
 
         if let Ok(state) = State::load(state_dir, account, mailbox) {
             todo!("handle already initialized account")
+        let (mut client, mut mail_rx) = client.select(mailbox).await;
         } else {
+            let (mut client, mut mail_rx) = client.select(mailbox).await;
             let mailbox = mailbox.clone();
             let state_dir = state_dir.clone();
             let account = account.to_string();
