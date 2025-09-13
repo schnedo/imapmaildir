@@ -27,6 +27,7 @@ impl AuthenticatedClient {
         }
     }
 
+    // todo: use condstore and qresync
     pub async fn select(mut self, mailbox: &str) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
         let command = format!("SELECT {mailbox}");
         debug!("{command}");
