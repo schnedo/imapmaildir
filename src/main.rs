@@ -70,25 +70,27 @@ async fn main() -> Result<()> {
         let client = NotAuthenticatedClient::start(host, port).await;
         let client = client.login(username, password).await;
 
-        if let Ok(state) = State::load(state_dir, account, mailbox) {
-            todo!("handle already initialized account")
-        let (mut client, mut mail_rx) = client.select(mailbox).await;
+        if let Ok(state) = State::load(state_dir, account, mailbox).await {
+            todo!("handle already initialized account");
         } else {
             let (mut client, mut mail_rx) = client.select(mailbox).await;
             let mailbox = mailbox.clone();
             let state_dir = state_dir.clone();
             let account = account.to_string();
             let mail_dir = mail_dir.clone();
-            let writing_task = tokio::task::spawn_blocking(move || {
-                let state = State::init(&state_dir, &account, &mailbox);
+            let writing_task = tokio::task::spawn(async move {
+                let state = State::init(&state_dir, &account, &mailbox)
+                    .await
+                    .expect("state should be creatable");
                 let maildir_repository =
                     MaildirRepository::init(&account, &mailbox, &mail_dir, &state);
-                while let Some(mail) = mail_rx.blocking_recv() {
-                    maildir_repository.store(&mail);
+                while let Some(mail) = mail_rx.recv().await {
+                    maildir_repository.store(&mail).await;
                 }
             });
             yield_now().await;
             client.init().await;
+            writing_task.await?;
         }
 
         Ok(())

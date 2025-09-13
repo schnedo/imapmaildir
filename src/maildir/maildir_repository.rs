@@ -127,24 +127,10 @@ impl<'a> MaildirRepository<'a> {
             todo!("missing maildir for existing state")
         }
     }
-}
 
-impl Repository for MaildirRepository<'_> {
-    fn validity(&self) -> UidValidity {
-        self.state.uid_validity()
-    }
-
-    fn list_all(&self) -> impl futures::Stream<Item = impl MailMetadata> {
-        iter(self.maildir.list_cur())
-    }
-
-    fn get_all(&self) -> impl futures::Stream<Item = impl Mail> {
-        iter(self.maildir.get_cur())
-    }
-
-    fn store(&self, mail: &impl Mail) -> Option<Uid> {
+    pub async fn store(&self, mail: &impl Mail) -> Option<Uid> {
         if let Some(uid) = mail.metadata().uid()
-            && let Some(mut entry) = self.state.exists(mail.metadata().uid())
+            && let Some(mut entry) = self.state.exists(mail.metadata().uid()).await
         {
             trace!("handling existing mail {mail:?}");
             if entry.flags() != mail.metadata().flags() {
@@ -152,38 +138,42 @@ impl Repository for MaildirRepository<'_> {
                 let new_flags = mail.metadata().flags();
                 self.maildir.update(&entry, new_flags);
                 entry.set_flags(new_flags);
-                self.state.update(&entry);
+                self.state.update(entry).await;
             }
             None
         } else {
             trace!("storing mail {mail:?}");
             let filename = self.maildir.store(mail);
-            self.state.store(&LocalMailMetadata::new(
-                mail.metadata().uid(),
-                mail.metadata().flags(),
-                filename,
-            ))
+            self.state
+                .store(LocalMailMetadata::new(
+                    mail.metadata().uid(),
+                    mail.metadata().flags(),
+                    filename,
+                ))
+                .await
         }
     }
 
-    fn detect_changes(&self) -> Vec<Change<impl Mail>> {
+    pub async fn detect_changes(&self) -> Vec<Change<impl Mail>> {
         let mut changes = vec![];
         let maildir_metadata = self.maildir.list_cur();
         let mut maildir_mails = HashMap::with_capacity(maildir_metadata.size_hint().0);
         for mail_metadata in maildir_metadata {
             maildir_mails.insert(mail_metadata.uid(), mail_metadata);
         }
-        self.state.for_each(|entry| {
-            if let Some(data) = maildir_mails.remove(&entry.uid()) {
-                if data.flags() != entry.flags() {
-                    changes.push(Change::Updated(data));
+        self.state
+            .for_each(|entry| {
+                if let Some(data) = maildir_mails.remove(&entry.uid()) {
+                    if data.flags() != entry.flags() {
+                        changes.push(Change::Updated(data));
+                    }
+                } else {
+                    changes.push(Change::Deleted(
+                        entry.uid().expect("stored uid should not be missing"),
+                    ));
                 }
-            } else {
-                changes.push(Change::Deleted(
-                    entry.uid().expect("stored uid should not be missing"),
-                ));
-            }
-        });
+            })
+            .await;
         for maildata in maildir_mails.into_values() {
             changes.push(Change::New(LocalMail::new(
                 fs::read(self.maildir.resolve(&maildata.filename()))
