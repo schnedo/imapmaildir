@@ -1,4 +1,4 @@
-use std::mem::transmute;
+use std::{mem::transmute, sync::Arc};
 
 use log::{debug, info, trace};
 use thiserror::Error;
@@ -18,12 +18,12 @@ use crate::{
 pub struct SelectedClient {
     connection: Connection,
     capabilities: Capabilities,
-    mailbox: Mailbox,
+    mailbox: Arc<Mailbox>,
     mail_rx: mpsc::Receiver<RemoteMail>,
     metadata_rx: mpsc::Receiver<RemoteMailMetadata>,
 }
 impl SelectedClient {
-    pub async fn new(
+    pub fn new(
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         capabilities: Capabilities,
@@ -31,6 +31,8 @@ impl SelectedClient {
     ) -> Self {
         let (mail_tx, mail_rx) = mpsc::channel(32);
         let (metadata_tx, metadata_rx) = mpsc::channel(32);
+        let mailbox = Arc::new(mailbox);
+        let mbox = mailbox.clone();
 
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
@@ -73,6 +75,16 @@ impl SelectedClient {
                                 "wrong format of FETCH response. check order of attributes in command"
                             );
                         }
+                    }
+                    imap_proto::Response::Data {
+                        code: Some(imap_proto::ResponseCode::HighestModSeq(modseq)),
+                        ..
+                    } => {
+                        mbox.set_highest_modseq(
+                            modseq
+                                .try_into()
+                                .expect("received highest modseq should be valid modseq"),
+                        );
                     }
                     _ => {
                         trace!(
