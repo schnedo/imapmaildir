@@ -25,13 +25,16 @@ use imap_proto::{Request, Response};
 use log::{debug, trace, warn};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, yield_now};
 use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use tokio_util::codec::Framed;
 
 use crate::config::Config;
 use crate::imap::NotAuthenticatedClient;
+use crate::maildir::MaildirRepository;
 use crate::nuke::nuke;
+use crate::state::State;
+use crate::sync::Repository;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -60,12 +63,32 @@ async fn main() -> Result<()> {
             .mailboxes()
             .first()
             .expect("there should be a mailbox configured");
+        let state_dir = config.statedir();
+        let account = config.account();
+        let mail_dir = config.maildir();
 
         let client = NotAuthenticatedClient::start(host, port).await;
         let client = client.login(username, password).await;
-        let mut client = client.select(mailbox).await;
+        let (mut client, mut mail_rx) = client.select(mailbox).await;
 
-        while let Some(mail) = client.mail_rx().recv().await {}
+        if let Ok(state) = State::load(state_dir, account, mailbox) {
+            todo!("handle already initialized account")
+        } else {
+            let mailbox = mailbox.clone();
+            let state_dir = state_dir.clone();
+            let account = account.to_string();
+            let mail_dir = mail_dir.clone();
+            let writing_task = tokio::task::spawn_blocking(move || {
+                let state = State::init(&state_dir, &account, &mailbox);
+                let maildir_repository =
+                    MaildirRepository::init(&account, &mailbox, &mail_dir, &state);
+                while let Some(mail) = mail_rx.blocking_recv() {
+                    maildir_repository.store(&mail);
+                }
+            });
+            yield_now().await;
+            client.init().await;
+        }
 
         Ok(())
     }

@@ -14,36 +14,13 @@ use rusqlite::{
 };
 
 use crate::{
-    imap::{Uid, UidValidity},
+    imap::{ModSeq, Uid, UidValidity},
     maildir::LocalMailMetadata,
     sync::{Flag, MailMetadata},
 };
 
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct ModSeq(i64);
-
-impl From<i64> for ModSeq {
-    fn from(value: i64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<ModSeq> for i64 {
-    fn from(value: ModSeq) -> Self {
-        value.0
-    }
-}
-
-impl Display for ModSeq {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 pub struct State {
     db: Connection,
-    modseq: Cell<ModSeq>,
 }
 
 impl State {
@@ -60,13 +37,7 @@ impl State {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        let modseq = db
-            .query_one("select * from pragma_user_version", [], |row| {
-                let modseq: i64 = row.get(0)?;
-                Ok(Cell::new(modseq.into()))
-            })
-            .expect("getting modseq should succeed");
-        Ok(Self { db, modseq })
+        Ok(Self { db })
     }
 
     pub fn init(state_dir: &Path, account: &str, mailbox: &str) -> Self {
@@ -89,10 +60,7 @@ impl State {
         )
         .expect("creation of tables should succeed");
 
-        Self {
-            db,
-            modseq: Cell::new(0.into()),
-        }
+        Self { db }
     }
 
     fn prepare_state_file(state_dir: &Path, account: &str, mailbox: &str) -> PathBuf {
@@ -122,13 +90,19 @@ impl State {
 
     pub fn set_modseq(&self, value: ModSeq) {
         self.db
-            .pragma_update(None, "user_version", i64::from(value))
+            .pragma_update(None, "user_version", u64::from(value))
             .expect("setting modseq should succeed");
-        self.modseq.replace(value);
     }
 
     pub fn modseq(&self) -> ModSeq {
-        self.modseq.get()
+        self.db
+            .query_one("select * from pragma_user_version", [], |row| {
+                let modseq: u64 = row.get(0)?;
+                Ok(modseq
+                    .try_into()
+                    .expect("cached highest modseq should be valid"))
+            })
+            .expect("getting modseq should succeed")
     }
 
     pub fn update(&self, data: &LocalMailMetadata) {
