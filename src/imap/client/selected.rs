@@ -35,7 +35,6 @@ impl SelectedClient {
 
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
-                trace!("handle untagged response {:?}", response.parsed());
                 match response.parsed() {
                     imap_proto::Response::Fetch(_, attributes) => {
                         if let [
