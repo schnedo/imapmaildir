@@ -56,7 +56,6 @@ impl Connection {
                     }
                     Some(response) = stream.next() => {
                         let response = response.expect("response should be receivable");
-                        trace!("{:?}", response.parsed());
                         match response.parsed() {
                             imap_proto::Response::Done { tag, status, code, information } => {
                                 trace!("{tag:?} {status:?} {information:?}");
