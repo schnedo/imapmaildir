@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
+        UidValidity,
         client::{
             SelectedClient,
             capability::{Capabilities, Capability},
@@ -40,7 +41,7 @@ impl AuthenticatedClient {
     ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
         assert!(self.capabilities.contains(Capability::Condstore));
         let command = format!("SELECT {mailbox} (CONDSTORE)");
-        let (mut client, mail_rx) = self.do_select(state, mailbox, &command).await;
+        let (mut client, mail_rx) = self.do_select(state, mailbox, &command, None).await;
         client.init().await;
 
         (client, mail_rx)
@@ -59,12 +60,14 @@ impl AuthenticatedClient {
             .send(command)
             .await
             .expect("enabling qresync should succeed");
+        let cached_uid_validity = state.uid_validity().await;
         let command = format!(
             "SELECT {mailbox} (QRESYNC ({} {}))",
-            state.uid_validity().await,
+            cached_uid_validity,
             state.highest_modseq().await
         );
-        self.do_select(state, mailbox, &command).await
+        self.do_select(state, mailbox, &command, Some(cached_uid_validity))
+            .await
     }
 
     #[expect(clippy::too_many_lines)]
@@ -73,6 +76,7 @@ impl AuthenticatedClient {
         state: State,
         mailbox: &str,
         command: &str,
+        cached_uid_validity: Option<UidValidity>,
     ) -> (SelectedClient, mpsc::Receiver<RemoteMail>) {
         debug!("{command}");
         self.connection
@@ -141,8 +145,12 @@ impl AuthenticatedClient {
                             .uid_next(next.try_into().expect("server should send valid uidnext"));
                     }
                     imap_proto::ResponseCode::UidValidity(validity) => {
-                        state.set_uid_validity(validity.into()).await;
-                        new_mailbox.uid_validity(validity.into());
+                        let validity = validity.into();
+                        if let Some(cached) = cached_uid_validity {
+                            assert_eq!(cached, validity);
+                        }
+                        state.set_uid_validity(validity).await;
+                        new_mailbox.uid_validity(validity);
                     }
                     imap_proto::ResponseCode::HighestModSeq(modseq) => {
                         state
