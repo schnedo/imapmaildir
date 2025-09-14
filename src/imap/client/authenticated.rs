@@ -67,6 +67,7 @@ impl AuthenticatedClient {
         self.do_select(state, mailbox, &command).await
     }
 
+    #[expect(clippy::too_many_lines)]
     async fn do_select(
         mut self,
         state: State,
@@ -104,6 +105,15 @@ impl AuthenticatedClient {
                         );
                     }
                 },
+                imap_proto::Response::Capabilities(caps) => {
+                    for cap in caps {
+                        match cap {
+                            imap_proto::Capability::Atom(cow) => self.capabilities.insert(cap),
+                            _ => warn!("unexpected capability respone {cap:?}"),
+                        }
+                    }
+                    trace!("updated capabilities to {:?}", self.capabilities);
+                }
                 imap_proto::Response::Data {
                     status: imap_proto::Status::Ok,
                     code: None,
