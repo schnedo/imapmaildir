@@ -121,9 +121,9 @@ impl Maildir {
             }
         }
         if let Some(uid) = uid {
-            format!("{file_prefix},U={uid}:2,{flags}")
+            format!("{file_prefix},U={uid}:2,{string_flags}")
         } else {
-            format!("{file_prefix}:2,{flags}")
+            format!("{file_prefix}:2,{string_flags}")
         }
     }
 
