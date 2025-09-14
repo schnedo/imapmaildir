@@ -145,7 +145,9 @@ impl AuthenticatedClient {
                             .uid_next(next.try_into().expect("server should send valid uidnext"));
                     }
                     imap_proto::ResponseCode::UidValidity(validity) => {
-                        let validity = validity.into();
+                        let validity = validity
+                            .try_into()
+                            .expect("received uid validity should be spec compliant");
                         if let Some(cached) = cached_uid_validity {
                             assert_eq!(cached, validity);
                         }

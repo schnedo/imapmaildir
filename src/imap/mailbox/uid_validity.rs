@@ -1,11 +1,11 @@
-use std::fmt::Display;
+use std::{fmt::Display, num::NonZeroU32};
 
 #[derive(Clone, Debug, PartialEq, Copy)]
 #[repr(transparent)]
-pub struct UidValidity(u32);
+pub struct UidValidity(NonZeroU32);
 
 impl UidValidity {
-    pub fn new(validity: u32) -> Self {
+    pub fn new(validity: NonZeroU32) -> Self {
         Self(validity)
     }
 }
@@ -16,20 +16,26 @@ impl Display for UidValidity {
     }
 }
 
-impl From<&u32> for UidValidity {
-    fn from(value: &u32) -> Self {
-        Self(*value)
+impl TryFrom<&u32> for UidValidity {
+    type Error = &'static str;
+
+    fn try_from(value: &u32) -> Result<Self, Self::Error> {
+        (*value).try_into()
     }
 }
 
-impl From<u32> for UidValidity {
-    fn from(value: u32) -> Self {
-        Self(value)
+impl TryFrom<u32> for UidValidity {
+    type Error = &'static str;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        NonZeroU32::new(value)
+            .map(UidValidity)
+            .ok_or("provided should not be zero")
     }
 }
 
 impl From<UidValidity> for u32 {
     fn from(value: UidValidity) -> Self {
-        value.0
+        value.0.into()
     }
 }

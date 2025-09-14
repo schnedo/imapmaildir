@@ -147,7 +147,10 @@ impl State {
         self.execute(|db| {
             db.query_one("select * from uid_validity", (), |row| {
                 let validity: u32 = row.get(0)?;
-                Ok(UidValidity::from(validity))
+                let validity = validity
+                    .try_into()
+                    .expect("cached uid validity should be spec compliant");
+                Ok(validity)
             })
         })
         .await
