@@ -10,9 +10,10 @@ use crate::{
         },
         codec::ResponseData,
         connection::Connection,
-        mailbox::{MailboxBuilder, RemoteMail},
+        mailbox::{MailboxBuilder, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder},
     },
     state::State,
+    sync::Flag,
 };
 
 pub struct AuthenticatedClient {
@@ -86,6 +87,8 @@ impl AuthenticatedClient {
 
         let mut new_mailbox = MailboxBuilder::default();
         new_mailbox.name(mailbox.to_string());
+
+        let mut mail_updates: Vec<RemoteMailMetadata> = Vec::new();
 
         while let Ok(response) = self.untagged_response_receiver.try_recv() {
             match response.parsed() {
@@ -176,6 +179,39 @@ impl AuthenticatedClient {
                         trace!("{code:?}");
                     }
                 },
+                imap_proto::Response::Fetch(msg_num, attributes) => {
+                    trace!("handling fetch with attributes {attributes:?}");
+                    let mut metadata_builder = RemoteMailMetadataBuilder::default();
+                    // todo: match in one step?
+                    for attribute in attributes {
+                        match attribute {
+                            imap_proto::AttributeValue::Flags(flags) => {
+                                metadata_builder.flags(Flag::into_bitflags(flags));
+                            }
+                            imap_proto::AttributeValue::ModSeq(modseq) => {
+                                metadata_builder.modseq(
+                                    modseq
+                                        .try_into()
+                                        .expect("received modseq should be nonzero"),
+                                );
+                                // Technically a check for modseq > highest_modseq is required
+                                // here. This should never be the case on initial select though.
+                            }
+                            imap_proto::AttributeValue::Uid(uid) => {
+                                metadata_builder
+                                    .uid(uid.try_into().expect("received uid should be nonzero"));
+                            }
+                            _ => {
+                                warn!("msg {msg_num} unhandled attribute {attribute:?}");
+                            }
+                        }
+                    }
+                    mail_updates.push(
+                        metadata_builder
+                            .build()
+                            .expect("fetch metadata should be complete"),
+                    );
+                }
                 _ => {
                     warn!("ignoring unknown response to SELECT");
                     trace!("{:?}", response.parsed());
@@ -187,6 +223,7 @@ impl AuthenticatedClient {
             .build()
             .expect("mailbox data should be all available at this point");
         trace!("selected_mailbox = {mailbox:?}");
+        trace!("mail updates = {mail_updates:?}");
 
         SelectedClient::new(
             self.connection,

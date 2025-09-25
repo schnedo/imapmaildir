@@ -47,15 +47,10 @@ impl SelectedClient {
                         ] = attributes.as_slice()
                         {
                             trace!("{flags:?}");
-                            let mail_flags = flags
-                                .iter()
-                                .filter_map(|flag| {
-                                    <&str as TryInto<Flag>>::try_into(flag.as_ref()).ok()
-                                })
-                                .collect();
-
+                            let mail_flags = Flag::into_bitflags(flags);
                             let metadata =
-                                RemoteMailMetadata::new(Uid::try_from(uid).ok(), mail_flags);
+                                // todo: check for modseq in fetch response
+                                RemoteMailMetadata::new(Uid::try_from(uid).ok(), mail_flags, None);
 
                             if let Some(content) = content {
                                 let content =
