@@ -1,7 +1,7 @@
 use std::{fmt::Display, num::NonZeroU64};
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModSeq(NonZeroU64);
 
 impl TryFrom<u64> for ModSeq {

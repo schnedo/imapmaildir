@@ -1,21 +1,27 @@
+use derive_builder::Builder;
 use enumflags2::BitFlags;
 use log::trace;
 use std::fmt::{Debug, Formatter, Result};
 
 use crate::{
-    imap::{Uid, codec::ResponseData},
+    imap::{ModSeq, Uid, codec::ResponseData},
     sync::{Flag, Mail, MailMetadata},
 };
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Builder)]
 pub struct RemoteMailMetadata {
+    // todo: is this really optional?
+    #[builder(setter(strip_option))]
     uid: Option<Uid>,
     flags: BitFlags<Flag>,
+    // todo: is this really optional?
+    #[builder(setter(strip_option))]
+    modseq: Option<ModSeq>,
 }
 
 impl RemoteMailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>) -> Self {
-        Self { uid, flags }
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, modseq: Option<ModSeq>) -> Self {
+        Self { uid, flags, modseq }
     }
 }
 

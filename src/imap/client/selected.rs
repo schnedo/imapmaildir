@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
-        Uid,
+        Uid, UidValidity,
         client::capability::Capabilities,
         codec::ResponseData,
         connection::Connection,
@@ -16,11 +16,11 @@ use crate::{
     sync::Flag,
 };
 
+#[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
     capabilities: Capabilities,
     mailbox: Arc<Mailbox>,
-    state: State,
     metadata_rx: mpsc::Receiver<RemoteMailMetadata>,
 }
 impl SelectedClient {
@@ -28,7 +28,6 @@ impl SelectedClient {
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         capabilities: Capabilities,
-        state: State,
         mailbox: Mailbox,
     ) -> (Self, mpsc::Receiver<RemoteMail>) {
         let (mail_tx, mail_rx) = mpsc::channel(32);
@@ -47,15 +46,10 @@ impl SelectedClient {
                         ] = attributes.as_slice()
                         {
                             trace!("{flags:?}");
-                            let mail_flags = flags
-                                .iter()
-                                .filter_map(|flag| {
-                                    <&str as TryInto<Flag>>::try_into(flag.as_ref()).ok()
-                                })
-                                .collect();
-
+                            let mail_flags = Flag::into_bitflags(flags);
                             let metadata =
-                                RemoteMailMetadata::new(Uid::try_from(uid).ok(), mail_flags);
+                                // todo: check for modseq in fetch response
+                                RemoteMailMetadata::new(Uid::try_from(uid).ok(), mail_flags, None);
 
                             if let Some(content) = content {
                                 let content =
@@ -102,7 +96,6 @@ impl SelectedClient {
                 connection,
                 capabilities,
                 mailbox,
-                state,
                 metadata_rx,
             },
             mail_rx,
@@ -118,9 +111,13 @@ impl SelectedClient {
             .expect("fetching mails should succeed");
     }
 
-    pub async fn init(&mut self) {
+    pub async fn fetch_all(&mut self) {
         info!("initializing new imap repository");
         self.fetch_mail(&SequenceSet::all()).await;
+    }
+
+    pub fn uid_validity(&self) -> UidValidity {
+        self.mailbox.uid_validity()
     }
 }
 

@@ -39,7 +39,7 @@ impl Mailbox {
             .highest_modseq
             .lock()
             .expect("highest_modseq lock should be acquirable");
-        modseq.clone()
+        *modseq
     }
 
     pub fn set_highest_modseq(&self, modseq: ModSeq) {
@@ -113,42 +113,46 @@ impl MailboxBuilder {
         }
     }
     pub fn name(&mut self, name: String) {
-        self.name = Some(name)
+        self.name = Some(name);
     }
 
     pub fn readonly(&mut self, readonly: bool) {
-        self.readonly = Some(readonly)
+        self.readonly = Some(readonly);
     }
 
     pub fn flags(&mut self, flags: Vec<String>) {
-        self.flags = Some(flags)
+        self.flags = Some(flags);
     }
 
     pub fn exists(&mut self, exists: u32) {
-        self.exists = Some(exists)
+        self.exists = Some(exists);
     }
 
     pub fn recent(&mut self, recent: u32) {
-        self.recent = Some(recent)
+        self.recent = Some(recent);
     }
 
     pub fn unseen(&mut self, unseen: u32) {
-        self.unseen = Some(unseen)
+        self.unseen = Some(unseen);
     }
 
     pub fn permanent_flags(&mut self, permanent_flags: Vec<String>) {
-        self.permanent_flags = permanent_flags
+        self.permanent_flags = permanent_flags;
     }
 
     pub fn uid_validity(&mut self, uid_validity: UidValidity) {
-        self.uid_validity = Some(uid_validity)
+        self.uid_validity = Some(uid_validity);
     }
 
     pub fn uid_next(&mut self, uid_next: Uid) {
-        self.uid_next = Some(uid_next)
+        self.uid_next = Some(uid_next);
     }
 
     pub fn highest_modseq(&mut self, highest_modseq: ModSeq) {
-        self.highest_modseq = Some(highest_modseq)
+        self.highest_modseq = Some(highest_modseq);
+    }
+
+    pub fn get_highest_modseq(&self) -> Option<ModSeq> {
+        self.highest_modseq
     }
 }

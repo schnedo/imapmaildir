@@ -71,7 +71,12 @@ impl State {
         Ok(Self { db_tx })
     }
 
-    pub async fn init(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
+    pub async fn init(
+        state_dir: &Path,
+        account: &str,
+        mailbox: &str,
+        uid_validity: UidValidity,
+    ) -> Result<Self, Error> {
         let (db_tx, mut db_rx) = mpsc::channel::<BoxedDbTask>(32);
         let (open_tx, open_rx) = oneshot::channel();
 
@@ -98,6 +103,12 @@ impl State {
                         pragma optimize;",
                     )
                     .expect("creation of tables should succeed");
+                    trace!("setting cached uid_validity {uid_validity}");
+                    db.execute(
+                        "insert or ignore into uid_validity (uid_validity) values (?1)",
+                        [u32::from(uid_validity)],
+                    )
+                    .expect("uid_validity should be settable");
                     while let Some(task) = db_rx.blocking_recv() {
                         task(&mut db);
                     }
@@ -155,18 +166,6 @@ impl State {
         })
         .await
         .expect("uid_validity should be selectable")
-    }
-
-    pub async fn set_uid_validity(&self, uid_validity: UidValidity) {
-        trace!("setting cached uid_validity {uid_validity}");
-        self.execute(move |db| {
-            db.execute(
-                "insert or ignore into uid_validity (uid_validity) values (?1)",
-                [u32::from(uid_validity)],
-            )
-        })
-        .await
-        .expect("uid should be settable");
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {

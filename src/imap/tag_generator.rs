@@ -1,5 +1,6 @@
 use std::{cell::Cell, num::Wrapping};
 
+#[derive(Debug)]
 pub struct TagGenerator {
     last_tag: Cell<Wrapping<u16>>,
 }

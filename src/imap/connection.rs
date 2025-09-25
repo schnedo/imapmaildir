@@ -17,6 +17,7 @@ pub enum TaggedResponseError {
     Bad { information: Option<String> },
 }
 pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
+#[derive(Debug)]
 pub struct Connection {
     tag_generator: TagGenerator,
     outbound_tx: mpsc::Sender<(String, String)>,

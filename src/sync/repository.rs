@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{borrow::Cow, fmt::Debug, hash::Hash};
 
 use futures::Stream;
 
@@ -15,6 +15,15 @@ pub enum Flag {
     Deleted,
     Draft,
     Recent,
+}
+
+impl Flag {
+    pub fn into_bitflags(flags: &Vec<Cow<str>>) -> BitFlags<Flag, u8> {
+        flags
+            .iter()
+            .filter_map(|flag| <&str as TryInto<Flag>>::try_into(flag.as_ref()).ok())
+            .collect()
+    }
 }
 
 pub trait Mail: Send + Debug {
