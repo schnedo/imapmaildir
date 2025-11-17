@@ -1,4 +1,8 @@
-use std::fmt::{Display, Formatter, Result};
+use std::{
+    collections::HashSet,
+    fmt::{Display, Formatter, Result},
+};
+use thiserror::Error;
 
 #[derive(Debug)]
 pub struct SequenceRange {
@@ -31,6 +35,59 @@ impl Display for SequenceRange {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("No numbers in sequence set")]
+pub struct EmptySetError {}
+
+pub struct SequenceSetBuilder {
+    nums: HashSet<u32>,
+}
+
+impl SequenceSetBuilder {
+    pub fn new() -> Self {
+        Self {
+            nums: HashSet::new(),
+        }
+    }
+
+    pub fn add(&mut self, num: u32) {
+        self.nums.insert(num);
+    }
+
+    pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
+        let mut sorted_nums: Vec<u32> = self.nums.drain().collect();
+        sorted_nums.sort_unstable();
+        let mut sorted_nums = sorted_nums.into_iter();
+
+        if let Some(first_num) = sorted_nums.next() {
+            let mut ranges = Vec::new();
+            let mut current_range = SequenceRange::single(first_num);
+
+            for num in sorted_nums {
+                if let Some(to) = current_range.to {
+                    if num == to + 1 {
+                        current_range.to = Some(num);
+                    } else {
+                        ranges.push(current_range);
+                        current_range = SequenceRange::single(num);
+                    }
+                } else if num == current_range.from + 1 {
+                    current_range.to = Some(num);
+                } else {
+                    ranges.push(current_range);
+                    current_range = SequenceRange::single(num);
+                }
+            }
+
+            ranges.push(current_range);
+
+            Ok(SequenceSet { ranges })
+        } else {
+            Err(EmptySetError {})
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SequenceSet {
     ranges: Vec<SequenceRange>,
@@ -41,10 +98,6 @@ impl SequenceSet {
         Self {
             ranges: vec![SequenceRange::range(from, to)],
         }
-    }
-
-    pub fn from_ranges(ranges: Vec<SequenceRange>) -> Self {
-        Self { ranges }
     }
 
     pub fn all() -> Self {
