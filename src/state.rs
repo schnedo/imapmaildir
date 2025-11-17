@@ -226,13 +226,13 @@ impl State {
         .expect("storing mail should succeed")
     }
 
-    pub async fn exists(&self, uid: Option<Uid>) -> Option<LocalMailMetadata> {
+    pub async fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
         trace!("checking existence of {uid:?}");
         self.execute(move |db| {
             let mut stmt = db
                 .prepare_cached("select * from mail_metadata where uid = ?1")
                 .expect("selection of existing mails should be preparable");
-            stmt.query_one([uid.map_or(0, Into::into)], |row| {
+            stmt.query_one([u32::from(uid)], |row| {
                 Ok(row.try_into().expect("stateentry should be parsable"))
             })
             .optional()

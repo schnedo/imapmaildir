@@ -13,5 +13,6 @@ pub use remote_mail::RemoteMailMetadata;
 pub use remote_mail::RemoteMailMetadataBuilder;
 pub use sequence_set::SequenceRange;
 pub use sequence_set::SequenceSet;
+pub use sequence_set::SequenceSetBuilder;
 pub use uid::Uid;
 pub use uid_validity::UidValidity;

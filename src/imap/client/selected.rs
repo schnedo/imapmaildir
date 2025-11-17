@@ -21,6 +21,7 @@ pub struct SelectedClient {
     connection: Connection,
     capabilities: Capabilities,
     mailbox: Arc<Mailbox>,
+    // todo: use this
     metadata_rx: mpsc::Receiver<RemoteMailMetadata>,
 }
 impl SelectedClient {
@@ -75,6 +76,7 @@ impl SelectedClient {
                         code: Some(imap_proto::ResponseCode::HighestModSeq(modseq)),
                         ..
                     } => {
+                        // todo: set highest modseq in state
                         mbox.set_highest_modseq(
                             modseq
                                 .try_into()

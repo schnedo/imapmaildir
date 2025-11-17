@@ -30,11 +30,11 @@ use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
 use tokio_util::codec::Framed;
 
 use crate::config::Config;
-use crate::imap::NotAuthenticatedClient;
+use crate::imap::{NotAuthenticatedClient, SequenceSetBuilder};
 use crate::maildir::MaildirRepository;
 use crate::nuke::nuke;
 use crate::state::State;
-use crate::sync::Repository;
+use crate::sync::{MailMetadata, Repository};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -75,11 +75,22 @@ async fn main() -> Result<()> {
         {
             let uid_validity = state.uid_validity().await;
             let highest_modseq = state.highest_modseq().await;
-            let selection = client
+            let mut selection = client
                 .qresync_select(mailbox, uid_validity, highest_modseq)
                 .await;
             assert_eq!(uid_validity, selection.client.uid_validity());
             let maildir_repository = MaildirRepository::load(account, mailbox, mail_dir, state);
+
+            let mut sequence_set = SequenceSetBuilder::new();
+            for update in &selection.mail_updates {
+                if maildir_repository.update(update).await.is_err() {
+                    sequence_set.add(update.uid().expect("uid should exist here").into());
+                }
+            }
+            if let Ok(sequence_set) = sequence_set.build() {
+                selection.client.fetch_mail(&sequence_set).await;
+            }
+
             (selection, maildir_repository)
         } else {
             let mut selection = client.select(mailbox).await;
@@ -98,8 +109,6 @@ async fn main() -> Result<()> {
                 maildir_repository.store(&mail).await;
             }
         });
-
-        let foo = selection.mail_updates;
 
         recieve_task.await?;
 

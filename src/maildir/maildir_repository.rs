@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
+use thiserror::Error;
 
 use enumflags2::BitFlags;
 use futures::stream::iter;
@@ -23,6 +24,12 @@ pub struct LocalMailMetadata {
     uid: Option<Uid>,
     flags: BitFlags<Flag>,
     fileprefix: String,
+}
+
+#[derive(Error, Debug)]
+#[error("uid {uid} does not exist in state")]
+pub struct NoExistsError {
+    uid: Uid,
 }
 
 impl LocalMailMetadata {
@@ -129,21 +136,12 @@ impl MaildirRepository {
     }
 
     pub async fn store(&self, mail: &impl Mail) -> Option<Uid> {
-        if let Some(uid) = mail.metadata().uid()
-            && let Some(mut entry) = self.state.exists(mail.metadata().uid()).await
-        {
-            trace!("handling existing mail {mail:?}");
-            if entry.flags() != mail.metadata().flags() {
-                trace!("updating mail {mail:?}");
-                let new_flags = mail.metadata().flags();
-                self.maildir.update(&entry, new_flags);
-                entry.set_flags(new_flags);
-                self.state.update(entry).await;
-            }
+        trace!("storing mail {mail:?}");
+        if self.update(mail.metadata()).await.is_ok() {
             None
         } else {
-            trace!("storing mail {mail:?}");
             let filename = self.maildir.store(mail);
+
             self.state
                 .store(LocalMailMetadata::new(
                     mail.metadata().uid(),
@@ -151,6 +149,25 @@ impl MaildirRepository {
                     filename,
                 ))
                 .await
+        }
+    }
+
+    pub async fn update(&self, mail_metadata: &impl MailMetadata) -> Result<(), NoExistsError> {
+        let uid = mail_metadata.uid().expect("mail uid should exist here");
+        if let Some(uid) = mail_metadata.uid()
+            && let Some(mut entry) = self.state.get_by_id(uid).await
+        {
+            trace!("updating existing mail with uid {uid:?}");
+            if entry.flags() != mail_metadata.flags() {
+                let new_flags = mail_metadata.flags();
+                self.maildir.update(&entry, new_flags);
+                entry.set_flags(new_flags);
+                self.state.update(entry).await;
+            }
+
+            Ok(())
+        } else {
+            Err(NoExistsError { uid })
         }
     }
 
