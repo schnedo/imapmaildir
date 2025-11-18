@@ -129,7 +129,7 @@ impl State {
 
         tokio::spawn(async move {
             while let Some(highest_modseq) = highest_modseq_rx.recv().await {
-                state.set_highest_modseq(highest_modseq).await;
+                state.update_highest_modseq(highest_modseq).await;
             }
         });
     }
@@ -174,7 +174,13 @@ impl State {
         .expect("uid_validity should be selectable")
     }
 
-    // todo: use this
+    pub async fn update_highest_modseq(&self, value: ModSeq) {
+        // todo: think about using cached highest_modseq and maybe mutex
+        if value > self.highest_modseq().await {
+            self.set_highest_modseq(value).await;
+        }
+    }
+
     pub async fn set_highest_modseq(&self, value: ModSeq) {
         trace!("setting cached highest_modseq {value}");
         self.execute(move |db| db.pragma_update(None, "user_version", u64::from(value)))

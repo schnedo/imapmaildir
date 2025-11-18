@@ -31,6 +31,7 @@ impl SelectedClient {
                     imap_proto::Response::Fetch(_, attributes) => {
                         if let [
                             imap_proto::AttributeValue::Uid(uid),
+                            imap_proto::AttributeValue::ModSeq(modseq),
                             imap_proto::AttributeValue::Flags(flags),
                             imap_proto::AttributeValue::Rfc822(content),
                         ] = attributes.as_slice()
@@ -39,7 +40,7 @@ impl SelectedClient {
                             let mail_flags = Flag::into_bitflags(flags);
                             let metadata =
                                 // todo: check for modseq in fetch response
-                                RemoteMailMetadata::new(Uid::try_from(uid).ok(), mail_flags, None);
+                                RemoteMailMetadata::new(Uid::try_from(uid).ok(), mail_flags, modseq.try_into().expect("received modseq should be valid"));
 
                             if let Some(content) = content {
                                 let content =
@@ -85,7 +86,7 @@ impl SelectedClient {
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
-        let command = format!("UID FETCH {sequence_set} (UID, FLAGS, RFC822)");
+        let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, RFC822)");
         debug!("{command}");
         self.connection
             .send(&command)

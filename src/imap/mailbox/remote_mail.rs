@@ -13,14 +13,17 @@ pub struct RemoteMailMetadata {
     #[builder(setter(strip_option))]
     uid: Option<Uid>,
     flags: BitFlags<Flag>,
-    // todo: is this really optional?
     #[builder(setter(strip_option))]
-    modseq: Option<ModSeq>,
+    modseq: ModSeq,
 }
 
 impl RemoteMailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, modseq: Option<ModSeq>) -> Self {
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, modseq: ModSeq) -> Self {
         Self { uid, flags, modseq }
+    }
+
+    pub fn modseq(&self) -> ModSeq {
+        self.modseq
     }
 }
 

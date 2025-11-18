@@ -6,7 +6,7 @@ use log::trace;
 use tokio::sync::mpsc;
 
 use crate::{
-    imap::{ModSeq, Uid, UidValidity},
+    imap::{ModSeq, RemoteMail, RemoteMailMetadata, Uid, UidValidity},
     maildir::maildir::LocalMail,
     state::State,
     sync::{Change, Flag, Mail, MailMetadata},
@@ -160,7 +160,7 @@ impl MaildirRepository {
         self.state.set_highest_modseq(value).await;
     }
 
-    pub async fn store(&self, mail: &impl Mail) -> Option<Uid> {
+    pub async fn store(&self, mail: &RemoteMail) -> Option<Uid> {
         trace!("storing mail {mail:?}");
         if self.update(mail.metadata()).await.is_ok() {
             None
@@ -177,11 +177,9 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn update(&self, mail_metadata: &impl MailMetadata) -> Result<(), NoExistsError> {
+    pub async fn update(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid().expect("mail uid should exist here");
-        if let Some(uid) = mail_metadata.uid()
-            && let Some(mut entry) = self.state.get_by_id(uid).await
-        {
+        let res = if let Some(mut entry) = self.state.get_by_id(uid).await {
             trace!("updating existing mail with uid {uid:?}");
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
@@ -193,7 +191,12 @@ impl MaildirRepository {
             Ok(())
         } else {
             Err(NoExistsError { uid })
-        }
+        };
+        self.state
+            .update_highest_modseq(mail_metadata.modseq())
+            .await;
+
+        res
     }
 
     pub async fn detect_changes(&self) -> Vec<Change<impl Mail>> {

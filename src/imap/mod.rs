@@ -6,6 +6,8 @@ mod tag_generator;
 
 pub use client::NotAuthenticatedClient;
 pub use mailbox::ModSeq;
+pub use mailbox::RemoteMail;
+pub use mailbox::RemoteMailMetadata;
 pub use mailbox::SequenceSetBuilder;
 pub use mailbox::Uid;
 pub use mailbox::UidValidity;
