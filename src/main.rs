@@ -63,10 +63,6 @@ async fn main() -> Result<()> {
                 .qresync_select(mail_tx, mailbox, uid_validity, highest_modseq)
                 .await;
             assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
-            maildir_repository
-                .set_highest_modseq(selection.mailbox_data.highest_modseq())
-                .await;
-
             let mut sequence_set = SequenceSetBuilder::new();
             for update in &selection.mail_updates {
                 if maildir_repository.update(update).await.is_err() {
@@ -76,6 +72,9 @@ async fn main() -> Result<()> {
             if let Ok(sequence_set) = sequence_set.build() {
                 selection.client.fetch_mail(&sequence_set).await;
             }
+            maildir_repository
+                .set_highest_modseq(selection.mailbox_data.highest_modseq())
+                .await;
 
             maildir_repository.detect_changes().await;
 
@@ -91,10 +90,10 @@ async fn main() -> Result<()> {
                 state_dir,
             )
             .await;
+            selection.client.fetch_all().await;
             maildir_repository
                 .set_highest_modseq(selection.mailbox_data.highest_modseq())
                 .await;
-            selection.client.fetch_all().await;
 
             maildir_repository
         };
