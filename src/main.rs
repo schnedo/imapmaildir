@@ -1,6 +1,7 @@
 use core::str;
 
 use clap::Parser;
+use log::debug;
 mod config;
 mod imap;
 mod logging;
@@ -97,13 +98,10 @@ async fn main() -> Result<()> {
                 (selection, maildir_repository)
             };
 
-        let recieve_task = tokio::task::spawn(async move {
-            while let Some(mail) = selection.mail_rx.recv().await {
-                maildir_repository.store(&mail).await;
-            }
-        });
-
-        recieve_task.await?;
+        debug!("Listening to incoming mails...");
+        while let Some(mail) = selection.mail_rx.recv().await {
+            maildir_repository.store(&mail).await;
+        }
 
         Ok(())
     }
