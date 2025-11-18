@@ -1,4 +1,4 @@
-use std::{mem::transmute, sync::Arc};
+use std::mem::transmute;
 
 use log::{debug, info, trace};
 use thiserror::Error;
@@ -6,10 +6,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
-        Uid, UidValidity,
+        Uid,
         codec::ResponseData,
         connection::Connection,
-        mailbox::{Mailbox, RemoteMail, RemoteMailMetadata, SequenceSet},
+        mailbox::{RemoteMail, RemoteMailMetadata, SequenceSet},
     },
     sync::Flag,
 };
@@ -17,17 +17,13 @@ use crate::{
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
-    mailbox: Arc<Mailbox>,
 }
 impl SelectedClient {
     pub fn new(
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
-        mailbox: Mailbox,
     ) -> (Self, mpsc::Receiver<RemoteMail>) {
         let (mail_tx, mail_rx) = mpsc::channel(32);
-        let mailbox = Arc::new(mailbox);
-        let mbox = mailbox.clone();
 
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
@@ -63,15 +59,10 @@ impl SelectedClient {
                         }
                     }
                     imap_proto::Response::Data {
-                        code: Some(imap_proto::ResponseCode::HighestModSeq(modseq)),
+                        code: Some(imap_proto::ResponseCode::HighestModSeq(_modseq)),
                         ..
                     } => {
                         // todo: set highest modseq in state
-                        mbox.set_highest_modseq(
-                            modseq
-                                .try_into()
-                                .expect("received highest modseq should be valid modseq"),
-                        );
                     }
                     _ => {
                         trace!(
@@ -83,13 +74,7 @@ impl SelectedClient {
             }
         });
 
-        (
-            Self {
-                connection,
-                mailbox,
-            },
-            mail_rx,
-        )
+        (Self { connection }, mail_rx)
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
@@ -104,10 +89,6 @@ impl SelectedClient {
     pub async fn fetch_all(&mut self) {
         info!("initializing new imap repository");
         self.fetch_mail(&SequenceSet::all()).await;
-    }
-
-    pub fn uid_validity(&self) -> UidValidity {
-        self.mailbox.uid_validity()
     }
 }
 

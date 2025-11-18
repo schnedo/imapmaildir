@@ -10,7 +10,9 @@ use crate::{
         },
         codec::ResponseData,
         connection::Connection,
-        mailbox::{MailboxBuilder, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder},
+        mailbox::{
+            Mailbox, MailboxBuilder, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder,
+        },
     },
     sync::Flag,
 };
@@ -19,6 +21,7 @@ pub struct Selection {
     pub client: SelectedClient,
     pub mail_rx: mpsc::Receiver<RemoteMail>,
     pub mail_updates: Vec<RemoteMailMetadata>,
+    pub mailbox_data: Mailbox,
 }
 
 pub struct AuthenticatedClient {
@@ -179,12 +182,13 @@ impl AuthenticatedClient {
         trace!("selected_mailbox = {mailbox:?}");
         trace!("mail updates = {mail_updates:?}");
         let (client, mail_rx) =
-            SelectedClient::new(self.connection, self.untagged_response_receiver, mailbox);
+            SelectedClient::new(self.connection, self.untagged_response_receiver);
 
         Selection {
             client,
             mail_rx,
             mail_updates,
+            mailbox_data: mailbox,
         }
     }
 }

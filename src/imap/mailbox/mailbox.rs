@@ -1,15 +1,9 @@
-use std::sync::Mutex;
-
-use derive_getters::Getters;
-
 use crate::imap::mailbox::{ModSeq, uid_validity::UidValidity};
 
-#[derive(Debug, Getters)]
+#[derive(Debug)]
 pub struct Mailbox {
-    #[getter(skip)]
     uid_validity: UidValidity,
-    #[getter(skip)]
-    highest_modseq: Mutex<ModSeq>,
+    highest_modseq: ModSeq,
 }
 
 impl Mailbox {
@@ -17,12 +11,8 @@ impl Mailbox {
         self.uid_validity
     }
 
-    pub fn set_highest_modseq(&self, modseq: ModSeq) {
-        let mut lock = self
-            .highest_modseq
-            .lock()
-            .expect("highest_modseq should be unlockable");
-        *lock = modseq;
+    pub fn highest_modseq(&self) -> ModSeq {
+        self.highest_modseq
     }
 }
 
@@ -37,7 +27,7 @@ impl MailboxBuilder {
         match (self.uid_validity, self.highest_modseq) {
             (Some(uid_validity), Some(highest_modseq)) => Ok(Mailbox {
                 uid_validity,
-                highest_modseq: Mutex::new(highest_modseq),
+                highest_modseq,
             }),
             _ => Err("not all required fields present"),
         }

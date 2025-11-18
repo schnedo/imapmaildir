@@ -165,7 +165,7 @@ impl State {
     }
 
     // todo: use this
-    pub async fn _set_highest_modseq(&self, value: ModSeq) {
+    pub async fn set_highest_modseq(&self, value: ModSeq) {
         trace!("setting cached highest_modseq {value}");
         self.execute(move |db| db.pragma_update(None, "user_version", u64::from(value)))
             .await
