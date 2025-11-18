@@ -1,12 +1,10 @@
-use std::sync::{Arc, Mutex};
-
 use log::{debug, trace};
 use tokio::sync::mpsc;
 
 use crate::imap::{
     client::{
         AuthenticatedClient,
-        capability::{AuthCapabilities, AuthCapability, Capabilities, Capability},
+        capability::{AuthCapabilities, AuthCapability, Capabilities},
     },
     codec::ResponseData,
     connection::Connection,
@@ -35,7 +33,7 @@ impl NotAuthenticatedClient {
             imap_proto::Response::Data {
                 status: imap_proto::Status::Ok,
                 code,
-                information,
+                information: _,
             } => {
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
                     update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
@@ -55,15 +53,15 @@ impl NotAuthenticatedClient {
             }
             imap_proto::Response::Data {
                 status: imap_proto::Status::Bad,
-                code,
-                information,
+                code: _,
+                information: _,
             } => {
                 todo!("handle server rejecting connection");
             }
             imap_proto::Response::Data {
                 status: imap_proto::Status::PreAuth,
-                code,
-                information,
+                code: _,
+                information: _,
             } => {
                 todo!("handle pre-authenticated state");
             }
@@ -120,9 +118,10 @@ fn update_capabilities(
 ) {
     for cap in caps {
         match cap {
-            imap_proto::Capability::Imap4rev1 => capabilities.insert(cap),
-            imap_proto::Capability::Auth(cow) => auth_capabilities.insert(cap),
-            imap_proto::Capability::Atom(cow) => capabilities.insert(cap),
+            imap_proto::Capability::Auth(_) => auth_capabilities.insert(cap),
+            imap_proto::Capability::Imap4rev1 | imap_proto::Capability::Atom(_) => {
+                capabilities.insert(cap);
+            }
         }
     }
     trace!("updated capabilities to {capabilities:?}");

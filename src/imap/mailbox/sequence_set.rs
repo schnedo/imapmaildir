@@ -17,12 +17,6 @@ impl SequenceRange {
     pub fn range(from: u32, to: u32) -> Self {
         Self { from, to: Some(to) }
     }
-
-    pub fn len(&self) -> usize {
-        self.to.map_or(1, |to| {
-            usize::try_from(to - self.from).expect("converting u32 to usize should succeed") + 1
-        })
-    }
 }
 
 impl Display for SequenceRange {

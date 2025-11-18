@@ -1,10 +1,4 @@
-#![expect(dead_code, unused_variables, unused_imports)]
-
 use core::str;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::default;
-use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 mod config;
@@ -15,26 +9,13 @@ mod nuke;
 mod state;
 mod sync;
 
-use anyhow::Result;
-use enumflags2::{BitFlag, BitFlags, bitflags};
-use futures::channel::oneshot;
-use futures::stream::SplitSink;
-use futures::{Sink, SinkExt, StreamExt};
-use futures_util::sink::Send;
-use imap_proto::{Request, Response};
-use log::{debug, trace, warn};
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::{JoinHandle, yield_now};
-use tokio_native_tls::{TlsConnector, TlsStream, native_tls};
-use tokio_util::codec::Framed;
-
 use crate::config::Config;
 use crate::imap::{NotAuthenticatedClient, SequenceSetBuilder};
 use crate::maildir::MaildirRepository;
 use crate::nuke::nuke;
 use crate::state::State;
-use crate::sync::{MailMetadata, Repository};
+use crate::sync::MailMetadata;
+use anyhow::Result;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -90,6 +71,8 @@ async fn main() -> Result<()> {
             if let Ok(sequence_set) = sequence_set.build() {
                 selection.client.fetch_mail(&sequence_set).await;
             }
+
+            maildir_repository.detect_changes().await;
 
             (selection, maildir_repository)
         } else {

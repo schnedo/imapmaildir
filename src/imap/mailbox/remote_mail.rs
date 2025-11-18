@@ -1,6 +1,5 @@
 use derive_builder::Builder;
 use enumflags2::BitFlags;
-use log::trace;
 use std::fmt::{Debug, Formatter, Result};
 
 use crate::{
@@ -34,15 +33,12 @@ impl MailMetadata for RemoteMailMetadata {
         self.flags
     }
 
-    fn set_flags(&mut self, flags: BitFlags<Flag>) {
+    fn set_flags(&mut self, _flags: BitFlags<Flag>) {
         panic!("setting flags on RemoteMailMetadata should not be necessary")
-    }
-
-    fn filename(&self) -> String {
-        panic!("filename should never be accessed for RemoteMailMetadata")
     }
 }
 pub struct RemoteMail {
+    #[expect(dead_code)] // Contains data that `response` borrows
     response: ResponseData,
     metadata: RemoteMailMetadata,
     content: &'static [u8],

@@ -1,8 +1,8 @@
 use std::{
     fmt::Debug,
-    fs::{self, DirBuilder, OpenOptions, read, read_dir},
+    fs::{self, DirBuilder, OpenOptions, read_dir},
     io::Write,
-    os::unix::fs::{DirBuilderExt as _, MetadataExt},
+    os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
     process,
     time::{SystemTime, UNIX_EPOCH},
@@ -156,28 +156,6 @@ impl Maildir {
             })
     }
 
-    pub fn get_cur(&self) -> impl Iterator<Item = LocalMail> {
-        read_dir(self.cur.as_path())
-            .expect("cur should be readable")
-            .map(|entry| {
-                let entry = entry.expect("entry of cur should be readable");
-                let filename = entry
-                    .file_name()
-                    .into_string()
-                    .expect("converting filename from OsString to String should be possible");
-                let content = read(entry.path()).expect("mail should be readable");
-
-                LocalMail {
-                    metadata: filename.parse().expect("filename should be parsable"),
-                    content,
-                }
-            })
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.cur.is_empty() && self.new.is_empty() && self.tmp.is_empty()
-    }
-
     pub fn update(&self, entry: &LocalMailMetadata, new_flags: BitFlags<Flag>) {
         let current_mail = self.cur.join(Self::generate_filename(
             entry.fileprefix(),
@@ -280,18 +258,5 @@ impl TryFrom<Flag> for char {
             Flag::Draft => Ok('D'),
             Flag::Recent => Err(UnknownMaildirFlagError {}),
         }
-    }
-}
-
-trait IsEmpty {
-    fn is_empty(&self) -> bool;
-}
-
-impl IsEmpty for PathBuf {
-    fn is_empty(&self) -> bool {
-        self.read_dir()
-            .expect("dir should be readable")
-            .next()
-            .is_none()
     }
 }

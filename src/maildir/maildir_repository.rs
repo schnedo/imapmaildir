@@ -2,14 +2,13 @@ use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
 use thiserror::Error;
 
 use enumflags2::BitFlags;
-use futures::stream::iter;
-use log::{debug, trace};
+use log::trace;
 
 use crate::{
-    imap::{Uid, UidValidity},
+    imap::Uid,
     maildir::maildir::LocalMail,
     state::State,
-    sync::{Change, Flag, Mail, MailMetadata, Repository},
+    sync::{Change, Flag, Mail, MailMetadata},
 };
 
 use super::Maildir;
@@ -43,6 +42,10 @@ impl LocalMailMetadata {
 
     pub fn fileprefix(&self) -> &str {
         &self.fileprefix
+    }
+
+    fn filename(&self) -> String {
+        self.to_string()
     }
 }
 
@@ -102,15 +105,11 @@ impl MailMetadata for LocalMailMetadata {
     fn set_flags(&mut self, flags: BitFlags<Flag>) {
         self.flags = flags;
     }
-
-    fn filename(&self) -> String {
-        self.to_string()
-    }
 }
 
 impl MaildirRepository {
     pub fn init(account: &str, mailbox: &str, mail_dir: &Path, state: State) -> Self {
-        if let Ok(mail) = Maildir::load(mail_dir, account, mailbox) {
+        if let Ok(_mail) = Maildir::load(mail_dir, account, mailbox) {
             todo!(
                 "unmanaged maildir found: {}/{account}/{mailbox}",
                 mail_dir.to_string_lossy()
@@ -185,9 +184,7 @@ impl MaildirRepository {
                         changes.push(Change::Updated(data));
                     }
                 } else {
-                    changes.push(Change::Deleted(
-                        entry.uid().expect("stored uid should not be missing"),
-                    ));
+                    changes.push(Change::Deleted());
                 }
             })
             .await;

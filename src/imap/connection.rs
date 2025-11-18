@@ -13,8 +13,8 @@ use crate::imap::{
 
 #[derive(Debug)]
 pub enum TaggedResponseError {
-    No { information: Option<String> },
-    Bad { information: Option<String> },
+    No {},
+    Bad {},
 }
 pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
 #[derive(Debug)]
@@ -58,7 +58,7 @@ impl Connection {
                     Some(response) = stream.next() => {
                         let response = response.expect("response should be receivable");
                         match response.parsed() {
-                            imap_proto::Response::Done { tag, status, code, information } => {
+                            imap_proto::Response::Done { tag, status, code: _, information } => {
                                 trace!("{tag:?} {status:?} {information:?}");
                                 match status {
                                     imap_proto::Status::Ok => {
@@ -67,12 +67,12 @@ impl Connection {
                                             .expect("sending response out of network task should succeed");
                                     }
                                     imap_proto::Status::No => {
-                                        inbound_tx.send(Err(TaggedResponseError::No{information: information.as_ref().map(ToString::to_string)}))
+                                        inbound_tx.send(Err(TaggedResponseError::No{}))
                                             .await
                                             .expect("sending response out of network task should succeed");
                                     },
                                     imap_proto::Status::Bad => {
-                                        inbound_tx.send(Err(TaggedResponseError::Bad{information: information.as_ref().map(ToString::to_string)}))
+                                        inbound_tx.send(Err(TaggedResponseError::Bad{}))
                                             .await
                                             .expect("sending response out of network task should succeed");
                                     },
@@ -80,7 +80,7 @@ impl Connection {
                                     imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
                                 }
                             } ,
-                            imap_proto::Response::Continue { code, information } => {
+                            imap_proto::Response::Continue { code: _, information } => {
                                 trace!("+ {information:?}");
                                 inbound_tx.send(Ok(response))
                                     .await

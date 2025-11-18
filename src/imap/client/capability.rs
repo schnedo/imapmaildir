@@ -1,5 +1,5 @@
 use enumflags2::{BitFlags, bitflags};
-use log::{trace, warn};
+use log::trace;
 
 #[bitflags]
 #[repr(u8)]
@@ -22,7 +22,7 @@ impl Capabilities {
             imap_proto::Capability::Imap4rev1 => {
                 self.capabilities.insert(Capability::Imap4rev1);
             }
-            imap_proto::Capability::Auth(cow) => {
+            imap_proto::Capability::Auth(_) => {
                 panic!("tried inserting auth capability in capabilities");
             }
             imap_proto::Capability::Atom(cow) => match cow.as_ref() {

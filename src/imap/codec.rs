@@ -37,7 +37,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use nom::{self, Needed};
 use tokio_util::codec::{Decoder, Encoder};
 
-use imap_proto::types::{Request, RequestId, Response};
+use imap_proto::types::{Request, Response};
 
 #[derive(Default)]
 pub struct ImapCodec {
@@ -112,13 +112,6 @@ pub struct ResponseData {
 }
 
 impl ResponseData {
-    pub fn request_id(&self) -> Option<&RequestId> {
-        match self.response {
-            Response::Done { ref tag, .. } => Some(tag),
-            _ => None,
-        }
-    }
-
     pub fn parsed(&self) -> &Response<'_> {
         &self.response
     }
@@ -128,17 +121,6 @@ impl ResponseData {
             code.as_ref()
         } else {
             panic!("response is no tagged response")
-        }
-    }
-}
-
-// my own code
-#[cfg(test)]
-impl ResponseData {
-    pub fn new(response: Response<'static>) -> Self {
-        Self {
-            raw: Bytes::new(),
-            response,
         }
     }
 }

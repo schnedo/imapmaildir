@@ -1,17 +1,13 @@
 use std::{
-    cell::Cell,
     convert::Into,
-    fmt::{Debug, Display},
+    fmt::Debug,
     fs::create_dir_all,
     path::{Path, PathBuf},
 };
 
-use derive_getters::Getters;
-use enumflags2::{BitFlag, BitFlags};
+use enumflags2::BitFlag;
 use log::{debug, trace};
-use rusqlite::{
-    Connection, Error, MappedRows, OpenFlags, OptionalExtension, Result, Row, ToSql, types::FromSql,
-};
+use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -168,7 +164,8 @@ impl State {
         .expect("uid_validity should be selectable")
     }
 
-    pub async fn set_highest_modseq(&self, value: ModSeq) {
+    // todo: use this
+    pub async fn _set_highest_modseq(&self, value: ModSeq) {
         trace!("setting cached highest_modseq {value}");
         self.execute(move |db| db.pragma_update(None, "user_version", u64::from(value)))
             .await

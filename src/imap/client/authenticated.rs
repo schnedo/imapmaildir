@@ -12,7 +12,6 @@ use crate::{
         connection::Connection,
         mailbox::{MailboxBuilder, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder},
     },
-    state::State,
     sync::Flag,
 };
 
@@ -45,7 +44,7 @@ impl AuthenticatedClient {
         assert!(self.capabilities.contains(Capability::Condstore));
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
-        self.do_select(mailbox, &command, None).await
+        self.do_select(&command, None).await
     }
 
     // todo: add optional qresync parameters
@@ -64,13 +63,12 @@ impl AuthenticatedClient {
             .expect("enabling qresync should succeed");
         let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
 
-        self.do_select(mailbox, &command, Some(uid_validity)).await
+        self.do_select(&command, Some(uid_validity)).await
     }
 
     #[expect(clippy::too_many_lines)]
     async fn do_select(
         mut self,
-        mailbox: &str,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {
@@ -81,36 +79,18 @@ impl AuthenticatedClient {
             .expect("selecting a mailbox should succeed");
 
         let mut new_mailbox = MailboxBuilder::default();
-        new_mailbox.name(mailbox.to_string());
 
         let mut mail_updates: Vec<RemoteMailMetadata> = Vec::new();
 
         while let Ok(response) = self.untagged_response_receiver.try_recv() {
             match response.parsed() {
-                imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
-                    imap_proto::MailboxDatum::Flags(cows) => {
-                        let mut flags = Vec::with_capacity(cows.len());
-                        for cow in cows {
-                            flags.push(cow.to_string());
-                        }
-                        new_mailbox.flags(flags);
-                    }
-                    imap_proto::MailboxDatum::Exists(exists) => {
-                        new_mailbox.exists(*exists);
-                    }
-                    imap_proto::MailboxDatum::Recent(recent) => {
-                        new_mailbox.recent(*recent);
-                    }
-                    _ => {
-                        trace!(
-                            "ignoring unknown mailbox data response to SELECT {mailbox_datum:?}"
-                        );
-                    }
-                },
+                imap_proto::Response::MailboxData(mailbox_datum) => {
+                    trace!("ignoring unknown mailbox data response to SELECT {mailbox_datum:?}");
+                }
                 imap_proto::Response::Capabilities(caps) => {
                     for cap in caps {
                         match cap {
-                            imap_proto::Capability::Atom(cow) => self.capabilities.insert(cap),
+                            imap_proto::Capability::Atom(_) => self.capabilities.insert(cap),
                             _ => warn!("unexpected capability respone {cap:?}"),
                         }
                     }
@@ -128,20 +108,6 @@ impl AuthenticatedClient {
                     code: Some(code),
                     information,
                 } => match code {
-                    imap_proto::ResponseCode::Unseen(unseen) => {
-                        new_mailbox.unseen(*unseen);
-                    }
-                    imap_proto::ResponseCode::PermanentFlags(cows) => {
-                        let mut flags = Vec::with_capacity(cows.len());
-                        for cow in cows {
-                            flags.push(cow.to_string());
-                        }
-                        new_mailbox.permanent_flags(flags);
-                    }
-                    imap_proto::ResponseCode::UidNext(next) => {
-                        new_mailbox
-                            .uid_next(next.try_into().expect("server should send valid uidnext"));
-                    }
                     imap_proto::ResponseCode::UidValidity(validity) => {
                         // todo: check uid_validity
                         let validity = validity
@@ -212,12 +178,8 @@ impl AuthenticatedClient {
             .expect("mailbox data should be all available at this point");
         trace!("selected_mailbox = {mailbox:?}");
         trace!("mail updates = {mail_updates:?}");
-        let (client, mail_rx) = SelectedClient::new(
-            self.connection,
-            self.untagged_response_receiver,
-            self.capabilities,
-            mailbox,
-        );
+        let (client, mail_rx) =
+            SelectedClient::new(self.connection, self.untagged_response_receiver, mailbox);
 
         Selection {
             client,

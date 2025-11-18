@@ -7,32 +7,25 @@ use tokio::sync::mpsc;
 use crate::{
     imap::{
         Uid, UidValidity,
-        client::capability::Capabilities,
         codec::ResponseData,
         connection::Connection,
         mailbox::{Mailbox, RemoteMail, RemoteMailMetadata, SequenceSet},
     },
-    state::State,
     sync::Flag,
 };
 
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
-    capabilities: Capabilities,
     mailbox: Arc<Mailbox>,
-    // todo: use this
-    metadata_rx: mpsc::Receiver<RemoteMailMetadata>,
 }
 impl SelectedClient {
     pub fn new(
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
-        capabilities: Capabilities,
         mailbox: Mailbox,
     ) -> (Self, mpsc::Receiver<RemoteMail>) {
         let (mail_tx, mail_rx) = mpsc::channel(32);
-        let (metadata_tx, metadata_rx) = mpsc::channel(32);
         let mailbox = Arc::new(mailbox);
         let mbox = mailbox.clone();
 
@@ -61,10 +54,7 @@ impl SelectedClient {
                                     .await
                                     .expect("mail channel should still be open");
                             } else {
-                                metadata_tx
-                                    .send(metadata)
-                                    .await
-                                    .expect("mail metadata channel should still be open");
+                                todo!("handle mail without content")
                             }
                         } else {
                             panic!(
@@ -96,9 +86,7 @@ impl SelectedClient {
         (
             Self {
                 connection,
-                capabilities,
                 mailbox,
-                metadata_rx,
             },
             mail_rx,
         )
