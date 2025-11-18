@@ -5,8 +5,11 @@ use std::{
 };
 use thiserror::Error;
 
+use crate::imap::Uid;
+
 #[derive(Debug)]
 struct SequenceRange {
+    // todo: use NonZeroU32
     from: u32,
     to: Option<u32>,
 }
@@ -97,6 +100,13 @@ impl SequenceSet {
 
     pub fn all() -> Self {
         Self::with_range(1, u32::MAX)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Uid> {
+        self.ranges
+            .iter()
+            .flat_map(|range| range.from..=(range.to.unwrap_or(range.from)))
+            .map(|num| num.try_into().expect("num should be non zero"))
     }
 }
 

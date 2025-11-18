@@ -225,6 +225,7 @@ impl AuthenticatedClient {
             .expect("mailbox data should be all available at this point");
         trace!("selected_mailbox = {mailbox_data:?}");
         trace!("mail updates = {mail_updates:?}");
+        trace!("mail deletions = {mail_deletions:?}");
         let client = SelectedClient::new(
             self.connection,
             self.untagged_response_receiver,

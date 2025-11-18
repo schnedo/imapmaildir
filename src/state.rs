@@ -141,6 +141,7 @@ impl State {
         state_dir
     }
 
+    // todo: use separate channels for tasks instead of sending boxed task
     async fn execute<T, F>(&self, task: F) -> Result<T, Error>
     where
         T: Send + Debug + 'static,
@@ -240,7 +241,7 @@ impl State {
     }
 
     pub async fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
-        trace!("checking existence of {uid:?}");
+        trace!("get existing metadata with {uid:?}");
         self.execute(move |db| {
             let mut stmt = db
                 .prepare_cached("select * from mail_metadata where uid = ?1")
@@ -251,7 +252,20 @@ impl State {
             .optional()
         })
         .await
-        .expect("existence of uid should be queryable")
+        .expect("existing matadata should be queryable")
+    }
+
+    // todo: delete multiple
+    pub async fn delete_by_id(&self, uid: Uid) {
+        trace!("deleting {uid:?}");
+        self.execute(move |db| {
+            let mut stmt = db
+                .prepare_cached("delete from mail_metadata where uid = ?1")
+                .expect("deletion of existing mails should be preparable");
+            stmt.execute([u32::from(uid)])
+        })
+        .await
+        .expect("deletion of existing mail should succeed");
     }
 
     // todo: think about streaming this

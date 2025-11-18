@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    fs::{self, DirBuilder, OpenOptions, read_dir},
+    fs::{self, DirBuilder, OpenOptions, read_dir, remove_file},
     io::Write,
     os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
@@ -121,6 +121,7 @@ impl Maildir {
         file_prefix
     }
 
+    // todo: move this to LocalMailMetadata
     fn generate_filename(file_prefix: &str, uid: Option<Uid>, flags: BitFlags<Flag>) -> String {
         let mut string_flags = String::with_capacity(6);
         for flag in flags {
@@ -203,6 +204,13 @@ impl Maildir {
                 current_mail.to_string_lossy()
             ),
         }
+    }
+
+    pub fn delete(&self, entry: &LocalMailMetadata) {
+        let filename = Self::generate_filename(entry.fileprefix(), entry.uid(), entry.flags());
+        let file_path = self.cur.join(filename);
+        trace!("deleting {}", file_path.display());
+        remove_file(file_path).expect("deletion of file should succeed");
     }
 }
 

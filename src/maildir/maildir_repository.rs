@@ -199,6 +199,15 @@ impl MaildirRepository {
         res
     }
 
+    pub async fn delete(&self, uid: Uid) {
+        if let Some(entry) = self.state.get_by_id(uid).await {
+            self.maildir.delete(&entry);
+            self.state.delete_by_id(uid).await;
+        } else {
+            trace!("mail {uid:?} already gone");
+        }
+    }
+
     pub async fn detect_changes(&self) -> Vec<Change<impl Mail>> {
         let mut changes = vec![];
         let maildir_metadata = self.maildir.list_cur();

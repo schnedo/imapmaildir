@@ -78,10 +78,20 @@ impl Syncer {
                 highest_modseq,
             )
             .await;
-        assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
+        assert_eq!(
+            uid_validity,
+            selection.mailbox_data.uid_validity(),
+            "remote uid validity should be the same as local"
+        );
 
         maildir_repository.detect_changes().await;
         // todo: handle conflicts
+
+        if let Some(set) = selection.mail_deletions {
+            for uid in set.iter() {
+                maildir_repository.delete(uid).await;
+            }
+        }
 
         let mut sequence_set = SequenceSetBuilder::new();
         for update in &selection.mail_updates {
