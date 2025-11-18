@@ -14,7 +14,6 @@ use crate::config::Config;
 use crate::imap::{NotAuthenticatedClient, SequenceSetBuilder};
 use crate::maildir::MaildirRepository;
 use crate::nuke::nuke;
-use crate::state::State;
 use crate::sync::MailMetadata;
 use anyhow::Result;
 
@@ -52,51 +51,51 @@ async fn main() -> Result<()> {
         let client = NotAuthenticatedClient::connect(host, port).await;
         let client = client.login(username, password).await;
 
-        let (mut selection, maildir_repository) =
-            if let Ok(state) = State::load(state_dir, account, mailbox).await {
-                let uid_validity = state.uid_validity().await;
-                let highest_modseq = state.highest_modseq().await;
-                let mut selection = client
-                    .qresync_select(mailbox, uid_validity, highest_modseq)
-                    .await;
-                assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
-                state
-                    .set_highest_modseq(selection.mailbox_data.highest_modseq())
-                    .await;
-                let maildir_repository = MaildirRepository::load(account, mailbox, mail_dir, state);
+        let (mut selection, maildir_repository) = if let Some(maildir_repository) =
+            MaildirRepository::load(account, mailbox, mail_dir, state_dir).await
+        {
+            let uid_validity = maildir_repository.uid_validity().await;
+            let highest_modseq = maildir_repository.highest_modseq().await;
 
-                let mut sequence_set = SequenceSetBuilder::new();
-                for update in &selection.mail_updates {
-                    if maildir_repository.update(update).await.is_err() {
-                        sequence_set.add(update.uid().expect("uid should exist here").into());
-                    }
+            let mut selection = client
+                .qresync_select(mailbox, uid_validity, highest_modseq)
+                .await;
+            assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
+            maildir_repository
+                .set_highest_modseq(selection.mailbox_data.highest_modseq())
+                .await;
+
+            let mut sequence_set = SequenceSetBuilder::new();
+            for update in &selection.mail_updates {
+                if maildir_repository.update(update).await.is_err() {
+                    sequence_set.add(update.uid().expect("uid should exist here").into());
                 }
-                if let Ok(sequence_set) = sequence_set.build() {
-                    selection.client.fetch_mail(&sequence_set).await;
-                }
+            }
+            if let Ok(sequence_set) = sequence_set.build() {
+                selection.client.fetch_mail(&sequence_set).await;
+            }
 
-                maildir_repository.detect_changes().await;
+            maildir_repository.detect_changes().await;
 
-                (selection, maildir_repository)
-            } else {
-                let mut selection = client.select(mailbox).await;
+            (selection, maildir_repository)
+        } else {
+            let mut selection = client.select(mailbox).await;
 
-                let state = State::init(
-                    state_dir,
-                    account,
-                    mailbox,
-                    selection.mailbox_data.uid_validity(),
-                )
-                .await
-                .expect("state should be creatable");
-                state
-                    .set_highest_modseq(selection.mailbox_data.highest_modseq())
-                    .await;
-                let maildir_repository = MaildirRepository::init(account, mailbox, mail_dir, state);
-                selection.client.fetch_all().await;
+            let maildir_repository = MaildirRepository::init(
+                account,
+                mailbox,
+                selection.mailbox_data.uid_validity(),
+                mail_dir,
+                state_dir,
+            )
+            .await;
+            maildir_repository
+                .set_highest_modseq(selection.mailbox_data.highest_modseq())
+                .await;
+            selection.client.fetch_all().await;
 
-                (selection, maildir_repository)
-            };
+            (selection, maildir_repository)
+        };
 
         debug!("Listening to incoming mails...");
         while let Some(mail) = selection.mail_rx.recv().await {

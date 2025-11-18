@@ -5,18 +5,13 @@ use enumflags2::BitFlags;
 use log::trace;
 
 use crate::{
-    imap::Uid,
+    imap::{ModSeq, Uid, UidValidity},
     maildir::maildir::LocalMail,
     state::State,
     sync::{Change, Flag, Mail, MailMetadata},
 };
 
 use super::Maildir;
-
-pub struct MaildirRepository {
-    maildir: Maildir,
-    state: State,
-}
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
@@ -106,31 +101,61 @@ impl MailMetadata for LocalMailMetadata {
     }
 }
 
+pub struct MaildirRepository {
+    maildir: Maildir,
+    state: State,
+}
+
 impl MaildirRepository {
-    pub fn init(account: &str, mailbox: &str, mail_dir: &Path, state: State) -> Self {
-        if let Ok(_mail) = Maildir::load(mail_dir, account, mailbox) {
-            todo!(
-                "unmanaged maildir found: {}/{account}/{mailbox}",
-                mail_dir.to_string_lossy()
-            )
-        } else {
-            let mail = Maildir::new(mail_dir, account, mailbox);
-            Self {
+    pub fn new(maildir: Maildir, state: State) -> Self {
+        Self { maildir, state }
+    }
+
+    pub async fn init(
+        account: &str,
+        mailbox: &str,
+        uid_validity: UidValidity,
+        mail_dir: &Path,
+        state_dir: &Path,
+    ) -> Self {
+        let mail = Maildir::new(mail_dir, account, mailbox);
+        let state = State::init(state_dir, account, mailbox, uid_validity)
+            .await
+            .expect("initializing state should work");
+
+        Self::new(mail, state)
+    }
+
+    pub async fn load(
+        account: &str,
+        mailbox: &str,
+        mail_dir: &Path,
+        state_dir: &Path,
+    ) -> Option<Self> {
+        match (
+            State::load(state_dir, account, mailbox).await,
+            Maildir::load(mail_dir, account, mailbox),
+        ) {
+            (Ok(state), Ok(mail)) => Some(Self {
                 maildir: mail,
                 state,
-            }
+            }),
+            (Ok(_), Err(_)) => todo!("missing maildir for existing state"),
+            (Err(_), Ok(_)) => todo!("missing state for existing maildir"),
+            (Err(_), Err(_)) => None,
         }
     }
 
-    pub fn load(account: &str, mailbox: &str, mail_dir: &Path, state: State) -> Self {
-        if let Ok(mail) = Maildir::load(mail_dir, account, mailbox) {
-            Self {
-                maildir: mail,
-                state,
-            }
-        } else {
-            todo!("missing maildir for existing state")
-        }
+    pub async fn uid_validity(&self) -> UidValidity {
+        self.state.uid_validity().await
+    }
+
+    pub async fn highest_modseq(&self) -> ModSeq {
+        self.state.highest_modseq().await
+    }
+
+    pub async fn set_highest_modseq(&self, value: ModSeq) {
+        self.state.set_highest_modseq(value).await;
     }
 
     pub async fn store(&self, mail: &impl Mail) -> Option<Uid> {

@@ -28,27 +28,35 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn new(maildir_path: &Path, account: &str, mailbox: &str) -> Self {
-        let mut maildir_path = maildir_path.join(account);
+    pub fn new(mail_dir: &Path, account: &str, mailbox: &str) -> Self {
+        let mut maildir_path = mail_dir.join(account);
         maildir_path.push(mailbox);
-        info!("creating mailbox in {:#}", maildir_path.display());
-        let mut builder = DirBuilder::new();
-        builder.recursive(true).mode(0o700);
 
-        let tmp = maildir_path.join("tmp");
-        builder
-            .create(tmp.as_path())
-            .expect("creation of tmp subdir should succeed");
-        let new = maildir_path.join("new");
-        builder
-            .create(new.as_path())
-            .expect("creation of new subdir should succeed");
-        let cur = maildir_path.join("cur");
-        builder
-            .create(cur.as_path())
-            .expect("creation of cur subdir should succeed");
+        if Maildir::load(mail_dir, account, mailbox).is_ok() {
+            panic!(
+                "unmanaged maildir found at {}",
+                maildir_path.to_string_lossy()
+            );
+        } else {
+            info!("creating mailbox in {:#}", maildir_path.display());
+            let mut builder = DirBuilder::new();
+            builder.recursive(true).mode(0o700);
 
-        Self { new, cur, tmp }
+            let tmp = maildir_path.join("tmp");
+            builder
+                .create(tmp.as_path())
+                .expect("creation of tmp subdir should succeed");
+            let new = maildir_path.join("new");
+            builder
+                .create(new.as_path())
+                .expect("creation of new subdir should succeed");
+            let cur = maildir_path.join("cur");
+            builder
+                .create(cur.as_path())
+                .expect("creation of cur subdir should succeed");
+
+            Self { new, cur, tmp }
+        }
     }
 
     fn unchecked(mail_dir: &Path, account: &str, mailbox: &str) -> Self {
