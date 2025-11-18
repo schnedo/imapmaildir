@@ -71,7 +71,6 @@ impl FromStr for LocalMailMetadata {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (head, flags) = s.rsplit_once(":2,").ok_or("filename should contain :2,")?;
         let flags = flags.chars().map(Flag::from).collect();
-        let head = head.rsplit_once(':').ok_or("filename should contain :")?.0;
         if let Some((fileprefix, uid)) = head.rsplit_once(",U=") {
             let uid = uid
                 .parse::<u32>()

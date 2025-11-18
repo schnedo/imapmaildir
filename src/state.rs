@@ -244,7 +244,7 @@ impl State {
         let rows: Vec<LocalMailMetadata> = self
             .execute(move |db| {
                 let mut stmt = db
-                    .prepare("select (uid,flags,fileprefix) from mail_metadata;")
+                    .prepare("select uid,flags,fileprefix from mail_metadata;")
                     .expect("select all mail_metadata should be preparable");
                 stmt.query_map([], |row| LocalMailMetadata::try_from(row))?
                     .collect()
