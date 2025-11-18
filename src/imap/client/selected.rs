@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
-        Uid,
+        ModSeq, Uid,
         codec::ResponseData,
         connection::Connection,
         mailbox::{RemoteMail, RemoteMailMetadata, SequenceSet},
@@ -23,6 +23,7 @@ impl SelectedClient {
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         mail_tx: mpsc::Sender<RemoteMail>,
+        highest_modseq_tx: mpsc::Sender<ModSeq>,
     ) -> Self {
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
@@ -58,10 +59,17 @@ impl SelectedClient {
                         }
                     }
                     imap_proto::Response::Data {
-                        code: Some(imap_proto::ResponseCode::HighestModSeq(_modseq)),
+                        code: Some(imap_proto::ResponseCode::HighestModSeq(modseq)),
                         ..
                     } => {
-                        // todo: set highest modseq in state
+                        highest_modseq_tx
+                            .send(
+                                modseq
+                                    .try_into()
+                                    .expect("received highest_modseq should be valid"),
+                            )
+                            .await
+                            .expect("channel should be open");
                     }
                     _ => {
                         trace!(

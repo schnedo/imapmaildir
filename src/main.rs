@@ -52,6 +52,7 @@ async fn main() -> Result<()> {
         let client = NotAuthenticatedClient::connect(host, port).await;
         let client = client.login(username, password).await;
         let (mail_tx, mut mail_rx) = mpsc::channel(32);
+        let (highest_modseq_tx, highest_modseq_rx) = mpsc::channel(32);
 
         let maildir_repository = if let Some(maildir_repository) =
             MaildirRepository::load(account, mailbox, mail_dir, state_dir).await
@@ -60,7 +61,13 @@ async fn main() -> Result<()> {
             let highest_modseq = maildir_repository.highest_modseq().await;
 
             let mut selection = client
-                .qresync_select(mail_tx, mailbox, uid_validity, highest_modseq)
+                .qresync_select(
+                    mail_tx,
+                    highest_modseq_tx,
+                    mailbox,
+                    uid_validity,
+                    highest_modseq,
+                )
                 .await;
             assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
 
@@ -82,7 +89,7 @@ async fn main() -> Result<()> {
 
             maildir_repository
         } else {
-            let mut selection = client.select(mail_tx, mailbox).await;
+            let mut selection = client.select(mail_tx, highest_modseq_tx, mailbox).await;
 
             let maildir_repository = MaildirRepository::init(
                 account,
@@ -99,6 +106,7 @@ async fn main() -> Result<()> {
 
             maildir_repository
         };
+        maildir_repository.handle_highest_modseq(highest_modseq_rx);
 
         debug!("Listening to incoming mails...");
         while let Some(mail) = mail_rx.recv().await {

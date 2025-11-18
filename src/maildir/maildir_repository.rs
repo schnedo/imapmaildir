@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use enumflags2::BitFlags;
 use log::trace;
+use tokio::sync::mpsc;
 
 use crate::{
     imap::{ModSeq, Uid, UidValidity},
@@ -126,6 +127,10 @@ impl MaildirRepository {
         Self::new(mail, state)
     }
 
+    pub fn handle_highest_modseq(&self, highest_modseq_rx: mpsc::Receiver<ModSeq>) {
+        self.state.handle_highest_modseq(highest_modseq_rx);
+    }
+
     pub async fn load(
         account: &str,
         mailbox: &str,
@@ -136,10 +141,7 @@ impl MaildirRepository {
             State::load(state_dir, account, mailbox).await,
             Maildir::load(mail_dir, account, mailbox),
         ) {
-            (Ok(state), Ok(mail)) => Some(Self {
-                maildir: mail,
-                state,
-            }),
+            (Ok(state), Ok(mail)) => Some(Self::new(mail, state)),
             (Ok(_), Err(_)) => todo!("missing maildir for existing state"),
             (Err(_), Ok(_)) => todo!("missing state for existing maildir"),
             (Err(_), Err(_)) => None,

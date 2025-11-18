@@ -124,6 +124,16 @@ impl State {
         Ok(Self { db_tx })
     }
 
+    pub fn handle_highest_modseq(&self, mut highest_modseq_rx: mpsc::Receiver<ModSeq>) {
+        let state = self.clone();
+
+        tokio::spawn(async move {
+            while let Some(highest_modseq) = highest_modseq_rx.recv().await {
+                state.set_highest_modseq(highest_modseq).await;
+            }
+        });
+    }
+
     fn prepare_state_file(state_dir: &Path, account: &str, mailbox: &str) -> PathBuf {
         let mut state_dir = state_dir.join(account);
         create_dir_all(&state_dir).expect("creation of state_dir should succeed");
