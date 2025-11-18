@@ -19,7 +19,6 @@ use crate::{
 
 pub struct Selection {
     pub client: SelectedClient,
-    pub mail_rx: mpsc::Receiver<RemoteMail>,
     pub mail_updates: Vec<RemoteMailMetadata>,
     pub mailbox_data: Mailbox,
 }
@@ -43,16 +42,17 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(self, mailbox: &str) -> Selection {
+    pub async fn select(self, mail_tx: mpsc::Sender<RemoteMail>, mailbox: &str) -> Selection {
         assert!(self.capabilities.contains(Capability::Condstore));
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
-        self.do_select(&command, None).await
+        self.do_select(mail_tx, &command, None).await
     }
 
     // todo: add optional qresync parameters
     pub async fn qresync_select(
         mut self,
+        mail_tx: mpsc::Sender<RemoteMail>,
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
@@ -66,12 +66,13 @@ impl AuthenticatedClient {
             .expect("enabling qresync should succeed");
         let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
 
-        self.do_select(&command, Some(uid_validity)).await
+        self.do_select(mail_tx, &command, Some(uid_validity)).await
     }
 
     #[expect(clippy::too_many_lines)]
     async fn do_select(
         mut self,
+        mail_tx: mpsc::Sender<RemoteMail>,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {
@@ -181,12 +182,10 @@ impl AuthenticatedClient {
             .expect("mailbox data should be all available at this point");
         trace!("selected_mailbox = {mailbox:?}");
         trace!("mail updates = {mail_updates:?}");
-        let (client, mail_rx) =
-            SelectedClient::new(self.connection, self.untagged_response_receiver);
+        let client = SelectedClient::new(self.connection, self.untagged_response_receiver, mail_tx);
 
         Selection {
             client,
-            mail_rx,
             mail_updates,
             mailbox_data: mailbox,
         }

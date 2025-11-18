@@ -2,6 +2,7 @@ use core::str;
 
 use clap::Parser;
 use log::debug;
+use tokio::sync::mpsc;
 mod config;
 mod imap;
 mod logging;
@@ -50,15 +51,16 @@ async fn main() -> Result<()> {
 
         let client = NotAuthenticatedClient::connect(host, port).await;
         let client = client.login(username, password).await;
+        let (mail_tx, mut mail_rx) = mpsc::channel(32);
 
-        let (mut selection, maildir_repository) = if let Some(maildir_repository) =
+        let maildir_repository = if let Some(maildir_repository) =
             MaildirRepository::load(account, mailbox, mail_dir, state_dir).await
         {
             let uid_validity = maildir_repository.uid_validity().await;
             let highest_modseq = maildir_repository.highest_modseq().await;
 
             let mut selection = client
-                .qresync_select(mailbox, uid_validity, highest_modseq)
+                .qresync_select(mail_tx, mailbox, uid_validity, highest_modseq)
                 .await;
             assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
             maildir_repository
@@ -77,9 +79,9 @@ async fn main() -> Result<()> {
 
             maildir_repository.detect_changes().await;
 
-            (selection, maildir_repository)
+            maildir_repository
         } else {
-            let mut selection = client.select(mailbox).await;
+            let mut selection = client.select(mail_tx, mailbox).await;
 
             let maildir_repository = MaildirRepository::init(
                 account,
@@ -94,11 +96,11 @@ async fn main() -> Result<()> {
                 .await;
             selection.client.fetch_all().await;
 
-            (selection, maildir_repository)
+            maildir_repository
         };
 
         debug!("Listening to incoming mails...");
-        while let Some(mail) = selection.mail_rx.recv().await {
+        while let Some(mail) = mail_rx.recv().await {
             maildir_repository.store(&mail).await;
         }
 

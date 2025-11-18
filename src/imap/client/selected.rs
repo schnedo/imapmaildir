@@ -22,9 +22,8 @@ impl SelectedClient {
     pub fn new(
         connection: Connection,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
-    ) -> (Self, mpsc::Receiver<RemoteMail>) {
-        let (mail_tx, mail_rx) = mpsc::channel(32);
-
+        mail_tx: mpsc::Sender<RemoteMail>,
+    ) -> Self {
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
                 match response.parsed() {
@@ -74,7 +73,7 @@ impl SelectedClient {
             }
         });
 
-        (Self { connection }, mail_rx)
+        Self { connection }
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
