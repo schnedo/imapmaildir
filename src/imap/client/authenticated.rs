@@ -98,7 +98,23 @@ impl AuthenticatedClient {
         while let Ok(response) = self.untagged_response_receiver.try_recv() {
             match response.parsed() {
                 imap_proto::Response::MailboxData(mailbox_datum) => {
-                    trace!("ignoring unknown mailbox data response to SELECT {mailbox_datum:?}");
+                    match mailbox_datum {
+                        imap_proto::MailboxDatum::Exists(exists) => {
+                            // todo: does this need handling?
+                            trace!("not handling MailboxData response Exists {exists:?}");
+                        }
+                        imap_proto::MailboxDatum::Flags(flags) => {
+                            // todo: does this need handling?
+                            trace!("not handling MailboxData response Flags {flags:?}");
+                        }
+                        imap_proto::MailboxDatum::Recent(recent) => {
+                            // todo: does this need handling?
+                            trace!("not handling MailboxData response Recent {recent:?}");
+                        }
+                        _ => warn!(
+                            "ignoring unknown mailbox data response to SELECT {mailbox_datum:?}"
+                        ),
+                    }
                 }
                 imap_proto::Response::Capabilities(caps) => {
                     for cap in caps {
@@ -137,6 +153,14 @@ impl AuthenticatedClient {
                                 .try_into()
                                 .expect("Project expects RFC 4551 compatible IMAP server"),
                         );
+                    }
+                    imap_proto::ResponseCode::PermanentFlags(flags) => {
+                        // todo: does this need handling?
+                        trace!("not handling Data response PermanentFlags {flags:?}");
+                    }
+                    imap_proto::ResponseCode::UidNext(uid_next) => {
+                        // todo: does this need handling?
+                        trace!("not handling Data response UidNext {uid_next:?}");
                     }
                     _ => {
                         warn!("ignoring unknown data response to SELECT");
