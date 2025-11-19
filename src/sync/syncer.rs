@@ -1,4 +1,7 @@
-use crate::sync::repository::MailMetadata;
+use crate::{
+    imap::{ModSeq, RemoteMail},
+    sync::repository::MailMetadata,
+};
 use std::path::Path;
 
 use log::debug;
@@ -24,54 +27,27 @@ impl Syncer {
         let maildir_repository = if let Some(maildir_repository) =
             MaildirRepository::load(account, mailbox, mail_dir, state_dir).await
         {
-            let uid_validity = maildir_repository.uid_validity().await;
-            let highest_modseq = maildir_repository.highest_modseq().await;
-
-            let mut selection = client
-                .qresync_select(
-                    mail_tx,
-                    highest_modseq_tx,
-                    mailbox,
-                    uid_validity,
-                    highest_modseq,
-                )
-                .await;
-            assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
-
-            maildir_repository.detect_changes().await;
-            // todo: handle conflicts
-
-            let mut sequence_set = SequenceSetBuilder::new();
-            for update in &selection.mail_updates {
-                if maildir_repository.update(update).await.is_err() {
-                    sequence_set.add(update.uid().expect("uid should exist here").into());
-                }
-            }
-            if let Ok(sequence_set) = sequence_set.build() {
-                selection.client.fetch_mail(&sequence_set).await;
-            }
-            maildir_repository
-                .set_highest_modseq(selection.mailbox_data.highest_modseq())
-                .await;
+            Self::sync_existing(
+                &maildir_repository,
+                client,
+                mail_tx,
+                highest_modseq_tx,
+                mailbox,
+            )
+            .await;
 
             maildir_repository
         } else {
-            let mut selection = client.select(mail_tx, highest_modseq_tx, mailbox).await;
-
-            let maildir_repository = MaildirRepository::init(
+            Self::sync_new(
+                client,
                 account,
-                mailbox,
-                selection.mailbox_data.uid_validity(),
                 mail_dir,
                 state_dir,
+                mail_tx,
+                highest_modseq_tx,
+                mailbox,
             )
-            .await;
-            selection.client.fetch_all().await;
-            maildir_repository
-                .set_highest_modseq(selection.mailbox_data.highest_modseq())
-                .await;
-
-            maildir_repository
+            .await
         };
         maildir_repository.handle_highest_modseq(highest_modseq_rx);
 
@@ -81,5 +57,70 @@ impl Syncer {
                 maildir_repository.store(&mail).await;
             }
         })
+    }
+
+    async fn sync_existing(
+        maildir_repository: &MaildirRepository,
+        client: AuthenticatedClient,
+        mail_tx: mpsc::Sender<RemoteMail>,
+        highest_modseq_tx: mpsc::Sender<ModSeq>,
+        mailbox: &str,
+    ) {
+        let uid_validity = maildir_repository.uid_validity().await;
+        let highest_modseq = maildir_repository.highest_modseq().await;
+
+        let mut selection = client
+            .qresync_select(
+                mail_tx,
+                highest_modseq_tx,
+                mailbox,
+                uid_validity,
+                highest_modseq,
+            )
+            .await;
+        assert_eq!(uid_validity, selection.mailbox_data.uid_validity());
+
+        maildir_repository.detect_changes().await;
+        // todo: handle conflicts
+
+        let mut sequence_set = SequenceSetBuilder::new();
+        for update in &selection.mail_updates {
+            if maildir_repository.update(update).await.is_err() {
+                sequence_set.add(update.uid().expect("uid should exist here").into());
+            }
+        }
+        if let Ok(sequence_set) = sequence_set.build() {
+            selection.client.fetch_mail(&sequence_set).await;
+        }
+        maildir_repository
+            .set_highest_modseq(selection.mailbox_data.highest_modseq())
+            .await;
+    }
+
+    async fn sync_new(
+        client: AuthenticatedClient,
+        account: &str,
+        mail_dir: &Path,
+        state_dir: &Path,
+        mail_tx: mpsc::Sender<RemoteMail>,
+        highest_modseq_tx: mpsc::Sender<ModSeq>,
+        mailbox: &str,
+    ) -> MaildirRepository {
+        let mut selection = client.select(mail_tx, highest_modseq_tx, mailbox).await;
+
+        let maildir_repository = MaildirRepository::init(
+            account,
+            mailbox,
+            selection.mailbox_data.uid_validity(),
+            mail_dir,
+            state_dir,
+        )
+        .await;
+        selection.client.fetch_all().await;
+        maildir_repository
+            .set_highest_modseq(selection.mailbox_data.highest_modseq())
+            .await;
+
+        maildir_repository
     }
 }
