@@ -9,10 +9,17 @@ use crate::{
     imap::{ModSeq, RemoteMail, RemoteMailMetadata, Uid, UidValidity},
     maildir::maildir::LocalMail,
     state::State,
-    sync::{Change, Flag},
+    sync::Flag,
 };
 
 use super::Maildir;
+
+#[derive(Debug, Default)]
+pub struct LocalChanges {
+    pub updates: Vec<LocalMailMetadata>,
+    pub deletions: Vec<Uid>,
+    pub news: Vec<LocalMail>,
+}
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
@@ -206,30 +213,32 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn detect_changes(&self) -> Vec<Change> {
-        let mut changes = vec![];
+    // todo: check if change without uid is an update or new
+    pub async fn detect_changes(&self) -> LocalChanges {
+        let mut changes = LocalChanges::default();
         let maildir_metadata = self.maildir.list_cur();
-        let mut maildir_mails = HashMap::with_capacity(maildir_metadata.size_hint().0);
-        for mail_metadata in maildir_metadata {
-            maildir_mails.insert(mail_metadata.uid(), mail_metadata);
-        }
+        let mut maildir_mails: HashMap<Option<Uid>, LocalMailMetadata> = maildir_metadata
+            .map(|metadata| (metadata.uid(), metadata))
+            .collect();
         self.state
             .for_each(|entry| {
                 if let Some(data) = maildir_mails.remove(&entry.uid()) {
                     if data.flags() != entry.flags() {
-                        changes.push(Change::Updated(data));
+                        changes.updates.push(data);
                     }
                 } else {
-                    changes.push(Change::Deleted());
+                    changes
+                        .deletions
+                        .push(entry.uid().expect("uid should exist here"));
                 }
             })
             .await;
         for maildata in maildir_mails.into_values() {
-            changes.push(Change::New(LocalMail::new(
+            changes.news.push(LocalMail::new(
                 fs::read(self.maildir.resolve(&maildata.filename()))
                     .expect("mail contents should be readable"),
                 maildata,
-            )));
+            ));
         }
 
         changes

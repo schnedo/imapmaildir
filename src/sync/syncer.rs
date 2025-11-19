@@ -1,5 +1,8 @@
-use crate::imap::{ModSeq, RemoteMail};
-use std::path::Path;
+use crate::{
+    imap::{ModSeq, RemoteMail, Selection},
+    maildir::LocalChanges,
+};
+use std::{collections::HashSet, path::Path};
 
 use log::debug;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -81,8 +84,8 @@ impl Syncer {
             "remote uid validity should be the same as local"
         );
 
-        maildir_repository.detect_changes().await;
-        // todo: handle conflicts
+        let mut local_changes = maildir_repository.detect_changes().await;
+        Self::handle_conflicts(&selection, &mut local_changes);
 
         if let Some(set) = selection.mail_deletions {
             for uid in set.iter() {
@@ -102,6 +105,28 @@ impl Syncer {
         maildir_repository
             .set_highest_modseq(selection.mailbox_data.highest_modseq())
             .await;
+    }
+
+    // todo: add configurable conflict strategy; right now: remote wins
+    fn handle_conflicts(selection: &Selection, local_changes: &mut LocalChanges) {
+        let mut remote_deletions = HashSet::new();
+        if let Some(deletions) = &selection.mail_deletions {
+            for deletion in deletions.iter() {
+                remote_deletions.insert(deletion);
+            }
+        }
+        let mut remote_updates = HashSet::new();
+        for update in &selection.mail_updates {
+            remote_updates.insert(update.uid().expect("remote mail should have uid"));
+        }
+
+        local_changes
+            .deletions
+            .retain(|deletion| !remote_updates.contains(deletion));
+        local_changes.updates.retain(|update| {
+            let uid = &update.uid().expect("change should have uid");
+            !remote_updates.contains(uid) && !remote_deletions.contains(uid)
+        });
     }
 
     async fn sync_new(

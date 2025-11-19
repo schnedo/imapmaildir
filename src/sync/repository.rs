@@ -2,8 +2,6 @@ use std::{borrow::Cow, fmt::Debug};
 
 use enumflags2::{BitFlags, bitflags};
 
-use crate::maildir::{LocalMail, LocalMailMetadata};
-
 #[bitflags]
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -23,10 +21,4 @@ impl Flag {
             .filter_map(|flag| <&str as TryInto<Flag>>::try_into(flag.as_ref()).ok())
             .collect()
     }
-}
-
-pub enum Change {
-    New(LocalMail),
-    Deleted(),
-    Updated(LocalMailMetadata),
 }
