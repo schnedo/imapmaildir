@@ -1,20 +1,21 @@
 use std::{
     collections::HashSet,
     fmt::{Display, Formatter, Result},
+    ops::RangeInclusive,
 };
 use thiserror::Error;
 
 #[derive(Debug)]
-pub struct SequenceRange {
+struct SequenceRange {
     from: u32,
     to: Option<u32>,
 }
 
 impl SequenceRange {
-    pub fn single(from: u32) -> Self {
+    fn single(from: u32) -> Self {
         Self { from, to: None }
     }
-    pub fn range(from: u32, to: u32) -> Self {
+    fn range(from: u32, to: u32) -> Self {
         Self { from, to: Some(to) }
     }
 }
@@ -88,7 +89,7 @@ pub struct SequenceSet {
 }
 
 impl SequenceSet {
-    pub fn with_range(from: u32, to: u32) -> Self {
+    fn with_range(from: u32, to: u32) -> Self {
         Self {
             ranges: vec![SequenceRange::range(from, to)],
         }
@@ -113,6 +114,17 @@ impl Display for SequenceSet {
             write!(f, "{string}")
         } else {
             write!(f, "")
+        }
+    }
+}
+
+impl From<&Vec<RangeInclusive<u32>>> for SequenceSet {
+    fn from(value: &Vec<RangeInclusive<u32>>) -> Self {
+        Self {
+            ranges: value
+                .iter()
+                .map(|range| SequenceRange::range(*range.start(), *range.end()))
+                .collect(),
         }
     }
 }

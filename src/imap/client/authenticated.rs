@@ -12,6 +12,7 @@ use crate::{
         connection::Connection,
         mailbox::{
             Mailbox, MailboxBuilder, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder,
+            SequenceSet,
         },
     },
     sync::Flag,
@@ -20,6 +21,7 @@ use crate::{
 pub struct Selection {
     pub client: SelectedClient,
     pub mail_updates: Vec<RemoteMailMetadata>,
+    pub mail_deletions: Option<SequenceSet>,
     pub mailbox_data: Mailbox,
 }
 
@@ -94,6 +96,7 @@ impl AuthenticatedClient {
         let mut new_mailbox = MailboxBuilder::default();
 
         let mut mail_updates: Vec<RemoteMailMetadata> = Vec::new();
+        let mut mail_deletions = None;
 
         while let Ok(response) = self.untagged_response_receiver.try_recv() {
             match response.parsed() {
@@ -203,6 +206,13 @@ impl AuthenticatedClient {
                             .expect("fetch metadata should be complete"),
                     );
                 }
+                imap_proto::Response::Vanished { earlier, uids } => {
+                    debug_assert!(
+                        earlier,
+                        "earlier should always be true during select (see https://datatracker.ietf.org/doc/html/rfc7162#section-3.2.10)"
+                    );
+                    mail_deletions = Some(SequenceSet::from(uids));
+                }
                 _ => {
                     warn!("ignoring unknown response to SELECT");
                     trace!("{:?}", response.parsed());
@@ -210,10 +220,10 @@ impl AuthenticatedClient {
             }
         }
 
-        let mailbox = new_mailbox
+        let mailbox_data = new_mailbox
             .build()
             .expect("mailbox data should be all available at this point");
-        trace!("selected_mailbox = {mailbox:?}");
+        trace!("selected_mailbox = {mailbox_data:?}");
         trace!("mail updates = {mail_updates:?}");
         let client = SelectedClient::new(
             self.connection,
@@ -225,7 +235,8 @@ impl AuthenticatedClient {
         Selection {
             client,
             mail_updates,
-            mailbox_data: mailbox,
+            mail_deletions,
+            mailbox_data,
         }
     }
 }
