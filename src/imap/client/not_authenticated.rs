@@ -80,12 +80,6 @@ impl Client {
             }
         }
 
-        // tokio::spawn(async move {
-        //     while let Some(response) = untagged_response_receiver.recv().await {
-        //         state.handle_untagged_response(response.parsed());
-        //     }
-        // });
-
         Self {
             connection,
             untagged_response_receiver,
