@@ -10,15 +10,25 @@ use crate::imap::{
     connection::Connection,
 };
 
-pub struct NotAuthenticatedClient {
+pub struct Client {
     connection: Connection,
     untagged_response_receiver: mpsc::Receiver<ResponseData>,
     capabilities: Capabilities,
     auth_capabilities: AuthCapabilities,
 }
 
-impl NotAuthenticatedClient {
-    pub async fn connect(host: &str, port: u16) -> Self {
+impl Client {
+    pub async fn login(
+        host: &str,
+        port: u16,
+        username: &str,
+        password: &str,
+    ) -> AuthenticatedClient {
+        let connected = Self::connect(host, port).await;
+        connected.authenticate(username, password).await
+    }
+
+    async fn connect(host: &str, port: u16) -> Self {
         let (untagged_response_sender, mut untagged_response_receiver) = mpsc::channel(32);
         let mut connection = Connection::start(host, port, untagged_response_sender).await;
 
@@ -84,7 +94,7 @@ impl NotAuthenticatedClient {
         }
     }
 
-    pub async fn login(mut self, username: &str, password: &str) -> AuthenticatedClient {
+    async fn authenticate(mut self, username: &str, password: &str) -> AuthenticatedClient {
         assert!(self.auth_capabilities.contains(AuthCapability::Plain));
         debug!("LOGIN <user> <password>");
         let response = self

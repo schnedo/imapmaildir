@@ -5,7 +5,7 @@ mod mailbox;
 mod tag_generator;
 
 pub use client::AuthenticatedClient;
-pub use client::NotAuthenticatedClient;
+pub use client::Client;
 pub use mailbox::ModSeq;
 pub use mailbox::RemoteMail;
 pub use mailbox::RemoteMailMetadata;

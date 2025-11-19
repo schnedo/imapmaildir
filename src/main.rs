@@ -10,7 +10,7 @@ mod state;
 mod sync;
 
 use crate::config::Config;
-use crate::imap::NotAuthenticatedClient;
+use crate::imap::Client;
 use crate::nuke::nuke;
 use crate::sync::Syncer;
 use anyhow::Result;
@@ -46,8 +46,7 @@ async fn main() -> Result<()> {
         let account = config.account();
         let mail_dir = config.maildir();
 
-        let client = NotAuthenticatedClient::connect(host, port).await;
-        let client = client.login(username, password).await;
+        let client = Client::login(host, port, username, password).await;
 
         let sync_handle = Syncer::sync(account, mailbox, mail_dir, state_dir, client).await;
         sync_handle.await?;

@@ -4,5 +4,5 @@ mod not_authenticated;
 mod selected;
 
 pub use authenticated::AuthenticatedClient;
-pub use not_authenticated::NotAuthenticatedClient;
+pub use not_authenticated::Client;
 pub use selected::SelectedClient;
