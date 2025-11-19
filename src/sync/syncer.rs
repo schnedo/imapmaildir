@@ -76,7 +76,7 @@ impl Syncer {
         maildir_repository.handle_highest_modseq(highest_modseq_rx);
 
         tokio::spawn(async move {
-            debug!("Listening to incoming mails...");
+            debug!("Listening to incoming mail...");
             while let Some(mail) = mail_rx.recv().await {
                 maildir_repository.store(&mail).await;
             }
