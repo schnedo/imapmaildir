@@ -15,9 +15,9 @@ use rustix::system::uname;
 use thiserror::Error;
 
 use crate::{
-    imap::Uid,
+    imap::{RemoteMail, Uid},
     maildir::maildir_repository::LocalMailMetadata,
-    sync::{Flag, Mail, MailMetadata},
+    sync::Flag,
 };
 
 #[derive(Debug)]
@@ -90,7 +90,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store(&self, mail: &impl Mail) -> String {
+    pub fn store(&self, mail: &RemoteMail) -> String {
         let file_prefix = Self::generate_file_prefix();
         let file_path = self.tmp.join(&file_prefix);
 
@@ -223,6 +223,14 @@ impl LocalMail {
     pub fn new(content: Vec<u8>, metadata: LocalMailMetadata) -> Self {
         Self { metadata, content }
     }
+
+    fn metadata(&self) -> &LocalMailMetadata {
+        &self.metadata
+    }
+
+    fn content(&self) -> &[u8] {
+        &self.content
+    }
 }
 
 impl Debug for LocalMail {
@@ -230,18 +238,6 @@ impl Debug for LocalMail {
         f.debug_struct("LocalMail")
             .field("metadata", &self.metadata)
             .finish_non_exhaustive()
-    }
-}
-
-impl Mail for LocalMail {
-    type Metadata = LocalMailMetadata;
-
-    fn metadata(&self) -> &Self::Metadata {
-        &self.metadata
-    }
-
-    fn content(&self) -> &[u8] {
-        &self.content
     }
 }
 

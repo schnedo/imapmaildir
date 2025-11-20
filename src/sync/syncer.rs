@@ -1,7 +1,4 @@
-use crate::{
-    imap::{ModSeq, RemoteMail},
-    sync::repository::MailMetadata,
-};
+use crate::imap::{ModSeq, RemoteMail};
 use std::path::Path;
 
 use log::debug;

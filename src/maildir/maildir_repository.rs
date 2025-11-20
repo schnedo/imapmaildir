@@ -9,7 +9,7 @@ use crate::{
     imap::{ModSeq, RemoteMail, RemoteMailMetadata, Uid, UidValidity},
     maildir::maildir::LocalMail,
     state::State,
-    sync::{Change, Flag, Mail, MailMetadata},
+    sync::{Change, Flag},
 };
 
 use super::Maildir;
@@ -42,6 +42,18 @@ impl LocalMailMetadata {
 
     fn filename(&self) -> String {
         self.to_string()
+    }
+
+    pub fn uid(&self) -> Option<Uid> {
+        self.uid
+    }
+
+    pub fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        self.flags = flags;
     }
 }
 
@@ -85,20 +97,6 @@ impl FromStr for LocalMailMetadata {
                 fileprefix: head.to_string(),
             })
         }
-    }
-}
-
-impl MailMetadata for LocalMailMetadata {
-    fn uid(&self) -> Option<Uid> {
-        self.uid
-    }
-
-    fn flags(&self) -> BitFlags<Flag> {
-        self.flags
-    }
-
-    fn set_flags(&mut self, flags: BitFlags<Flag>) {
-        self.flags = flags;
     }
 }
 
@@ -208,7 +206,7 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn detect_changes(&self) -> Vec<Change<impl Mail>> {
+    pub async fn detect_changes(&self) -> Vec<Change> {
         let mut changes = vec![];
         let maildir_metadata = self.maildir.list_cur();
         let mut maildir_mails = HashMap::with_capacity(maildir_metadata.size_hint().0);

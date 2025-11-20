@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     imap::{ModSeq, Uid, UidValidity},
     maildir::LocalMailMetadata,
-    sync::{Flag, MailMetadata},
+    sync::Flag,
 };
 
 pub type DbTask = dyn FnOnce(&mut Connection) + Send;

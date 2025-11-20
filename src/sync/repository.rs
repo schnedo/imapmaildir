@@ -1,7 +1,8 @@
-use std::{borrow::Cow, fmt::Debug, hash::Hash};
+use std::{borrow::Cow, fmt::Debug};
 
-use crate::imap::Uid;
 use enumflags2::{BitFlags, bitflags};
+
+use crate::maildir::{LocalMail, LocalMailMetadata};
 
 #[bitflags]
 #[repr(u8)]
@@ -24,21 +25,8 @@ impl Flag {
     }
 }
 
-pub trait Mail: Send + Debug {
-    type Metadata: MailMetadata;
-
-    fn metadata(&self) -> &Self::Metadata;
-    fn content(&self) -> &[u8];
-}
-
-pub trait MailMetadata: Clone + Eq + Hash {
-    fn uid(&self) -> Option<Uid>;
-    fn flags(&self) -> BitFlags<Flag>;
-    fn set_flags(&mut self, flags: BitFlags<Flag>);
-}
-
-pub enum Change<T: Mail> {
-    New(T),
+pub enum Change {
+    New(LocalMail),
     Deleted(),
-    Updated(T::Metadata),
+    Updated(LocalMailMetadata),
 }

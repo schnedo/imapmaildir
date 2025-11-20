@@ -4,7 +4,7 @@ use std::fmt::{Debug, Formatter, Result};
 
 use crate::{
     imap::{ModSeq, Uid, codec::ResponseData},
-    sync::{Flag, Mail, MailMetadata},
+    sync::Flag,
 };
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Builder)]
@@ -25,21 +25,16 @@ impl RemoteMailMetadata {
     pub fn modseq(&self) -> ModSeq {
         self.modseq
     }
-}
 
-impl MailMetadata for RemoteMailMetadata {
-    fn uid(&self) -> Option<Uid> {
+    pub fn uid(&self) -> Option<Uid> {
         self.uid
     }
 
-    fn flags(&self) -> BitFlags<Flag> {
+    pub fn flags(&self) -> BitFlags<Flag> {
         self.flags
     }
-
-    fn set_flags(&mut self, _flags: BitFlags<Flag>) {
-        panic!("setting flags on RemoteMailMetadata should not be necessary")
-    }
 }
+
 pub struct RemoteMail {
     #[expect(dead_code)] // Contains data that `response` borrows
     response: ResponseData,
@@ -59,6 +54,14 @@ impl RemoteMail {
             content,
         }
     }
+
+    pub fn metadata(&self) -> &RemoteMailMetadata {
+        &self.metadata
+    }
+
+    pub fn content(&self) -> &[u8] {
+        self.content
+    }
 }
 
 impl Debug for RemoteMail {
@@ -66,17 +69,5 @@ impl Debug for RemoteMail {
         f.debug_struct("RemoteMail")
             .field("metadata", &self.metadata)
             .finish_non_exhaustive()
-    }
-}
-
-impl Mail for RemoteMail {
-    type Metadata = RemoteMailMetadata;
-
-    fn metadata(&self) -> &Self::Metadata {
-        &self.metadata
-    }
-
-    fn content(&self) -> &[u8] {
-        self.content
     }
 }
