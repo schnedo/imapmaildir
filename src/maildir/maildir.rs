@@ -184,7 +184,7 @@ impl Maildir {
                 .try_exists()
                 .expect("should be able to check if updated flag name exists"),
         ) {
-            (true, true) => panic!(
+            (true, true) => todo!(
                 "updating {} to {} failed, because both files already exist",
                 current_mail.to_string_lossy(),
                 new_name.to_string_lossy()
@@ -199,7 +199,7 @@ impl Maildir {
                 current_mail.to_string_lossy(),
                 new_name.to_string_lossy()
             ),
-            (false, false) => panic!(
+            (false, false) => todo!(
                 "Cannot update flags of {}, because it does not exist",
                 current_mail.to_string_lossy()
             ),
