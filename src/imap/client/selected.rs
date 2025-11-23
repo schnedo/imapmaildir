@@ -38,9 +38,11 @@ impl SelectedClient {
                         {
                             trace!("{flags:?}");
                             let mail_flags = Flag::into_bitflags(flags);
-                            let metadata =
-                                // todo: check for modseq in fetch response
-                                RemoteMailMetadata::new(Uid::try_from(uid).expect("remote uid should be valid"), mail_flags, modseq.try_into().expect("received modseq should be valid"));
+                            let metadata = RemoteMailMetadata::new(
+                                Uid::try_from(uid).expect("remote uid should be valid"),
+                                mail_flags,
+                                modseq.try_into().expect("received modseq should be valid"),
+                            );
 
                             if let Some(content) = content {
                                 let content =

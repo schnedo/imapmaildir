@@ -100,25 +100,20 @@ impl AuthenticatedClient {
 
         while let Ok(response) = self.untagged_response_receiver.try_recv() {
             match response.parsed() {
-                imap_proto::Response::MailboxData(mailbox_datum) => {
-                    match mailbox_datum {
-                        imap_proto::MailboxDatum::Exists(exists) => {
-                            // todo: does this need handling?
-                            trace!("not handling MailboxData response Exists {exists:?}");
-                        }
-                        imap_proto::MailboxDatum::Flags(flags) => {
-                            // todo: does this need handling?
-                            trace!("not handling MailboxData response Flags {flags:?}");
-                        }
-                        imap_proto::MailboxDatum::Recent(recent) => {
-                            // todo: does this need handling?
-                            trace!("not handling MailboxData response Recent {recent:?}");
-                        }
-                        _ => warn!(
-                            "ignoring unknown mailbox data response to SELECT {mailbox_datum:?}"
-                        ),
+                imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
+                    imap_proto::MailboxDatum::Exists(exists) => {
+                        trace!("not handling MailboxData response Exists {exists:?}");
                     }
-                }
+                    imap_proto::MailboxDatum::Flags(flags) => {
+                        trace!("not handling MailboxData response Flags {flags:?}");
+                    }
+                    imap_proto::MailboxDatum::Recent(recent) => {
+                        trace!("not handling MailboxData response Recent {recent:?}");
+                    }
+                    _ => {
+                        warn!("ignoring unknown mailbox data response to SELECT {mailbox_datum:?}");
+                    }
+                },
                 imap_proto::Response::Capabilities(caps) => {
                     for cap in caps {
                         match cap {
@@ -141,7 +136,6 @@ impl AuthenticatedClient {
                     information,
                 } => match code {
                     imap_proto::ResponseCode::UidValidity(validity) => {
-                        // todo: check uid_validity
                         let validity = validity
                             .try_into()
                             .expect("received uid validity should be spec compliant");
@@ -158,11 +152,9 @@ impl AuthenticatedClient {
                         );
                     }
                     imap_proto::ResponseCode::PermanentFlags(flags) => {
-                        // todo: does this need handling?
                         trace!("not handling Data response PermanentFlags {flags:?}");
                     }
                     imap_proto::ResponseCode::UidNext(uid_next) => {
-                        // todo: does this need handling?
                         trace!("not handling Data response UidNext {uid_next:?}");
                     }
                     _ => {
@@ -176,7 +168,6 @@ impl AuthenticatedClient {
                 imap_proto::Response::Fetch(msg_num, attributes) => {
                     trace!("handling fetch with attributes {attributes:?}");
                     let mut metadata_builder = RemoteMailMetadataBuilder::default();
-                    // todo: match in one step?
                     for attribute in attributes {
                         match attribute {
                             imap_proto::AttributeValue::Flags(flags) => {
@@ -188,8 +179,6 @@ impl AuthenticatedClient {
                                         .try_into()
                                         .expect("received modseq should be nonzero"),
                                 );
-                                // Technically a check for modseq > highest_modseq is required
-                                // here. This should never be the case on initial select though.
                             }
                             imap_proto::AttributeValue::Uid(uid) => {
                                 metadata_builder
