@@ -174,7 +174,7 @@ impl MaildirRepository {
 
             self.state
                 .store(LocalMailMetadata::new(
-                    mail.metadata().uid(),
+                    Some(mail.metadata().uid()),
                     mail.metadata().flags(),
                     filename,
                 ))
@@ -183,7 +183,7 @@ impl MaildirRepository {
     }
 
     pub async fn update(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
-        let uid = mail_metadata.uid().expect("mail uid should exist here");
+        let uid = mail_metadata.uid();
         let res = if let Some(mut entry) = self.state.get_by_id(uid).await {
             trace!("updating existing mail with uid {uid:?}");
             if entry.flags() != mail_metadata.flags() {

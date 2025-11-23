@@ -96,7 +96,7 @@ impl Syncer {
         let mut sequence_set = SequenceSetBuilder::new();
         for update in &selection.mail_updates {
             if maildir_repository.update(update).await.is_err() {
-                sequence_set.add(update.uid().expect("uid should exist here").into());
+                sequence_set.add(update.uid().into());
             }
         }
         if let Ok(sequence_set) = sequence_set.build() {
@@ -117,7 +117,7 @@ impl Syncer {
         }
         let mut remote_updates = HashSet::new();
         for update in &selection.mail_updates {
-            remote_updates.insert(update.uid().expect("remote mail should have uid"));
+            remote_updates.insert(update.uid());
         }
 
         local_changes

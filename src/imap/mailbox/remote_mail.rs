@@ -7,18 +7,17 @@ use crate::{
     sync::Flag,
 };
 
+// todo: really implement copy?
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Builder)]
 pub struct RemoteMailMetadata {
-    // todo: is this really optional?
-    #[builder(setter(strip_option))]
-    uid: Option<Uid>,
+    uid: Uid,
     flags: BitFlags<Flag>,
     #[builder(setter(strip_option))]
     modseq: ModSeq,
 }
 
 impl RemoteMailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, modseq: ModSeq) -> Self {
+    pub fn new(uid: Uid, flags: BitFlags<Flag>, modseq: ModSeq) -> Self {
         Self { uid, flags, modseq }
     }
 
@@ -26,7 +25,7 @@ impl RemoteMailMetadata {
         self.modseq
     }
 
-    pub fn uid(&self) -> Option<Uid> {
+    pub fn uid(&self) -> Uid {
         self.uid
     }
 

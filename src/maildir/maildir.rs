@@ -112,7 +112,7 @@ impl Maildir {
             file_path,
             self.cur.join(Self::generate_filename(
                 &file_prefix,
-                mail.metadata().uid(),
+                Some(mail.metadata().uid()),
                 mail.metadata().flags(),
             )),
         )
