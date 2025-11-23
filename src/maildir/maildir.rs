@@ -4,21 +4,14 @@ use std::{
     io::Write,
     os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
-    process,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
 use log::{info, trace, warn};
-use rustix::system::uname;
 use thiserror::Error;
 
-use crate::{
-    imap::{RemoteMail, Uid},
-    maildir::maildir_repository::LocalMailMetadata,
-    sync::Flag,
-};
+use crate::{imap::RemoteMail, maildir::maildir_repository::LocalMailMetadata, sync::Flag};
 
 #[derive(Debug)]
 pub struct Maildir {
@@ -90,9 +83,11 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
+    // todo: use LocalMail here?
     pub fn store(&self, mail: &RemoteMail) -> String {
-        let file_prefix = Self::generate_file_prefix();
-        let file_path = self.tmp.join(&file_prefix);
+        let new_local_metadata =
+            LocalMailMetadata::new(Some(mail.metadata().uid()), mail.metadata().flags(), None);
+        let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         trace!("writing to {}", file_path.display());
         let Ok(mut file) = OpenOptions::new()
@@ -108,48 +103,14 @@ impl Maildir {
         file.sync_all()
             .expect("writing new tmp mail to disc should succeed");
 
-        fs::rename(
-            file_path,
-            self.cur.join(Self::generate_filename(
-                &file_prefix,
-                Some(mail.metadata().uid()),
-                mail.metadata().flags(),
-            )),
-        )
-        .expect("moving file from tmp to cur should succeed");
+        fs::rename(file_path, self.cur.join(new_local_metadata.filename()))
+            .expect("moving file from tmp to cur should succeed");
 
-        file_prefix
-    }
-
-    // todo: move this to LocalMailMetadata
-    fn generate_filename(file_prefix: &str, uid: Option<Uid>, flags: BitFlags<Flag>) -> String {
-        let mut string_flags = String::with_capacity(6);
-        for flag in flags {
-            if let Ok(char_flag) = flag.try_into() {
-                string_flags.push(char_flag);
-            }
-        }
-        if let Some(uid) = uid {
-            format!("{file_prefix},U={uid}:2,{string_flags}")
-        } else {
-            format!("{file_prefix}:2,{string_flags}")
-        }
+        new_local_metadata.fileprefix().to_string()
     }
 
     pub fn resolve(&self, filename: &str) -> PathBuf {
         self.cur.join(filename)
-    }
-
-    fn generate_file_prefix() -> String {
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("should be able to get unix time");
-        let secs = time.as_secs();
-        let nanos = time.subsec_nanos();
-        let hostname = uname();
-        let hostname = hostname.nodename().to_string_lossy();
-        let pid = process::id();
-        format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
 
     pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> {
@@ -165,17 +126,10 @@ impl Maildir {
             })
     }
 
-    pub fn update(&self, entry: &LocalMailMetadata, new_flags: BitFlags<Flag>) {
-        let current_mail = self.cur.join(Self::generate_filename(
-            entry.fileprefix(),
-            entry.uid(),
-            entry.flags(),
-        ));
-        let new_name = self.cur.join(Self::generate_filename(
-            entry.fileprefix(),
-            entry.uid(),
-            new_flags,
-        ));
+    pub fn update(&self, entry: &mut LocalMailMetadata, new_flags: BitFlags<Flag>) {
+        let current_mail = self.cur.join(entry.filename());
+        entry.set_flags(new_flags);
+        let new_name = self.cur.join(entry.filename());
         match (
             current_mail
                 .try_exists()
@@ -207,8 +161,7 @@ impl Maildir {
     }
 
     pub fn delete(&self, entry: &LocalMailMetadata) {
-        let filename = Self::generate_filename(entry.fileprefix(), entry.uid(), entry.flags());
-        let file_path = self.cur.join(filename);
+        let file_path = self.cur.join(entry.filename());
         trace!("deleting {}", file_path.display());
         remove_file(file_path).expect("deletion of file should succeed");
     }

@@ -1,4 +1,13 @@
-use std::{collections::HashMap, fmt::Display, fs, path::Path, str::FromStr};
+use rustix::system::uname;
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    fs,
+    path::Path,
+    process,
+    str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 
 use enumflags2::BitFlags;
@@ -35,7 +44,9 @@ pub struct NoExistsError {
 }
 
 impl LocalMailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, fileprefix: String) -> Self {
+    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, fileprefix: Option<String>) -> Self {
+        let fileprefix = fileprefix.unwrap_or_else(Self::generate_file_prefix);
+
         Self {
             uid,
             flags,
@@ -47,7 +58,7 @@ impl LocalMailMetadata {
         &self.fileprefix
     }
 
-    fn filename(&self) -> String {
+    pub fn filename(&self) -> String {
         self.to_string()
     }
 
@@ -61,6 +72,18 @@ impl LocalMailMetadata {
 
     pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
         self.flags = flags;
+    }
+
+    fn generate_file_prefix() -> String {
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("should be able to get unix time");
+        let secs = time.as_secs();
+        let nanos = time.subsec_nanos();
+        let hostname = uname();
+        let hostname = hostname.nodename().to_string_lossy();
+        let pid = process::id();
+        format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
 }
 
@@ -176,7 +199,7 @@ impl MaildirRepository {
                 .store(LocalMailMetadata::new(
                     Some(mail.metadata().uid()),
                     mail.metadata().flags(),
-                    filename,
+                    Some(filename),
                 ))
                 .await
         }
@@ -188,7 +211,7 @@ impl MaildirRepository {
             trace!("updating existing mail with uid {uid:?}");
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                self.maildir.update(&entry, new_flags);
+                self.maildir.update(&mut entry, new_flags);
                 entry.set_flags(new_flags);
                 self.state.update(entry).await;
             }
