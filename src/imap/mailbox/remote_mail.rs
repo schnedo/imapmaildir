@@ -8,8 +8,7 @@ use crate::{
     sync::Flag,
 };
 
-// todo: really implement copy?
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Builder)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Builder)]
 pub struct RemoteMailMetadata {
     uid: Uid,
     flags: BitFlags<Flag>,
