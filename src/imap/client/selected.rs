@@ -9,7 +9,7 @@ use crate::{
         ModSeq, Uid,
         codec::ResponseData,
         connection::Connection,
-        mailbox::{RemoteMail, RemoteMailMetadata, SequenceSet},
+        mailbox::{Content, RemoteMail, RemoteMailMetadata, SequenceSet},
     },
     sync::Flag,
 };
@@ -44,8 +44,11 @@ impl SelectedClient {
 
                             if let Some(content) = content {
                                 let content =
+                                // safe as long as the raw data is not dropped
                                     unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
-                                let remote_mail = RemoteMail::new(response, metadata, content);
+                                let content = Content::new(response.raw(), content);
+
+                                let remote_mail = RemoteMail::new(metadata, content);
                                 mail_tx
                                     .send(remote_mail)
                                     .await

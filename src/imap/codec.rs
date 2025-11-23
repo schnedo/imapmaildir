@@ -98,7 +98,6 @@ impl<'a> Encoder<&'a Request<'a>> for ImapCodec {
 
 #[derive(Debug)]
 pub struct ResponseData {
-    #[expect(dead_code)] // Contains data that `response` borrows
     raw: Bytes,
     // This reference is really scoped to the lifetime of the `raw`
     // member, but unfortunately Rust does not allow that yet. It
@@ -122,5 +121,9 @@ impl ResponseData {
         } else {
             panic!("response is no tagged response")
         }
+    }
+
+    pub fn raw(self) -> Bytes {
+        self.raw
     }
 }

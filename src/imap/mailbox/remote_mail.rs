@@ -1,9 +1,10 @@
+use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use std::fmt::{Debug, Formatter, Result};
 
 use crate::{
-    imap::{ModSeq, Uid, codec::ResponseData},
+    imap::{ModSeq, Uid},
     sync::Flag,
 };
 
@@ -34,24 +35,30 @@ impl RemoteMailMetadata {
     }
 }
 
-pub struct RemoteMail {
-    #[expect(dead_code)] // Contains data that `response` borrows
-    response: ResponseData,
-    metadata: RemoteMailMetadata,
+pub struct Content {
+    #[expect(dead_code)] // Contains data that `content` borrows
+    raw: Bytes,
     content: &'static [u8],
 }
 
+impl Content {
+    pub fn new(raw: Bytes, content: &'static [u8]) -> Self {
+        Self { raw, content }
+    }
+
+    pub fn content(&self) -> &[u8] {
+        self.content
+    }
+}
+
+pub struct RemoteMail {
+    metadata: RemoteMailMetadata,
+    content: Content,
+}
+
 impl RemoteMail {
-    pub fn new(
-        response: ResponseData,
-        metadata: RemoteMailMetadata,
-        content: &'static [u8],
-    ) -> Self {
-        Self {
-            response,
-            metadata,
-            content,
-        }
+    pub fn new(metadata: RemoteMailMetadata, content: Content) -> Self {
+        Self { metadata, content }
     }
 
     pub fn metadata(&self) -> &RemoteMailMetadata {
@@ -59,7 +66,7 @@ impl RemoteMail {
     }
 
     pub fn content(&self) -> &[u8] {
-        self.content
+        self.content.content()
     }
 }
 
