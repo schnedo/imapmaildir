@@ -1,5 +1,5 @@
 use crate::{
-    imap::{ModSeq, RemoteMail, Selection},
+    imap::{ModSeq, RemoteChanges, RemoteMail, Selection},
     maildir::LocalChanges,
 };
 use std::{collections::HashSet, path::Path};
@@ -69,7 +69,12 @@ impl Syncer {
         let uid_validity = maildir_repository.uid_validity().await;
         let highest_modseq = maildir_repository.highest_modseq().await;
 
-        let mut selection = client
+        let Selection {
+            mut client,
+            remote_changes,
+            mailbox_data,
+            ..
+        } = client
             .qresync_select(
                 mail_tx,
                 highest_modseq_tx,
@@ -80,43 +85,43 @@ impl Syncer {
             .await;
         assert_eq!(
             uid_validity,
-            selection.mailbox_data.uid_validity(),
+            mailbox_data.uid_validity(),
             "remote uid validity should be the same as local"
         );
 
         let mut local_changes = maildir_repository.detect_changes().await;
-        Self::handle_conflicts(&selection, &mut local_changes);
+        Self::handle_conflicts(&remote_changes, &mut local_changes);
 
-        if let Some(set) = selection.mail_deletions {
+        if let Some(set) = remote_changes.deletions {
             for uid in set.iter() {
                 maildir_repository.delete(uid).await;
             }
         }
 
         let mut sequence_set = SequenceSetBuilder::new();
-        for update in &selection.mail_updates {
+        for update in &remote_changes.updates {
             if maildir_repository.update(update).await.is_err() {
                 sequence_set.add(update.uid());
             }
         }
         if let Ok(sequence_set) = sequence_set.build() {
-            selection.client.fetch_mail(&sequence_set).await;
+            client.fetch_mail(&sequence_set).await;
         }
         maildir_repository
-            .set_highest_modseq(selection.mailbox_data.highest_modseq())
+            .set_highest_modseq(mailbox_data.highest_modseq())
             .await;
     }
 
     // todo: add configurable conflict strategy; right now: remote wins
-    fn handle_conflicts(selection: &Selection, local_changes: &mut LocalChanges) {
+    fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
         let mut remote_deletions = HashSet::new();
-        if let Some(deletions) = &selection.mail_deletions {
+        if let Some(deletions) = &remote_changes.deletions {
             for deletion in deletions.iter() {
                 remote_deletions.insert(deletion);
             }
         }
         let mut remote_updates = HashSet::new();
-        for update in &selection.mail_updates {
+        for update in &remote_changes.updates {
             remote_updates.insert(update.uid());
         }
 

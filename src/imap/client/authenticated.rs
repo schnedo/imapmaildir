@@ -18,11 +18,16 @@ use crate::{
     sync::Flag,
 };
 
+pub struct RemoteChanges {
+    pub updates: Vec<RemoteMailMetadata>,
+    pub deletions: Option<SequenceSet>,
+}
+
 pub struct Selection {
+    //todo: remove pub and use getters instead
     pub client: SelectedClient,
-    pub mail_updates: Vec<RemoteMailMetadata>,
-    pub mail_deletions: Option<SequenceSet>,
     pub mailbox_data: Mailbox,
+    pub remote_changes: RemoteChanges,
 }
 
 pub struct AuthenticatedClient {
@@ -95,8 +100,8 @@ impl AuthenticatedClient {
 
         let mut new_mailbox = MailboxBuilder::default();
 
-        let mut mail_updates: Vec<RemoteMailMetadata> = Vec::new();
-        let mut mail_deletions = None;
+        let mut updates: Vec<RemoteMailMetadata> = Vec::new();
+        let mut deletions = None;
 
         while let Ok(response) = self.untagged_response_receiver.try_recv() {
             match response.parsed() {
@@ -189,7 +194,7 @@ impl AuthenticatedClient {
                             }
                         }
                     }
-                    mail_updates.push(
+                    updates.push(
                         metadata_builder
                             .build()
                             .expect("fetch metadata should be complete"),
@@ -200,7 +205,7 @@ impl AuthenticatedClient {
                         earlier,
                         "earlier should always be true during select (see https://datatracker.ietf.org/doc/html/rfc7162#section-3.2.10)"
                     );
-                    mail_deletions = Some(SequenceSet::from(uids));
+                    deletions = Some(SequenceSet::from(uids));
                 }
                 _ => {
                     warn!("ignoring unknown response to SELECT");
@@ -213,8 +218,8 @@ impl AuthenticatedClient {
             .build()
             .expect("mailbox data should be all available at this point");
         trace!("selected_mailbox = {mailbox_data:?}");
-        trace!("mail updates = {mail_updates:?}");
-        trace!("mail deletions = {mail_deletions:?}");
+        trace!("mail updates = {updates:?}");
+        trace!("mail deletions = {deletions:?}");
         let client = SelectedClient::new(
             self.connection,
             self.untagged_response_receiver,
@@ -224,8 +229,7 @@ impl AuthenticatedClient {
 
         Selection {
             client,
-            mail_updates,
-            mail_deletions,
+            remote_changes: RemoteChanges { updates, deletions },
             mailbox_data,
         }
     }

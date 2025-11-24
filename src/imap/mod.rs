@@ -6,6 +6,7 @@ mod tag_generator;
 
 pub use client::AuthenticatedClient;
 pub use client::Client;
+pub use client::RemoteChanges;
 pub use client::Selection;
 pub use mailbox::ModSeq;
 pub use mailbox::RemoteMail;
