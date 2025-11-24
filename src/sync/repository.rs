@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Debug};
+use std::{borrow::Cow, fmt::Debug, str::FromStr};
 
 use enumflags2::{BitFlags, bitflags};
 use log::trace;
@@ -20,7 +20,7 @@ impl Flag {
     pub fn into_bitflags(flags: &Vec<Cow<str>>) -> BitFlags<Flag, u8> {
         flags
             .iter()
-            .filter_map(|flag| <&str as TryInto<Flag>>::try_into(flag.as_ref()).ok())
+            .filter_map(|flag| Flag::from_str(flag).ok())
             .collect()
     }
 }
@@ -40,13 +40,13 @@ impl From<char> for Flag {
 
 #[derive(Error, Debug)]
 #[error("unknown flag {flag}")]
-pub struct UnknownFlagError<'a> {
-    flag: &'a str,
+pub struct UnknownFlagError {
+    flag: String,
 }
-impl<'a> TryFrom<&'a str> for Flag {
-    type Error = UnknownFlagError<'a>;
+impl FromStr for Flag {
+    type Err = UnknownFlagError;
 
-    fn try_from(value: &'a str) -> std::result::Result<Self, Self::Error> {
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
             "\\Seen" => Ok(Flag::Seen),
             "\\Answered" => Ok(Flag::Answered),
@@ -56,7 +56,9 @@ impl<'a> TryFrom<&'a str> for Flag {
             "\\Recent" => Ok(Flag::Recent),
             _ => {
                 trace!("Encountered unhandled Flag {value}");
-                Err(Self::Error { flag: value })
+                Err(Self::Err {
+                    flag: value.to_string(),
+                })
             }
         }
     }
