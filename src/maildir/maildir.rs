@@ -83,8 +83,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    // todo: use LocalMail here?
-    pub fn store(&self, mail: &RemoteMail) -> String {
+    pub fn store(&self, mail: &RemoteMail) -> LocalMailMetadata {
         let new_local_metadata =
             LocalMailMetadata::new(Some(mail.metadata().uid()), mail.metadata().flags(), None);
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
@@ -106,7 +105,7 @@ impl Maildir {
         fs::rename(file_path, self.cur.join(new_local_metadata.filename()))
             .expect("moving file from tmp to cur should succeed");
 
-        new_local_metadata.fileprefix().to_string()
+        new_local_metadata
     }
 
     pub fn resolve(&self, filename: &str) -> PathBuf {

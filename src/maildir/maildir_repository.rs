@@ -193,15 +193,8 @@ impl MaildirRepository {
         if self.update(mail.metadata()).await.is_ok() {
             None
         } else {
-            let filename = self.maildir.store(mail);
-
-            self.state
-                .store(LocalMailMetadata::new(
-                    Some(mail.metadata().uid()),
-                    mail.metadata().flags(),
-                    Some(filename),
-                ))
-                .await
+            let metadata = self.maildir.store(mail);
+            self.state.store(metadata).await
         }
     }
 
