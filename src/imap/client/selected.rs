@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::mem::transmute;
 
 use log::{debug, info, trace};
@@ -10,6 +11,7 @@ use crate::{
         connection::Connection,
         mailbox::{Content, RemoteMail, RemoteMailMetadata, SequenceSet},
     },
+    maildir::LocalMail,
     sync::Flag,
 };
 
@@ -99,7 +101,32 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all(&mut self) {
+        // todo: move the initializing to appropriate location
         info!("initializing new imap repository");
         self.fetch_mail(&SequenceSet::all()).await;
+    }
+
+    // todo: use rfc3502 MULTIAPPEND
+    pub async fn store(&mut self, mailbox: &str, mail: &LocalMail) {
+        let mut command = format!("APPEND {mailbox}");
+        if let Some(flags) = Flag::format(mail.metadata().flags()) {
+            write!(command, " ({flags})")
+                .expect("appending formatted flags to APPEND command should succeed");
+        }
+        let content = mail.content();
+        // todo: use cached content length (and extend command with content)
+        write!(command, " {{{}}}", content.len())
+            .expect("appending content length to APPEND command should succeed");
+        debug!("{command}");
+        self.connection
+            .send(&command)
+            .await
+            .expect("storing new mail should succeed");
+
+        debug!("<content>");
+        self.connection
+            .send_continuation(content)
+            .await
+            .expect("sending mail content should succeed");
     }
 }

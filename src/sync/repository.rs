@@ -1,4 +1,9 @@
-use std::{borrow::Cow, fmt::Debug, str::FromStr};
+use std::fmt::Write as _;
+use std::{
+    borrow::Cow,
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
 use enumflags2::{BitFlags, bitflags};
 use log::trace;
@@ -17,11 +22,34 @@ pub enum Flag {
 }
 
 impl Flag {
-    pub fn into_bitflags(flags: &Vec<Cow<str>>) -> BitFlags<Flag, u8> {
+    pub fn into_bitflags(flags: &Vec<Cow<str>>) -> BitFlags<Self, u8> {
         flags
             .iter()
             .filter_map(|flag| Flag::from_str(flag).ok())
             .collect()
+    }
+
+    pub fn format(flags: BitFlags<Self>) -> Option<String> {
+        flags
+            .iter()
+            .map(|flag| flag.to_string())
+            .reduce(|mut acc, flag| {
+                write!(acc, " {flag}").expect("writing flag to formatting buffer should succeed");
+                acc
+            })
+    }
+}
+
+impl Display for Flag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Flag::Seen => write!(f, "\\Seen"),
+            Flag::Answered => write!(f, "\\Answered"),
+            Flag::Flagged => write!(f, "\\Flagged"),
+            Flag::Deleted => write!(f, "\\Deleted"),
+            Flag::Draft => write!(f, "\\Draft"),
+            Flag::Recent => write!(f, "\\Recent"),
+        }
     }
 }
 

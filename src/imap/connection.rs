@@ -76,6 +76,7 @@ impl Connection {
                                             .await
                                             .expect("sending response out of network task should succeed");
                                     },
+                                    // todo: use unreachable instead of panic?
                                     imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
                                     imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
                                 }
@@ -102,10 +103,19 @@ impl Connection {
         }
     }
 
+    // todo: enable sending of binary command
     pub async fn send(&mut self, command: &str) -> SendReturnValue {
         let tag = self.tag_generator.next();
+        self.do_send(tag, command).await
+    }
+
+    pub async fn send_continuation(&mut self, data: &str) -> SendReturnValue {
+        self.do_send(String::new(), data).await
+    }
+
+    async fn do_send(&mut self, tag: String, data: &str) -> SendReturnValue {
         self.outbound_tx
-            .send((tag, command.to_string()))
+            .send((tag, data.to_string()))
             .await
             .expect("sending request to io task should succeed");
         self.inbound_rx

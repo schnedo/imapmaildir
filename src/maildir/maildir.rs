@@ -123,7 +123,8 @@ impl Maildir {
 
     pub fn read(&self, metadata: LocalMailMetadata) -> LocalMail {
         LocalMail::new(
-            fs::read(self.cur.join(metadata.filename())).expect("mail contents should be readable"),
+            fs::read_to_string(self.cur.join(metadata.filename()))
+                .expect("mail contents should be readable"),
             metadata,
         )
     }
@@ -172,19 +173,19 @@ impl Maildir {
 pub struct LocalMail {
     metadata: LocalMailMetadata,
     // todo: consider streaming this
-    content: Vec<u8>,
+    content: String,
 }
 
 impl LocalMail {
-    pub fn new(content: Vec<u8>, metadata: LocalMailMetadata) -> Self {
+    pub fn new(content: String, metadata: LocalMailMetadata) -> Self {
         Self { metadata, content }
     }
 
-    fn metadata(&self) -> &LocalMailMetadata {
+    pub fn metadata(&self) -> &LocalMailMetadata {
         &self.metadata
     }
 
-    fn content(&self) -> &[u8] {
+    pub fn content(&self) -> &str {
         &self.content
     }
 }

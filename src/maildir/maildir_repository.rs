@@ -25,6 +25,7 @@ use super::Maildir;
 #[derive(Debug, Default)]
 pub struct LocalChanges {
     pub updates: Vec<LocalMailMetadata>,
+    // todo: use sequence set
     pub deletions: Vec<Uid>,
     pub news: Vec<LocalMail>,
 }
