@@ -108,10 +108,6 @@ impl Maildir {
         new_local_metadata
     }
 
-    pub fn resolve(&self, filename: &str) -> PathBuf {
-        self.cur.join(filename)
-    }
-
     pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> {
         read_dir(self.cur.as_path())
             .expect("cur should be readable")
@@ -123,6 +119,13 @@ impl Maildir {
                     .expect("converting filename from OsString to String should be possible");
                 filename.parse().expect("filename should be parsable")
             })
+    }
+
+    pub fn read(&self, metadata: LocalMailMetadata) -> LocalMail {
+        LocalMail::new(
+            fs::read(self.cur.join(metadata.filename())).expect("mail contents should be readable"),
+            metadata,
+        )
     }
 
     pub fn update(&self, entry: &mut LocalMailMetadata, new_flags: BitFlags<Flag>) {
@@ -168,6 +171,7 @@ impl Maildir {
 
 pub struct LocalMail {
     metadata: LocalMailMetadata,
+    // todo: consider streaming this
     content: Vec<u8>,
 }
 

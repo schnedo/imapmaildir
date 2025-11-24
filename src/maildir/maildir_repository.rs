@@ -2,7 +2,6 @@ use rustix::system::uname;
 use std::{
     collections::HashMap,
     fmt::Display,
-    fs,
     path::Path,
     process,
     str::FromStr,
@@ -229,16 +228,25 @@ impl MaildirRepository {
         }
     }
 
-    // todo: check if change without uid is an update or new
     pub async fn detect_changes(&self) -> LocalChanges {
         let mut changes = LocalChanges::default();
         let maildir_metadata = self.maildir.list_cur();
-        let mut maildir_mails: HashMap<Option<Uid>, LocalMailMetadata> = maildir_metadata
-            .map(|metadata| (metadata.uid(), metadata))
-            .collect();
+
+        let mut maildir_mails = HashMap::new();
+
+        for metadata in maildir_metadata {
+            if let Some(uid) = metadata.uid() {
+                maildir_mails.insert(uid, metadata);
+            } else {
+                changes.news.push(self.maildir.read(metadata));
+            }
+        }
+
         self.state
             .for_each(|entry| {
-                if let Some(data) = maildir_mails.remove(&entry.uid()) {
+                if let Some(data) = maildir_mails
+                    .remove(&entry.uid().expect("all mails in state should have a uid"))
+                {
                     if data.flags() != entry.flags() {
                         changes.updates.push(data);
                     }
@@ -250,11 +258,7 @@ impl MaildirRepository {
             })
             .await;
         for maildata in maildir_mails.into_values() {
-            changes.news.push(LocalMail::new(
-                fs::read(self.maildir.resolve(&maildata.filename()))
-                    .expect("mail contents should be readable"),
-                maildata,
-            ));
+            changes.news.push(self.maildir.read(maildata));
         }
 
         changes
