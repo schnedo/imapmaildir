@@ -1,12 +1,40 @@
-use std::{fmt::Display, num::NonZeroU32};
+use std::{fmt::Display, num::NonZeroU32, ops::Add};
 
-#[derive(Debug, PartialEq, Clone, Copy, Eq, Hash)]
+#[derive(Debug, PartialEq, Clone, Copy, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Uid(NonZeroU32);
 
 impl Uid {
-    pub fn max() -> Self {
-        Self(NonZeroU32::MAX)
+    pub const MAX: Self = Self(NonZeroU32::MAX);
+
+    pub fn range_inclusive(self, other: Self) -> impl Iterator<Item = Self> {
+        let mut n = if self.0 == NonZeroU32::MIN {
+            None
+        } else {
+            Some(self.0)
+        };
+        std::iter::from_fn(move || {
+            let next_num = if let Some(num) = n {
+                num.saturating_add(1)
+            } else {
+                NonZeroU32::MIN
+            };
+            if next_num > other.0 {
+                return None;
+            }
+
+            n = Some(next_num);
+
+            Some(Uid(next_num))
+        })
+    }
+}
+
+impl Add<u32> for Uid {
+    type Output = Uid;
+
+    fn add(self, rhs: u32) -> Self::Output {
+        Uid(self.0.saturating_add(rhs))
     }
 }
 

@@ -96,7 +96,7 @@ impl Syncer {
         let mut sequence_set = SequenceSetBuilder::new();
         for update in &selection.mail_updates {
             if maildir_repository.update(update).await.is_err() {
-                sequence_set.add(update.uid().into());
+                sequence_set.add(update.uid());
             }
         }
         if let Ok(sequence_set) = sequence_set.build() {

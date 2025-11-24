@@ -9,17 +9,21 @@ use crate::imap::Uid;
 
 #[derive(Debug)]
 struct SequenceRange {
-    // todo: use NonZeroU32
-    from: u32,
-    to: Option<u32>,
+    from: Uid,
+    to: Option<Uid>,
 }
 
 impl SequenceRange {
-    fn single(from: u32) -> Self {
+    fn single(from: Uid) -> Self {
         Self { from, to: None }
     }
-    fn range(from: u32, to: u32) -> Self {
+    fn range(from: Uid, to: Uid) -> Self {
         Self { from, to: Some(to) }
+    }
+    fn iter(&self) -> impl Iterator<Item = Uid> {
+        let to = self.to.unwrap_or(self.from);
+
+        self.from.range_inclusive(to)
     }
 }
 
@@ -38,7 +42,7 @@ impl Display for SequenceRange {
 pub struct EmptySetError {}
 
 pub struct SequenceSetBuilder {
-    nums: HashSet<u32>,
+    nums: HashSet<Uid>,
 }
 
 impl SequenceSetBuilder {
@@ -48,12 +52,12 @@ impl SequenceSetBuilder {
         }
     }
 
-    pub fn add(&mut self, num: u32) {
+    pub fn add(&mut self, num: Uid) {
         self.nums.insert(num);
     }
 
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
-        let mut sorted_nums: Vec<u32> = self.nums.drain().collect();
+        let mut sorted_nums: Vec<Uid> = self.nums.drain().collect();
         sorted_nums.sort_unstable();
         let mut sorted_nums = sorted_nums.into_iter();
 
@@ -92,21 +96,18 @@ pub struct SequenceSet {
 }
 
 impl SequenceSet {
-    fn with_range(from: u32, to: u32) -> Self {
+    fn with_range(from: Uid, to: Uid) -> Self {
         Self {
             ranges: vec![SequenceRange::range(from, to)],
         }
     }
 
     pub fn all() -> Self {
-        Self::with_range(1, u32::MAX)
+        Self::with_range(1u32.try_into().expect("1 should be nonzero"), Uid::MAX)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Uid> {
-        self.ranges
-            .iter()
-            .flat_map(|range| range.from..=(range.to.unwrap_or(range.from)))
-            .map(|num| num.try_into().expect("num should be non zero"))
+        self.ranges.iter().flat_map(SequenceRange::iter)
     }
 }
 
@@ -133,7 +134,18 @@ impl From<&Vec<RangeInclusive<u32>>> for SequenceSet {
         Self {
             ranges: value
                 .iter()
-                .map(|range| SequenceRange::range(*range.start(), *range.end()))
+                .map(|range| {
+                    SequenceRange::range(
+                        range
+                            .start()
+                            .try_into()
+                            .expect("received range start should be valid uid"),
+                        range
+                            .end()
+                            .try_into()
+                            .expect("received range end should be valid uid"),
+                    )
+                })
                 .collect(),
         }
     }
