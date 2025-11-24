@@ -1,7 +1,6 @@
 use std::mem::transmute;
 
 use log::{debug, info, trace};
-use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -102,30 +101,5 @@ impl SelectedClient {
     pub async fn fetch_all(&mut self) {
         info!("initializing new imap repository");
         self.fetch_mail(&SequenceSet::all()).await;
-    }
-}
-
-#[derive(Error, Debug)]
-#[error("unknown flag {flag}")]
-pub struct UnknownFlagError<'a> {
-    flag: &'a str,
-}
-
-impl<'a> TryFrom<&'a str> for Flag {
-    type Error = UnknownFlagError<'a>;
-
-    fn try_from(value: &'a str) -> std::result::Result<Self, Self::Error> {
-        match value {
-            "\\Seen" => Ok(Flag::Seen),
-            "\\Answered" => Ok(Flag::Answered),
-            "\\Flagged" => Ok(Flag::Flagged),
-            "\\Deleted" => Ok(Flag::Deleted),
-            "\\Draft" => Ok(Flag::Draft),
-            "\\Recent" => Ok(Flag::Recent),
-            _ => {
-                trace!("Encountered unhandled Flag {value}");
-                Err(Self::Error { flag: value })
-            }
-        }
     }
 }

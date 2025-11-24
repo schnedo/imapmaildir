@@ -197,19 +197,6 @@ impl Debug for LocalMail {
     }
 }
 
-impl From<char> for Flag {
-    fn from(value: char) -> Self {
-        match value {
-            'D' => Flag::Draft,
-            'F' => Flag::Flagged,
-            'R' => Flag::Answered,
-            'S' => Flag::Seen,
-            'T' => Flag::Deleted,
-            _ => panic!("unknown flag"),
-        }
-    }
-}
-
 #[derive(Error, Debug)]
 #[error("Unknown Maildir flag")]
 pub struct UnknownMaildirFlagError {}
