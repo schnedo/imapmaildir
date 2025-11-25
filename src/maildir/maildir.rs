@@ -11,7 +11,11 @@ use enumflags2::BitFlags;
 use log::{info, trace, warn};
 use thiserror::Error;
 
-use crate::{imap::RemoteMail, maildir::maildir_repository::LocalMailMetadata, sync::Flag};
+use crate::{
+    imap::{RemoteMail, Uid},
+    maildir::maildir_repository::LocalMailMetadata,
+    sync::Flag,
+};
 
 #[derive(Debug)]
 pub struct Maildir {
@@ -128,38 +132,47 @@ impl Maildir {
         )
     }
 
-    pub fn update(&self, entry: &mut LocalMailMetadata, new_flags: BitFlags<Flag>) {
-        let current_mail = self.cur.join(entry.filename());
-        entry.set_flags(new_flags);
-        let new_name = self.cur.join(entry.filename());
+    fn rename(current: &Path, new: &Path) {
         match (
-            current_mail
+            current
                 .try_exists()
-                .expect("should be able to check if current_mail exists"),
-            new_name
-                .try_exists()
-                .expect("should be able to check if updated flag name exists"),
+                .expect("should be able to check if current name exists"),
+            new.try_exists()
+                .expect("should be able to check if new name exists"),
         ) {
             (true, true) => todo!(
                 "updating {} to {} failed, because both files already exist",
-                current_mail.to_string_lossy(),
-                new_name.to_string_lossy()
+                current.to_string_lossy(),
+                new.to_string_lossy()
             ),
             (true, false) => {
-                trace!("updating flags of {:}", current_mail.display());
-                fs::rename(current_mail, new_name)
-                    .expect("updating flags in maildir should succeed");
+                trace!("renaming {:}", current.display());
+                fs::rename(current, new).expect("renaming mail in maildir should succeed");
             }
             (false, true) => warn!(
-                "ignoring update of {} to {}, because old file does not exist while new one does. May be due to prior crash",
-                current_mail.to_string_lossy(),
-                new_name.to_string_lossy()
+                "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
+                current.to_string_lossy(),
+                new.to_string_lossy()
             ),
             (false, false) => todo!(
-                "Cannot update flags of {}, because it does not exist",
-                current_mail.to_string_lossy()
+                "Cannot rename {}, because it does not exist",
+                current.to_string_lossy()
             ),
         }
+    }
+
+    pub fn update_uid(&self, entry: &mut LocalMailMetadata, new_uid: Uid) {
+        let current_mail = self.cur.join(entry.filename());
+        entry.set_uid(new_uid);
+        let new_name = self.cur.join(entry.filename());
+        Self::rename(&current_mail, &new_name);
+    }
+
+    pub fn update_flags(&self, entry: &mut LocalMailMetadata, new_flags: BitFlags<Flag>) {
+        let current_mail = self.cur.join(entry.filename());
+        entry.set_flags(new_flags);
+        let new_name = self.cur.join(entry.filename());
+        Self::rename(&current_mail, &new_name);
     }
 
     pub fn delete(&self, entry: &LocalMailMetadata) {
@@ -184,8 +197,8 @@ impl LocalMail {
         &self.metadata
     }
 
-    pub fn content(self) -> Vec<u8> {
-        self.content
+    pub fn unpack(self) -> (LocalMailMetadata, Vec<u8>) {
+        (self.metadata, self.content)
     }
 }
 

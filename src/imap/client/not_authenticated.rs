@@ -89,7 +89,10 @@ impl Client {
     }
 
     async fn authenticate(mut self, username: &str, password: &str) -> AuthenticatedClient {
-        assert!(self.auth_capabilities.contains(AuthCapability::Plain));
+        assert!(
+            self.auth_capabilities.contains(AuthCapability::Plain),
+            "server should support PLAIN auth capability"
+        );
         debug!("LOGIN <user> <password>");
         let response = self
             .connection

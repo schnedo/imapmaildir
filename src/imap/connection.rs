@@ -20,6 +20,7 @@ pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
 #[derive(Debug)]
 pub struct Connection {
     tag_generator: TagGenerator,
+    // todo: use impl Iterator<u8> instead of Vec<u8>
     outbound_tx: mpsc::Sender<(String, Vec<u8>)>,
     inbound_rx: mpsc::Receiver<SendReturnValue>,
 }
@@ -58,8 +59,8 @@ impl Connection {
                     Some(response) = stream.next() => {
                         let response = response.expect("response should be receivable");
                         match response.parsed() {
-                            imap_proto::Response::Done { tag, status, code: _, information } => {
-                                trace!("{tag:?} {status:?} {information:?}");
+                            imap_proto::Response::Done { tag, status, code, information } => {
+                                trace!("{tag:?} {status:?} {code:?} {information:?}");
                                 match status {
                                     imap_proto::Status::Ok => {
                                         inbound_tx.send(Ok(response))
@@ -81,8 +82,8 @@ impl Connection {
                                     imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
                                 }
                             } ,
-                            imap_proto::Response::Continue { code: _, information } => {
-                                trace!("+ {information:?}");
+                            imap_proto::Response::Continue { code, information } => {
+                                trace!("+ {code:?} {information:?}");
                                 inbound_tx.send(Ok(response))
                                     .await
                                     .expect("sending response out of network task should succeed");

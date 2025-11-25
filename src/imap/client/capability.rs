@@ -10,7 +10,9 @@ pub enum Capability {
     Idle,
     Imap4rev1,
     QResync,
+    UidPlus,
 }
+#[repr(transparent)]
 #[derive(Debug, Default)]
 pub struct Capabilities {
     capabilities: BitFlags<Capability>,
@@ -37,6 +39,9 @@ impl Capabilities {
                 }
                 "QRESYNC" => {
                     self.capabilities.insert(Capability::QResync);
+                }
+                "UIDPLUS" => {
+                    self.capabilities.insert(Capability::UidPlus);
                 }
                 _ => {
                     trace!("unknown capability {cow}");

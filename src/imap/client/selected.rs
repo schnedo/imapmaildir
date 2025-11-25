@@ -7,13 +7,29 @@ use tokio::sync::mpsc;
 use crate::{
     imap::{
         ModSeq, Uid,
+        client::capability::{Capabilities, Capability},
         codec::ResponseData,
         connection::Connection,
-        mailbox::{RemoteContent, RemoteMail, RemoteMailMetadata, SequenceSet},
+        mailbox::{RemoteContent, RemoteMail, RemoteMailMetadata, SequenceRange, SequenceSet},
     },
-    maildir::LocalMail,
+    maildir::{LocalMail, LocalMailMetadata},
     sync::Flag,
 };
+
+pub struct StoredMailInfo {
+    metadata: LocalMailMetadata,
+    uid: Uid,
+}
+
+impl StoredMailInfo {
+    pub fn new(metadata: LocalMailMetadata, uid: Uid) -> Self {
+        Self { metadata, uid }
+    }
+
+    pub fn unpack(self) -> (LocalMailMetadata, Uid) {
+        (self.metadata, self.uid)
+    }
+}
 
 #[derive(Debug)]
 pub struct SelectedClient {
@@ -22,10 +38,15 @@ pub struct SelectedClient {
 impl SelectedClient {
     pub fn new(
         connection: Connection,
+        capabilities: &Capabilities,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
     ) -> Self {
+        assert!(
+            capabilities.contains(Capability::UidPlus),
+            "server should support UIDPLUS capability"
+        );
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
                 match response.parsed() {
@@ -107,13 +128,13 @@ impl SelectedClient {
     }
 
     // todo: use rfc3502 MULTIAPPEND
-    pub async fn store(&mut self, mailbox: &str, mail: LocalMail) {
+    pub async fn store(&mut self, mailbox: &str, mail: LocalMail) -> StoredMailInfo {
         let mut command = format!("APPEND {mailbox}");
         if let Some(flags) = Flag::format(mail.metadata().flags()) {
             write!(command, " ({flags})")
                 .expect("appending formatted flags to APPEND command should succeed");
         }
-        let content = mail.content();
+        let (metadata, content) = mail.unpack();
         // todo: use cached content length (and extend command with content)
         write!(command, " {{{}}}", content.len())
             .expect("appending content length to APPEND command should succeed");
@@ -123,10 +144,29 @@ impl SelectedClient {
             .await
             .expect("storing new mail should succeed");
 
-        debug!("<content>");
-        self.connection
+        let response = self
+            .connection
             .send_continuation(content)
             .await
             .expect("sending mail content should succeed");
+        if let Some(code) = response.unsafe_get_tagged_response_code() {
+            if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
+                let uid_ranges: Vec<SequenceRange> =
+                    uid_set_members.iter().map(Into::into).collect();
+                StoredMailInfo::new(
+                    metadata,
+                    uid_ranges
+                        .first()
+                        .expect("there should be a new uid range")
+                        .iter()
+                        .next()
+                        .expect("there should be a new uid"),
+                )
+            } else {
+                unreachable!("response code of APPEND should be AppendUid")
+            }
+        } else {
+            unreachable!("response to APPEND should have a response code")
+        }
     }
 }

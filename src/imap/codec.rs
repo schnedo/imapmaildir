@@ -119,7 +119,7 @@ impl ResponseData {
         if let Response::Done { code, .. } = self.parsed() {
             code.as_ref()
         } else {
-            panic!("response is no tagged response")
+            unreachable!("response is no tagged response")
         }
     }
 

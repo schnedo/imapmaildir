@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::imap::Uid;
 
 #[derive(Debug)]
-struct SequenceRange {
+pub struct SequenceRange {
     start: Uid,
     end: Option<Uid>,
 }
@@ -26,7 +26,7 @@ impl SequenceRange {
             end: Some(end),
         }
     }
-    fn iter(&self) -> impl Iterator<Item = Uid> {
+    pub fn iter(&self) -> impl Iterator<Item = Uid> {
         let to = self.end.unwrap_or(self.start);
 
         self.start.range_inclusive(to)
@@ -42,6 +42,30 @@ impl Display for SequenceRange {
             write!(f, "{}:{}", self.start, to)
         } else {
             write!(f, "{}", self.start)
+        }
+    }
+}
+
+impl TryFrom<&RangeInclusive<u32>> for SequenceRange {
+    type Error = <Uid as TryFrom<u32>>::Error;
+
+    fn try_from(value: &RangeInclusive<u32>) -> std::result::Result<Self, Self::Error> {
+        Ok(SequenceRange::range(
+            value.start().try_into()?,
+            value.end().try_into()?,
+        ))
+    }
+}
+
+impl From<&imap_proto::UidSetMember> for SequenceRange {
+    fn from(value: &imap_proto::UidSetMember) -> Self {
+        match value {
+            imap_proto::UidSetMember::UidRange(range_inclusive) => range_inclusive
+                .try_into()
+                .expect("UidSetMember should have valid uids"),
+            imap_proto::UidSetMember::Uid(uid) => {
+                Self::single(uid.try_into().expect("UidSetMember should have valid uids"))
+            }
         }
     }
 }
@@ -137,16 +161,9 @@ impl From<&Vec<RangeInclusive<u32>>> for SequenceSet {
             ranges: value
                 .iter()
                 .map(|range| {
-                    SequenceRange::range(
-                        range
-                            .start()
-                            .try_into()
-                            .expect("received range start should be valid uid"),
-                        range
-                            .end()
-                            .try_into()
-                            .expect("received range end should be valid uid"),
-                    )
+                    range
+                        .try_into()
+                        .expect("received range start should be valid uid")
                 })
                 .collect(),
         }

@@ -66,6 +66,10 @@ impl LocalMailMetadata {
         self.uid
     }
 
+    pub fn set_uid(&mut self, uid: Uid) {
+        self.uid = Some(uid);
+    }
+
     pub fn flags(&self) -> BitFlags<Flag> {
         self.flags
     }
@@ -190,7 +194,7 @@ impl MaildirRepository {
 
     pub async fn store(&self, mail: &RemoteMail) -> Option<Uid> {
         trace!("storing mail {mail:?}");
-        if self.update(mail.metadata()).await.is_ok() {
+        if self.update_flags(mail.metadata()).await.is_ok() {
             None
         } else {
             let metadata = self.maildir.store(mail);
@@ -198,14 +202,16 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn update(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
+    pub async fn update_flags(
+        &self,
+        mail_metadata: &RemoteMailMetadata,
+    ) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
         let res = if let Some(mut entry) = self.state.get_by_id(uid).await {
             trace!("updating existing mail with uid {uid:?}");
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                self.maildir.update(&mut entry, new_flags);
-                entry.set_flags(new_flags);
+                self.maildir.update_flags(&mut entry, new_flags);
                 self.state.update(entry).await;
             }
 
@@ -218,6 +224,11 @@ impl MaildirRepository {
             .await;
 
         res
+    }
+
+    pub async fn add_synced(&self, mut mail_metadata: LocalMailMetadata, new_uid: Uid) {
+        self.maildir.update_uid(&mut mail_metadata, new_uid);
+        self.state.store(mail_metadata).await;
     }
 
     pub async fn delete(&self, uid: Uid) {

@@ -100,16 +100,18 @@ impl Syncer {
         )
         .await;
 
-        Self::handle_local_changes(&mut client, local_changes, mailbox).await;
+        Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
     }
 
     async fn handle_local_changes(
         client: &mut SelectedClient,
         local_changes: LocalChanges,
         mailbox: &str,
+        maildir_repository: &MaildirRepository,
     ) {
         for new_mail in local_changes.news {
-            client.store(mailbox, new_mail).await;
+            let (metadata, uid) = client.store(mailbox, new_mail).await.unpack();
+            maildir_repository.add_synced(metadata, uid).await;
         }
     }
 
@@ -127,7 +129,7 @@ impl Syncer {
 
         let mut sequence_set = SequenceSetBuilder::new();
         for update in &remote_changes.updates {
-            if maildir_repository.update(update).await.is_err() {
+            if maildir_repository.update_flags(update).await.is_err() {
                 sequence_set.add(update.uid());
             }
         }
