@@ -20,7 +20,7 @@ pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
 #[derive(Debug)]
 pub struct Connection {
     tag_generator: TagGenerator,
-    outbound_tx: mpsc::Sender<(String, String)>,
+    outbound_tx: mpsc::Sender<(String, Vec<u8>)>,
     inbound_rx: mpsc::Receiver<SendReturnValue>,
 }
 
@@ -38,7 +38,7 @@ impl Connection {
         let stream = (tls.connect(host, stream).await).expect("upgrading to tls should succeed");
 
         let mut stream = Framed::new(stream, ImapCodec::default());
-        let (outbound_tx, mut outbound_rx) = mpsc::channel::<(String, String)>(2);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<(String, Vec<u8>)>(2);
         let (inbound_tx, inbound_rx) = mpsc::channel::<SendReturnValue>(2);
 
         tokio::spawn(async move {
@@ -48,7 +48,7 @@ impl Connection {
                         trace!("{tag:?}: sending");
                         let request = imap_proto::Request(
                             Cow::Borrowed(tag.as_bytes()),
-                            Cow::Borrowed(command.as_bytes()),
+                            Cow::Borrowed(&command),
                         );
                         stream
                             .send(&request)
@@ -103,19 +103,18 @@ impl Connection {
         }
     }
 
-    // todo: enable sending of binary command
-    pub async fn send(&mut self, command: &str) -> SendReturnValue {
+    pub async fn send(&mut self, command: Vec<u8>) -> SendReturnValue {
         let tag = self.tag_generator.next();
         self.do_send(tag, command).await
     }
 
-    pub async fn send_continuation(&mut self, data: &str) -> SendReturnValue {
+    pub async fn send_continuation(&mut self, data: Vec<u8>) -> SendReturnValue {
         self.do_send(String::new(), data).await
     }
 
-    async fn do_send(&mut self, tag: String, data: &str) -> SendReturnValue {
+    async fn do_send(&mut self, tag: String, data: Vec<u8>) -> SendReturnValue {
         self.outbound_tx
-            .send((tag, data.to_string()))
+            .send((tag, data))
             .await
             .expect("sending request to io task should succeed");
         self.inbound_rx

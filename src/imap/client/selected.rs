@@ -95,7 +95,7 @@ impl SelectedClient {
         let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, RFC822)");
         debug!("{command}");
         self.connection
-            .send(&command)
+            .send(command.into())
             .await
             .expect("fetching mails should succeed");
     }
@@ -119,7 +119,7 @@ impl SelectedClient {
             .expect("appending content length to APPEND command should succeed");
         debug!("{command}");
         self.connection
-            .send(&command)
+            .send(command.into())
             .await
             .expect("storing new mail should succeed");
 

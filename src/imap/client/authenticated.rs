@@ -75,7 +75,7 @@ impl AuthenticatedClient {
         let command = "ENABLE QRESYNC";
         debug!("{command}");
         self.connection
-            .send(command)
+            .send(command.into())
             .await
             .expect("enabling qresync should succeed");
         let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
@@ -94,7 +94,7 @@ impl AuthenticatedClient {
     ) -> Selection {
         debug!("{command}");
         self.connection
-            .send(command)
+            .send(command.into())
             .await
             .expect("selecting a mailbox should succeed");
 

@@ -49,7 +49,7 @@ impl Client {
                     update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
                 } else {
                     connection
-                        .send("CAPABILITY")
+                        .send("CAPABILITY".into())
                         .await
                         .expect("capability request should succeed");
                     if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
@@ -93,7 +93,7 @@ impl Client {
         debug!("LOGIN <user> <password>");
         let response = self
             .connection
-            .send(&format!("LOGIN {username} {password}"))
+            .send(format!("LOGIN {username} {password}").into())
             .await
             .expect("login should succeed");
         if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
@@ -102,7 +102,7 @@ impl Client {
             update_capabilities(&mut self.capabilities, &mut self.auth_capabilities, caps);
         } else {
             self.connection
-                .send("CAPABILITY")
+                .send("CAPABILITY".into())
                 .await
                 .expect("capabilities should succeed");
         }
