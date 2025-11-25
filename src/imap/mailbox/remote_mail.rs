@@ -34,13 +34,13 @@ impl RemoteMailMetadata {
     }
 }
 
-pub struct Content {
+pub struct RemoteContent {
     #[expect(dead_code)] // Contains data that `content` borrows
     raw: Bytes,
     content: &'static [u8],
 }
 
-impl Content {
+impl RemoteContent {
     pub fn new(raw: Bytes, content: &'static [u8]) -> Self {
         Self { raw, content }
     }
@@ -52,11 +52,11 @@ impl Content {
 
 pub struct RemoteMail {
     metadata: RemoteMailMetadata,
-    content: Content,
+    content: RemoteContent,
 }
 
 impl RemoteMail {
-    pub fn new(metadata: RemoteMailMetadata, content: Content) -> Self {
+    pub fn new(metadata: RemoteMailMetadata, content: RemoteContent) -> Self {
         Self { metadata, content }
     }
 
