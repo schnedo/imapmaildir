@@ -100,15 +100,15 @@ impl Syncer {
         )
         .await;
 
-        Self::handle_local_changes(&mut client, &mut local_changes, mailbox).await;
+        Self::handle_local_changes(&mut client, local_changes, mailbox).await;
     }
 
     async fn handle_local_changes(
         client: &mut SelectedClient,
-        local_changes: &mut LocalChanges,
+        local_changes: LocalChanges,
         mailbox: &str,
     ) {
-        for new_mail in &local_changes.news {
+        for new_mail in local_changes.news {
             client.store(mailbox, new_mail).await;
         }
     }

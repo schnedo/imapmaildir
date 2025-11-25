@@ -107,7 +107,7 @@ impl SelectedClient {
     }
 
     // todo: use rfc3502 MULTIAPPEND
-    pub async fn store(&mut self, mailbox: &str, mail: &LocalMail) {
+    pub async fn store(&mut self, mailbox: &str, mail: LocalMail) {
         let mut command = format!("APPEND {mailbox}");
         if let Some(flags) = Flag::format(mail.metadata().flags()) {
             write!(command, " ({flags})")
