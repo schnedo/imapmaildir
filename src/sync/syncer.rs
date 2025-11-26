@@ -114,6 +114,7 @@ impl Syncer {
             let (metadata, uid) = info.unpack();
             maildir_repository.add_synced(metadata, uid).await;
         }
+        todo!("sync local deletions");
     }
 
     async fn handle_remote_changes(
@@ -128,7 +129,7 @@ impl Syncer {
             }
         }
 
-        let mut sequence_set = SequenceSetBuilder::new();
+        let mut sequence_set = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
             if maildir_repository.update_flags(update).await.is_err() {
                 sequence_set.add(update.uid());

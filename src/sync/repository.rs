@@ -11,7 +11,8 @@ use thiserror::Error;
 
 #[bitflags]
 #[repr(u8)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+// todo: support keywords https://datatracker.ietf.org/doc/html/rfc3501#section-2.3.2
 pub enum Flag {
     Seen,
     Answered,
