@@ -54,6 +54,7 @@ impl LocalMailMetadata {
         }
     }
 
+    // todo: consider allowing custom prefix/name for user provided mails in maildir
     pub fn fileprefix(&self) -> &str {
         &self.fileprefix
     }

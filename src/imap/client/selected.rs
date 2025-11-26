@@ -44,6 +44,10 @@ impl SelectedClient {
         highest_modseq_tx: mpsc::Sender<ModSeq>,
     ) -> Self {
         assert!(
+            capabilities.contains(Capability::LiteralPlus),
+            "server should support LITERAL+ capability"
+        );
+        assert!(
             capabilities.contains(Capability::UidPlus),
             "server should support UIDPLUS capability"
         );
@@ -136,19 +140,17 @@ impl SelectedClient {
         }
         let (metadata, content) = mail.unpack();
         // todo: use cached content length (and extend command with content)
-        write!(command, " {{{}}}", content.len())
+        write!(command, " {{{}+}}\r\n", content.len())
             .expect("appending content length to APPEND command should succeed");
         debug!("{command}");
-        self.connection
-            .send(command.into())
+        let mut command = command.into_bytes();
+        command.extend(content.into_iter());
+        let response = self
+            .connection
+            .send(command)
             .await
             .expect("storing new mail should succeed");
 
-        let response = self
-            .connection
-            .send_continuation(content)
-            .await
-            .expect("sending mail content should succeed");
         if let Some(code) = response.unsafe_get_tagged_response_code() {
             if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
                 let uid_ranges: Vec<SequenceRange> =

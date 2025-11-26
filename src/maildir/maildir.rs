@@ -146,7 +146,7 @@ impl Maildir {
                 new.to_string_lossy()
             ),
             (true, false) => {
-                trace!("renaming {:}", current.display());
+                trace!("renaming {:} to {:}", current.display(), new.display());
                 fs::rename(current, new).expect("renaming mail in maildir should succeed");
             }
             (false, true) => warn!(

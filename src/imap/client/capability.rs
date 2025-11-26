@@ -11,6 +11,7 @@ pub enum Capability {
     Enable,    // rfc5161
     Idle,      // rfc2177
     Imap4rev1,
+    LiteralPlus, // rfc7888
     QResync,     // rfc7162
     UidPlus,     // rfc4315
 }
@@ -38,6 +39,9 @@ impl Capabilities {
                 }
                 "IDLE" => {
                     self.capabilities.insert(Capability::Idle);
+                }
+                "LITERAL+" => {
+                    self.capabilities.insert(Capability::LiteralPlus);
                 }
                 "QRESYNC" => {
                     self.capabilities.insert(Capability::QResync);
