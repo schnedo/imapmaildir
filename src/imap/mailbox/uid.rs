@@ -8,24 +8,15 @@ impl Uid {
     pub const MAX: Self = Self(NonZeroU32::MAX);
 
     pub fn range_inclusive(self, other: Self) -> impl Iterator<Item = Self> {
-        let mut n = if self.0 == NonZeroU32::MIN {
-            None
-        } else {
-            Some(self.0)
-        };
+        let mut n = self.0.get() - 1;
+
         std::iter::from_fn(move || {
-            let next_num = if let Some(num) = n {
-                num.saturating_add(1)
-            } else {
-                NonZeroU32::MIN
-            };
-            if next_num > other.0 {
+            n += 1;
+            if n > other.0.get() {
                 return None;
             }
 
-            n = Some(next_num);
-
-            Some(Uid(next_num))
+            Some(Uid(n.try_into().expect("n cannot be none here")))
         })
     }
 }
