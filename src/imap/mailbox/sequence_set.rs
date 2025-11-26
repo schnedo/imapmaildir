@@ -9,30 +9,39 @@ use crate::imap::Uid;
 
 #[derive(Debug)]
 struct SequenceRange {
-    from: Uid,
-    to: Option<Uid>,
+    start: Uid,
+    end: Option<Uid>,
 }
 
 impl SequenceRange {
-    fn single(from: Uid) -> Self {
-        Self { from, to: None }
+    fn single(uid: Uid) -> Self {
+        Self {
+            start: uid,
+            end: None,
+        }
     }
-    fn range(from: Uid, to: Uid) -> Self {
-        Self { from, to: Some(to) }
+    fn range(start: Uid, end: Uid) -> Self {
+        Self {
+            start,
+            end: Some(end),
+        }
     }
     fn iter(&self) -> impl Iterator<Item = Uid> {
-        let to = self.to.unwrap_or(self.from);
+        let to = self.end.unwrap_or(self.start);
 
-        self.from.range_inclusive(to)
+        self.start.range_inclusive(to)
+    }
+    fn end(&self) -> Uid {
+        self.end.unwrap_or(self.start)
     }
 }
 
 impl Display for SequenceRange {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        if let Some(to) = self.to {
-            write!(f, "{}:{}", self.from, to)
+        if let Some(to) = self.end {
+            write!(f, "{}:{}", self.start, to)
         } else {
-            write!(f, "{}", self.from)
+            write!(f, "{}", self.start)
         }
     }
 }
@@ -52,8 +61,8 @@ impl SequenceSetBuilder {
         }
     }
 
-    pub fn add(&mut self, num: Uid) {
-        self.nums.insert(num);
+    pub fn add(&mut self, uid: Uid) {
+        self.nums.insert(uid);
     }
 
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
@@ -66,15 +75,8 @@ impl SequenceSetBuilder {
             let mut current_range = SequenceRange::single(first_num);
 
             for num in sorted_nums {
-                if let Some(to) = current_range.to {
-                    if num == to + 1 {
-                        current_range.to = Some(num);
-                    } else {
-                        ranges.push(current_range);
-                        current_range = SequenceRange::single(num);
-                    }
-                } else if num == current_range.from + 1 {
-                    current_range.to = Some(num);
+                if num == current_range.end() + 1 {
+                    current_range.end = Some(num);
                 } else {
                     ranges.push(current_range);
                     current_range = SequenceRange::single(num);
@@ -96,9 +98,9 @@ pub struct SequenceSet {
 }
 
 impl SequenceSet {
-    fn with_range(from: Uid, to: Uid) -> Self {
+    fn with_range(start: Uid, end: Uid) -> Self {
         Self {
-            ranges: vec![SequenceRange::range(from, to)],
+            ranges: vec![SequenceRange::range(start, end)],
         }
     }
 
