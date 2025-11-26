@@ -42,6 +42,18 @@ impl AuthenticatedClient {
         capabilities: Capabilities,
         untagged_response_receiver: mpsc::Receiver<ResponseData>,
     ) -> Self {
+        assert!(
+            capabilities.contains(Capability::Condstore),
+            "server should support CONDSTORE capability"
+        );
+        assert!(
+            capabilities.contains(Capability::Enable),
+            "server should support ENABLE capability"
+        );
+        assert!(
+            capabilities.contains(Capability::QResync),
+            "server should support QRESYNC capability"
+        );
         Self {
             connection,
             untagged_response_receiver,
@@ -55,10 +67,6 @@ impl AuthenticatedClient {
         highest_modseq_tx: mpsc::Sender<ModSeq>,
         mailbox: &str,
     ) -> Selection {
-        assert!(
-            self.capabilities.contains(Capability::Condstore),
-            "server should support CONDSTORE capability"
-        );
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
         self.do_select(mail_tx, highest_modseq_tx, &command, None)
@@ -74,10 +82,6 @@ impl AuthenticatedClient {
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
     ) -> Selection {
-        assert!(
-            self.capabilities.contains(Capability::QResync),
-            "server should support QRESYNC capability"
-        );
         let command = "ENABLE QRESYNC";
         debug!("{command}");
         self.connection

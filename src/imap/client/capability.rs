@@ -4,13 +4,15 @@ use log::trace;
 #[bitflags]
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
+// todo: check https://datatracker.ietf.org/doc/html/rfc5550#section-12 and update readme regarding
+// compatibility to lemonade mail stores
 pub enum Capability {
-    Condstore,
-    Enable,
-    Idle,
+    Condstore, // rfc7162
+    Enable,    // rfc5161
+    Idle,      // rfc2177
     Imap4rev1,
-    QResync,
-    UidPlus,
+    QResync,     // rfc7162
+    UidPlus,     // rfc4315
 }
 #[repr(transparent)]
 #[derive(Debug, Default)]
