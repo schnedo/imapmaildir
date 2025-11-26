@@ -8,7 +8,7 @@ use log::debug;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    imap::{AuthenticatedClient, SequenceSetBuilder},
+    imap::{AuthenticatedClient, SequenceSet, SequenceSetBuilder},
     maildir::MaildirRepository,
 };
 
@@ -109,10 +109,27 @@ impl Syncer {
         mailbox: &str,
         maildir_repository: &MaildirRepository,
     ) {
-        let mut mailinfos = client.store(mailbox, local_changes.news.into_iter()).await;
+        let LocalChanges {
+            highest_modseq,
+            updates,
+            deletions,
+            news,
+        } = local_changes;
+        let mut mailinfos = client.store(mailbox, news.into_iter()).await;
+        // todo: parallelize these
         while let Some(info) = mailinfos.recv().await {
             let (metadata, uid) = info.unpack();
             maildir_repository.add_synced(metadata, uid).await;
+        }
+        let updates = updates.build();
+        for (flag, sequence_set) in updates.removed_flags() {
+            client.remove_flag(highest_modseq, flag, sequence_set).await;
+        }
+        for (flag, sequence_set) in updates.additional_flags() {
+            client.add_flag(highest_modseq, flag, sequence_set).await;
+        }
+        if let Ok(set) = SequenceSet::try_from(&deletions) {
+            client.delete(highest_modseq, &set).await;
         }
     }
 
@@ -128,7 +145,7 @@ impl Syncer {
             }
         }
 
-        let mut sequence_set = SequenceSetBuilder::new();
+        let mut sequence_set = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
             if maildir_repository.update_flags(update).await.is_err() {
                 sequence_set.add(update.uid());
@@ -158,10 +175,9 @@ impl Syncer {
         local_changes
             .deletions
             .retain(|deletion| !remote_updates.contains(deletion));
-        local_changes.updates.retain(|update| {
-            let uid = &update.uid().expect("change should have uid");
-            !remote_updates.contains(uid) && !remote_deletions.contains(uid)
-        });
+        for uid in remote_updates.drain() {
+            local_changes.updates.remove(uid);
+        }
     }
 
     async fn sync_new(

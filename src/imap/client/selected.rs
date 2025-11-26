@@ -55,39 +55,48 @@ impl SelectedClient {
             while let Some(response) = untagged_response_receiver.recv().await {
                 match response.parsed() {
                     imap_proto::Response::Fetch(_, attributes) => {
-                        if let [
-                            imap_proto::AttributeValue::Uid(uid),
-                            imap_proto::AttributeValue::ModSeq(modseq),
-                            imap_proto::AttributeValue::Flags(flags),
-                            imap_proto::AttributeValue::Rfc822(content),
-                        ] = attributes.as_slice()
-                        {
-                            trace!("{flags:?}");
-                            let mail_flags = Flag::into_bitflags(flags);
-                            let metadata = RemoteMailMetadata::new(
-                                Uid::try_from(uid).expect("remote uid should be valid"),
-                                mail_flags,
-                                modseq.try_into().expect("received modseq should be valid"),
-                            );
+                        match attributes.as_slice() {
+                            [
+                                imap_proto::AttributeValue::Uid(uid),
+                                imap_proto::AttributeValue::ModSeq(modseq),
+                                imap_proto::AttributeValue::Flags(flags),
+                                imap_proto::AttributeValue::Rfc822(content),
+                            ] => {
+                                trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
+                                let mail_flags = Flag::into_bitflags(flags);
+                                let metadata = RemoteMailMetadata::new(
+                                    Uid::try_from(uid).expect("remote uid should be valid"),
+                                    mail_flags,
+                                    modseq.try_into().expect("received modseq should be valid"),
+                                );
 
-                            if let Some(content) = content {
-                                let content =
+                                if let Some(content) = content {
+                                    let content =
                                 // safe as long as the raw data is not dropped
                                     unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
-                                let content = RemoteContent::new(response.raw(), content);
+                                    let content = RemoteContent::new(response.raw(), content);
 
-                                let remote_mail = RemoteMail::new(metadata, content);
-                                mail_tx
-                                    .send(remote_mail)
-                                    .await
-                                    .expect("mail channel should still be open");
-                            } else {
-                                todo!("handle mail without content")
+                                    let remote_mail = RemoteMail::new(metadata, content);
+                                    mail_tx
+                                        .send(remote_mail)
+                                        .await
+                                        .expect("mail channel should still be open");
+                                } else {
+                                    todo!("handle mail without content")
+                                }
                             }
-                        } else {
-                            panic!(
-                                "wrong format of FETCH response. check order of attributes in command"
-                            );
+                            [
+                                imap_proto::AttributeValue::Uid(uid),
+                                imap_proto::AttributeValue::ModSeq(modseq),
+                            ] => {
+                                trace!("FETCH uid {uid:?} modseq {modseq:?}");
+                                // todo: store modseq of individual mails? Why?
+                            }
+                            _ => {
+                                panic!(
+                                    "wrong format of FETCH response. check order of attributes in command"
+                                );
+                            }
                         }
                     }
                     imap_proto::Response::Data {
@@ -180,9 +189,43 @@ impl SelectedClient {
             }
         } else {
             info_rx.close();
-        };
+        }
 
         info_rx
+    }
+
+    pub async fn remove_flag(
+        &mut self,
+        highest_modseq: ModSeq,
+        flag: Flag,
+        sequence_set: &SequenceSet,
+    ) {
+        let command = format!(
+            "UID STORE {sequence_set} (UNCHANGEDSINCE {highest_modseq}) -FLAGS.SILENT ({flag})"
+        );
+        debug!("{command}");
+
+        self.connection
+            .send(command.into_bytes())
+            .await
+            .expect("sending of flag update should succeed");
+    }
+
+    pub async fn add_flag(
+        &mut self,
+        highest_modseq: ModSeq,
+        flag: Flag,
+        sequence_set: &SequenceSet,
+    ) {
+        let command = format!(
+            "UID STORE {sequence_set} (UNCHANGEDSINCE {highest_modseq}) +FLAGS.SILENT ({flag})"
+        );
+        debug!("{command}");
+
+        self.connection
+            .send(command.into_bytes())
+            .await
+            .expect("sending of flag update should succeed");
     }
 }
 
@@ -196,7 +239,7 @@ impl LocalMail {
         // todo: use cached content length (and extend command with content)
         write!(command, " {{{}+}}\r\n", content.len())
             .expect("appending content length to APPEND command should succeed");
-        command.extend(content.into_iter());
+        command.extend(content);
 
         metadata
     }

@@ -109,6 +109,7 @@ impl Connection {
         self.do_send(tag, command).await
     }
 
+    #[expect(dead_code)] // todo: use in IDLE
     pub async fn send_continuation(&mut self, data: Vec<u8>) -> SendReturnValue {
         self.do_send(String::new(), data).await
     }

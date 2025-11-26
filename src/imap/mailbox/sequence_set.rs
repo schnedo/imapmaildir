@@ -80,23 +80,22 @@ impl From<&imap_proto::UidSetMember> for SequenceRange {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Default)]
 #[error("No numbers in sequence set")]
 pub struct EmptySetError {}
 
+#[derive(Default, Debug)]
 pub struct SequenceSetBuilder {
     nums: HashSet<Uid>,
 }
 
 impl SequenceSetBuilder {
-    pub fn new() -> Self {
-        Self {
-            nums: HashSet::new(),
-        }
-    }
-
     pub fn add(&mut self, uid: Uid) {
         self.nums.insert(uid);
+    }
+
+    pub fn remove(&mut self, uid: Uid) {
+        self.nums.remove(&uid);
     }
 
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
@@ -128,6 +127,7 @@ impl SequenceSetBuilder {
 
 #[derive(Debug)]
 pub struct SequenceSet {
+    // todo: use nonempty-collections
     ranges: Vec<SequenceRange>,
 }
 
