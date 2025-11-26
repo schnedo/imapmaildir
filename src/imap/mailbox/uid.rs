@@ -1,4 +1,8 @@
-use std::{fmt::Display, num::NonZeroU32, ops::Add};
+use std::{
+    fmt::Display,
+    num::NonZeroU32,
+    ops::{Add, AddAssign},
+};
 
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
@@ -7,17 +11,14 @@ pub struct Uid(NonZeroU32);
 impl Uid {
     pub const MAX: Self = Self(NonZeroU32::MAX);
 
-    pub fn range_inclusive(self, other: Self) -> impl Iterator<Item = Self> {
-        let mut n = self.0.get() - 1;
+    pub fn range_inclusive(self, end: Self) -> UidRangeInclusiveIterator {
+        UidRangeInclusiveIterator::new(self, end)
+    }
+}
 
-        std::iter::from_fn(move || {
-            n += 1;
-            if n > other.0.get() {
-                return None;
-            }
-
-            Some(Uid(n.try_into().expect("n cannot be none here")))
-        })
+impl AddAssign<u32> for Uid {
+    fn add_assign(&mut self, rhs: u32) {
+        self.0 = self.0.saturating_add(rhs);
     }
 }
 
@@ -76,5 +77,37 @@ impl From<Uid> for u32 {
 impl From<&Uid> for u32 {
     fn from(value: &Uid) -> Self {
         value.0.into()
+    }
+}
+
+pub struct UidRangeInclusiveIterator {
+    current: u32,
+    end: u32,
+}
+
+impl UidRangeInclusiveIterator {
+    fn new(start: Uid, end: Uid) -> Self {
+        debug_assert!(
+            start <= end,
+            "inclusive range end should be larger than start"
+        );
+        Self {
+            current: start.0.get() - 1,
+            end: end.0.get(),
+        }
+    }
+}
+
+impl Iterator for UidRangeInclusiveIterator {
+    type Item = Uid;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current == self.end {
+            None
+        } else {
+            self.current += 1;
+
+            Some(self.current.try_into().expect("n cannot be none here"))
+        }
     }
 }

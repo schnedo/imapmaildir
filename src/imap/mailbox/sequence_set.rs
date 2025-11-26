@@ -5,7 +5,7 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::imap::Uid;
+use crate::imap::{Uid, mailbox::uid::UidRangeInclusiveIterator};
 
 #[derive(Debug)]
 pub struct SequenceRange {
@@ -26,13 +26,23 @@ impl SequenceRange {
             end: Some(end),
         }
     }
-    pub fn iter(&self) -> impl Iterator<Item = Uid> {
+    pub fn iter(&self) -> UidRangeInclusiveIterator {
         let to = self.end.unwrap_or(self.start);
 
         self.start.range_inclusive(to)
     }
     fn end(&self) -> Uid {
         self.end.unwrap_or(self.start)
+    }
+}
+
+impl IntoIterator for SequenceRange {
+    type Item = Uid;
+
+    type IntoIter = UidRangeInclusiveIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 

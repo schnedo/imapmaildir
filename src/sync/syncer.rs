@@ -109,8 +109,9 @@ impl Syncer {
         mailbox: &str,
         maildir_repository: &MaildirRepository,
     ) {
-        for new_mail in local_changes.news {
-            let (metadata, uid) = client.store(mailbox, new_mail).await.unpack();
+        let mailinfos = client.store(mailbox, local_changes.news.into_iter()).await;
+        for info in mailinfos {
+            let (metadata, uid) = info.unpack();
             maildir_repository.add_synced(metadata, uid).await;
         }
     }

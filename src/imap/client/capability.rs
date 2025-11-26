@@ -12,6 +12,7 @@ pub enum Capability {
     Idle,      // rfc2177
     Imap4rev1,
     LiteralPlus, // rfc7888
+    Multiappend, // rfc3502
     QResync,     // rfc7162
     UidPlus,     // rfc4315
 }
@@ -42,6 +43,9 @@ impl Capabilities {
                 }
                 "LITERAL+" => {
                     self.capabilities.insert(Capability::LiteralPlus);
+                }
+                "MULTIAPPEND" => {
+                    self.capabilities.insert(Capability::Multiappend);
                 }
                 "QRESYNC" => {
                     self.capabilities.insert(Capability::QResync);

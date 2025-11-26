@@ -1,4 +1,4 @@
-use std::fmt::Write as _;
+use std::io::Write as _;
 use std::mem::transmute;
 
 use log::{debug, info, trace};
@@ -131,20 +131,36 @@ impl SelectedClient {
         self.fetch_mail(&SequenceSet::all()).await;
     }
 
-    // todo: use rfc3502 MULTIAPPEND
-    pub async fn store(&mut self, mailbox: &str, mail: LocalMail) -> StoredMailInfo {
-        let mut command = format!("APPEND {mailbox}");
-        if let Some(flags) = Flag::format(mail.metadata().flags()) {
-            write!(command, " ({flags})")
-                .expect("appending formatted flags to APPEND command should succeed");
-        }
-        let (metadata, content) = mail.unpack();
-        // todo: use cached content length (and extend command with content)
-        write!(command, " {{{}+}}\r\n", content.len())
-            .expect("appending content length to APPEND command should succeed");
+    pub async fn store(
+        &mut self,
+        mailbox: &str,
+        mails: impl Iterator<Item = LocalMail>,
+    ) -> impl Iterator<Item = StoredMailInfo> {
+        let command = format!("APPEND {mailbox}");
         debug!("{command}");
         let mut command = command.into_bytes();
-        command.extend(content.into_iter());
+        let initial_length = command.len();
+
+        let size_hint = mails.size_hint();
+        let mut metadatas = Vec::with_capacity(size_hint.1.unwrap_or(size_hint.0));
+
+        for mail in mails {
+            if let Some(flags) = Flag::format(mail.metadata().flags()) {
+                write!(command, " ({flags})")
+                    .expect("appending formatted flags to APPEND command should succeed");
+            }
+            let (metadata, content) = mail.unpack();
+            metadatas.push(metadata);
+            // todo: use cached content length (and extend command with content)
+            write!(command, " {{{}+}}\r\n", content.len())
+                .expect("appending content length to APPEND command should succeed");
+            command.extend(content.into_iter());
+        }
+        debug_assert!(
+            command.len() > initial_length,
+            "there should be mails when trying to append to mailbox"
+        );
+
         let response = self
             .connection
             .send(command)
@@ -154,16 +170,12 @@ impl SelectedClient {
         if let Some(code) = response.unsafe_get_tagged_response_code() {
             if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
                 let uid_ranges: Vec<SequenceRange> =
-                    uid_set_members.iter().map(Into::into).collect();
-                StoredMailInfo::new(
-                    metadata,
-                    uid_ranges
-                        .first()
-                        .expect("there should be a new uid range")
-                        .iter()
-                        .next()
-                        .expect("there should be a new uid"),
-                )
+                    uid_set_members.iter().map(SequenceRange::from).collect();
+                uid_ranges
+                    .into_iter()
+                    .flat_map(SequenceRange::into_iter)
+                    .zip(metadatas.into_iter())
+                    .map(|(uid, metadata)| StoredMailInfo::new(metadata, uid))
             } else {
                 unreachable!("response code of APPEND should be AppendUid")
             }

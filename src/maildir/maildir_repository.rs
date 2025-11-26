@@ -32,6 +32,7 @@ pub struct LocalChanges {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
+    // todo: different struct for new local mail that has no uid yet
     uid: Option<Uid>,
     flags: BitFlags<Flag>,
     fileprefix: String,
