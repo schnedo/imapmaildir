@@ -200,4 +200,9 @@ impl LocalMail {
 
         metadata
     }
+
+    pub async fn update(&mut self, updates: impl Iterator<Item = LocalMailMetadata>) {
+        // let command = format!("UID STORE {} FLAGS.SILENT ({})", SequenceSet::from(updates),);
+        todo!()
+    }
 }

@@ -13,6 +13,7 @@ pub use mailbox::Mailbox;
 pub use mailbox::ModSeq;
 pub use mailbox::RemoteMail;
 pub use mailbox::RemoteMailMetadata;
+pub use mailbox::SequenceSet;
 pub use mailbox::SequenceSetBuilder;
 pub use mailbox::Uid;
 pub use mailbox::UidValidity;

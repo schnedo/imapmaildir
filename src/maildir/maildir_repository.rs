@@ -1,6 +1,6 @@
 use rustix::system::uname;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
     path::Path,
     process,
@@ -14,7 +14,7 @@ use log::trace;
 use tokio::sync::mpsc;
 
 use crate::{
-    imap::{ModSeq, RemoteMail, RemoteMailMetadata, Uid, UidValidity},
+    imap::{ModSeq, RemoteMail, RemoteMailMetadata, SequenceSetBuilder, Uid, UidValidity},
     maildir::maildir::LocalMail,
     state::State,
     sync::Flag,
@@ -22,12 +22,71 @@ use crate::{
 
 use super::Maildir;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+pub struct LocalFlagChanges {
+    additional_flags: HashMap<Flag, SequenceSetBuilder>,
+    removed_flags: HashMap<Flag, SequenceSetBuilder>,
+}
+
+impl LocalFlagChanges {
+    pub fn remove() {}
+}
+
+#[derive(Default)]
+struct LocalFlagChangesBuilder {
+    additional_flags: HashMap<Flag, SequenceSetBuilder>,
+    removed_flags: HashMap<Flag, SequenceSetBuilder>,
+}
+
+impl LocalFlagChangesBuilder {
+    fn build(self) -> LocalFlagChanges {
+        LocalFlagChanges {
+            additional_flags: self.additional_flags,
+            removed_flags: self.removed_flags,
+        }
+    }
+    fn insert_into(map: &mut HashMap<Flag, SequenceSetBuilder>, flag: Flag, uid: Uid) {
+        if let Some(set) = map.get_mut(&flag) {
+            set.add(uid);
+        } else {
+            let mut set = SequenceSetBuilder::default();
+            set.add(uid);
+            map.insert(flag, set);
+        }
+    }
+
+    fn insert_additional(&mut self, flag: Flag, uid: Uid) {
+        Self::insert_into(&mut self.additional_flags, flag, uid);
+    }
+
+    fn insert_removed(&mut self, flag: Flag, uid: Uid) {
+        Self::insert_into(&mut self.removed_flags, flag, uid);
+    }
+
+    fn remove_from(map: &mut HashMap<Flag, SequenceSetBuilder>, uid: Uid) {
+        for set in map.values_mut() {
+            set.remove(uid);
+            todo!("more removal")
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct LocalChanges {
-    pub updates: Vec<LocalMailMetadata>,
+    pub updates: LocalFlagChanges,
     // todo: use sequence set
     pub deletions: Vec<Uid>,
     pub news: Vec<LocalMail>,
+}
+
+impl LocalChanges {
+    fn new(deletions: Vec<Uid>, news: Vec<LocalMail>, updates: LocalFlagChanges) -> Self {
+        Self {
+            updates,
+            deletions,
+            news,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -243,7 +302,8 @@ impl MaildirRepository {
     }
 
     pub async fn detect_changes(&self) -> LocalChanges {
-        let mut changes = LocalChanges::default();
+        let mut deletions = Vec::new();
+        let mut news = Vec::new();
         let maildir_metadata = self.maildir.list_cur();
 
         let mut maildir_mails = HashMap::new();
@@ -252,29 +312,35 @@ impl MaildirRepository {
             if let Some(uid) = metadata.uid() {
                 maildir_mails.insert(uid, metadata);
             } else {
-                changes.news.push(self.maildir.read(metadata));
+                news.push(self.maildir.read(metadata));
             }
         }
 
+        let mut updates = LocalFlagChangesBuilder::default();
         self.state
             .for_each(|entry| {
-                if let Some(data) = maildir_mails
-                    .remove(&entry.uid().expect("all mails in state should have a uid"))
-                {
-                    if data.flags() != entry.flags() {
-                        changes.updates.push(data);
+                let uid = entry.uid().expect("all mails in state should have a uid");
+                if let Some(data) = maildir_mails.remove(&uid) {
+                    let mut additional_flags = data.flags();
+                    additional_flags.remove(entry.flags());
+                    for flag in additional_flags {
+                        updates.insert_additional(flag, uid);
+                    }
+                    let mut removed_flags = entry.flags();
+                    removed_flags.remove(data.flags());
+                    for flag in removed_flags {
+                        updates.insert_removed(flag, uid);
                     }
                 } else {
-                    changes
-                        .deletions
-                        .push(entry.uid().expect("uid should exist here"));
+                    deletions.push(entry.uid().expect("uid should exist here"));
                 }
             })
             .await;
         for maildata in maildir_mails.into_values() {
-            changes.news.push(self.maildir.read(maildata));
+            // todo: return Iterator and chain here
+            news.push(self.maildir.read(maildata));
         }
 
-        changes
+        LocalChanges::new(deletions, news, updates.build())
     }
 }
