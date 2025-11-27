@@ -134,53 +134,70 @@ impl SelectedClient {
     pub async fn store(
         &mut self,
         mailbox: &str,
-        mails: impl Iterator<Item = LocalMail>,
-    ) -> impl Iterator<Item = StoredMailInfo> {
-        let command = format!("APPEND {mailbox}");
-        debug!("{command}");
-        let mut command = command.into_bytes();
-        let initial_length = command.len();
+        mut mails: impl Iterator<Item = LocalMail>,
+    ) -> mpsc::Receiver<StoredMailInfo> {
+        let (info_tx, mut info_rx) = mpsc::channel(32);
+        if let Some(mail) = mails.next() {
+            let command = format!("APPEND {mailbox}");
+            debug!("{command}");
+            let mut command = command.into_bytes();
 
-        let size_hint = mails.size_hint();
-        let mut metadatas = Vec::with_capacity(size_hint.1.unwrap_or(size_hint.0));
+            let size_hint = mails.size_hint();
+            let mut metadatas = Vec::with_capacity(size_hint.1.unwrap_or(size_hint.0));
+            metadatas.push(mail.append_to(&mut command));
 
-        for mail in mails {
-            if let Some(flags) = Flag::format(mail.metadata().flags()) {
-                write!(command, " ({flags})")
-                    .expect("appending formatted flags to APPEND command should succeed");
+            for mail in mails {
+                metadatas.push(mail.append_to(&mut command));
             }
-            let (metadata, content) = mail.unpack();
-            metadatas.push(metadata);
-            // todo: use cached content length (and extend command with content)
-            write!(command, " {{{}+}}\r\n", content.len())
-                .expect("appending content length to APPEND command should succeed");
-            command.extend(content.into_iter());
-        }
-        debug_assert!(
-            command.len() > initial_length,
-            "there should be mails when trying to append to mailbox"
-        );
 
-        let response = self
-            .connection
-            .send(command)
-            .await
-            .expect("storing new mail should succeed");
+            let response = self
+                .connection
+                .send(command)
+                .await
+                .expect("storing new mail should succeed");
 
-        if let Some(code) = response.unsafe_get_tagged_response_code() {
-            if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
-                let uid_ranges: Vec<SequenceRange> =
-                    uid_set_members.iter().map(SequenceRange::from).collect();
-                uid_ranges
-                    .into_iter()
-                    .flat_map(SequenceRange::into_iter)
-                    .zip(metadatas.into_iter())
-                    .map(|(uid, metadata)| StoredMailInfo::new(metadata, uid))
+            if let Some(code) = response.unsafe_get_tagged_response_code() {
+                if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
+                    let uid_ranges: Vec<SequenceRange> =
+                        uid_set_members.iter().map(SequenceRange::from).collect();
+
+                    tokio::spawn(async move {
+                        futures::future::join_all(
+                            uid_ranges
+                                .into_iter()
+                                .flat_map(SequenceRange::into_iter)
+                                .zip(metadatas.into_iter())
+                                .map(|(uid, metadata)| StoredMailInfo::new(metadata, uid))
+                                .map(|info| info_tx.send(info)),
+                        )
+                        .await
+                    });
+                } else {
+                    unreachable!("response code of APPEND should be AppendUid");
+                }
             } else {
-                unreachable!("response code of APPEND should be AppendUid")
+                unreachable!("response to APPEND should have a response code");
             }
         } else {
-            unreachable!("response to APPEND should have a response code")
+            info_rx.close();
+        };
+
+        info_rx
+    }
+}
+
+impl LocalMail {
+    fn append_to(self, command: &mut Vec<u8>) -> LocalMailMetadata {
+        if let Some(flags) = Flag::format(self.metadata().flags()) {
+            write!(command, " ({flags})")
+                .expect("appending formatted flags to APPEND command should succeed");
         }
+        let (metadata, content) = self.unpack();
+        // todo: use cached content length (and extend command with content)
+        write!(command, " {{{}+}}\r\n", content.len())
+            .expect("appending content length to APPEND command should succeed");
+        command.extend(content.into_iter());
+
+        metadata
     }
 }
