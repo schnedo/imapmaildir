@@ -24,6 +24,7 @@ impl Syncer {
     ) -> JoinHandle<()> {
         let (mail_tx, mut mail_rx) = mpsc::channel(32);
         let (highest_modseq_tx, highest_modseq_rx) = mpsc::channel(32);
+        let (deleted_tx, mut deleted_rx) = mpsc::channel(32);
         let maildir_repository = if let Some(maildir_repository) =
             MaildirRepository::load(account, mailbox, mail_dir, state_dir).await
         {
@@ -32,6 +33,7 @@ impl Syncer {
                 client,
                 mail_tx,
                 highest_modseq_tx,
+                deleted_tx,
                 mailbox,
             )
             .await;
@@ -45,6 +47,7 @@ impl Syncer {
                 state_dir,
                 mail_tx,
                 highest_modseq_tx,
+                deleted_tx,
                 mailbox,
             )
             .await
@@ -53,8 +56,17 @@ impl Syncer {
 
         tokio::spawn(async move {
             debug!("Listening to incoming mail...");
-            while let Some(mail) = mail_rx.recv().await {
-                maildir_repository.store(&mail).await;
+            loop {
+                tokio::select! {
+                    Some(mail) = mail_rx.recv() => {
+                        maildir_repository.store(&mail).await;
+                    }
+                    Some(set) = deleted_rx.recv() => {
+                    for uid in set.iter() {
+                        maildir_repository.delete(uid).await;
+                    }
+                    }
+                }
             }
         })
     }
@@ -64,6 +76,7 @@ impl Syncer {
         client: AuthenticatedClient,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
+        deleted_tx: mpsc::Sender<SequenceSet>,
         mailbox: &str,
     ) {
         let uid_validity = maildir_repository.uid_validity().await;
@@ -78,6 +91,7 @@ impl Syncer {
             .qresync_select(
                 mail_tx,
                 highest_modseq_tx,
+                deleted_tx,
                 mailbox,
                 uid_validity,
                 highest_modseq,
@@ -187,9 +201,12 @@ impl Syncer {
         state_dir: &Path,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
+        deleted_tx: mpsc::Sender<SequenceSet>,
         mailbox: &str,
     ) -> MaildirRepository {
-        let mut selection = client.select(mail_tx, highest_modseq_tx, mailbox).await;
+        let mut selection = client
+            .select(mail_tx, highest_modseq_tx, deleted_tx, mailbox)
+            .await;
 
         let maildir_repository = MaildirRepository::init(
             account,

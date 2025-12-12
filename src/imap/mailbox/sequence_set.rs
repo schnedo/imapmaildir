@@ -179,3 +179,17 @@ impl From<&Vec<RangeInclusive<u32>>> for SequenceSet {
         }
     }
 }
+
+impl TryFrom<&Vec<Uid>> for SequenceSet {
+    type Error = EmptySetError;
+
+    fn try_from(value: &Vec<Uid>) -> std::result::Result<Self, Self::Error> {
+        value
+            .iter()
+            .fold(SequenceSetBuilder::default(), |mut builder, uid| {
+                builder.add(*uid);
+                builder
+            })
+            .build()
+    }
+}

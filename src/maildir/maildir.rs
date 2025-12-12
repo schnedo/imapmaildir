@@ -178,7 +178,16 @@ impl Maildir {
     pub fn delete(&self, entry: &LocalMailMetadata) {
         let file_path = self.cur.join(entry.filename());
         trace!("deleting {}", file_path.display());
-        remove_file(file_path).expect("deletion of file should succeed");
+        match remove_file(&file_path) {
+            Ok(()) => {}
+            Err(e) => {
+                if let std::io::ErrorKind::NotFound = e.kind() {
+                    trace!("{} already gone", &file_path.display());
+                } else {
+                    todo!("handle deletion error {e:?}")
+                }
+            }
+        }
     }
 }
 

@@ -65,11 +65,12 @@ impl AuthenticatedClient {
         self,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
+        deleted_tx: mpsc::Sender<SequenceSet>,
         mailbox: &str,
     ) -> Selection {
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
-        self.do_select(mail_tx, highest_modseq_tx, &command, None)
+        self.do_select(mail_tx, highest_modseq_tx, deleted_tx, &command, None)
             .await
     }
 
@@ -78,6 +79,7 @@ impl AuthenticatedClient {
         mut self,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
+        deleted_tx: mpsc::Sender<SequenceSet>,
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
@@ -90,8 +92,14 @@ impl AuthenticatedClient {
             .expect("enabling qresync should succeed");
         let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
 
-        self.do_select(mail_tx, highest_modseq_tx, &command, Some(uid_validity))
-            .await
+        self.do_select(
+            mail_tx,
+            highest_modseq_tx,
+            deleted_tx,
+            &command,
+            Some(uid_validity),
+        )
+        .await
     }
 
     #[expect(clippy::too_many_lines)]
@@ -99,6 +107,7 @@ impl AuthenticatedClient {
         mut self,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
+        deleted_tx: mpsc::Sender<SequenceSet>,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {
@@ -236,6 +245,7 @@ impl AuthenticatedClient {
             self.untagged_response_receiver,
             mail_tx,
             highest_modseq_tx,
+            deleted_tx,
         );
 
         Selection {

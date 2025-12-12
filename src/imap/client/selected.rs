@@ -42,6 +42,7 @@ impl SelectedClient {
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
         mail_tx: mpsc::Sender<RemoteMail>,
         highest_modseq_tx: mpsc::Sender<ModSeq>,
+        deleted_tx: mpsc::Sender<SequenceSet>,
     ) -> Self {
         assert!(
             capabilities.contains(Capability::LiteralPlus),
@@ -111,6 +112,13 @@ impl SelectedClient {
                             )
                             .await
                             .expect("channel should be open");
+                    }
+                    imap_proto::Response::Vanished { earlier, uids } => {
+                        trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
+                        deleted_tx
+                            .send(uids.into())
+                            .await
+                            .expect("deletion channel should still be open");
                     }
                     _ => {
                         trace!(
@@ -226,6 +234,17 @@ impl SelectedClient {
             .send(command.into_bytes())
             .await
             .expect("sending of flag update should succeed");
+    }
+
+    pub async fn delete(&mut self, highest_modseq: ModSeq, sequence_set: &SequenceSet) {
+        self.add_flag(highest_modseq, Flag::Deleted, sequence_set)
+            .await;
+        let command = format!("UID EXPUNGE {sequence_set}");
+        debug!("{command}");
+        self.connection
+            .send(command.into_bytes())
+            .await
+            .expect("sending uid expunge should succeed");
     }
 }
 

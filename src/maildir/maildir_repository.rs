@@ -107,7 +107,6 @@ impl LocalFlagChangesBuilder {
 pub struct LocalChanges {
     pub highest_modseq: ModSeq,
     pub updates: LocalFlagChangesBuilder,
-    // todo: use sequence set
     pub deletions: Vec<Uid>,
     pub news: Vec<LocalMail>,
 }
