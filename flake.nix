@@ -54,9 +54,13 @@
           devShells.default = pkgs.mkShell {
 
             packages = with pkgs; [
-              rustup
+              cargo
+              clippy
               openssl.dev
               pkg-config
+              rust-analyzer
+              rustc
+              rustfmt
               sqlitebrowser
             ];
 
