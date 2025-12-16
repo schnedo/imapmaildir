@@ -291,13 +291,11 @@ impl MaildirRepository {
         self.state.set_highest_modseq(value).await;
     }
 
-    pub async fn store(&self, mail: &RemoteMail) -> Option<Uid> {
+    pub async fn store(&self, mail: &RemoteMail) {
         trace!("storing mail {mail:?}");
-        if self.update_flags(mail.metadata()).await.is_ok() {
-            None
-        } else {
+        if self.update_flags(mail.metadata()).await.is_err() {
             let metadata = self.maildir.store(mail);
-            self.state.store(metadata).await
+            self.state.store(metadata).await;
         }
     }
 
