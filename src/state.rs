@@ -18,6 +18,17 @@ use crate::{
 
 struct SyncState {
     db: Connection,
+    cached_highest_modseq: ModSeq,
+}
+
+fn get_highest_modseq(db: &Connection) -> ModSeq {
+    db.query_one("select * from pragma_user_version", [], |row| {
+        let modseq: u64 = row.get(0)?;
+        Ok(modseq
+            .try_into()
+            .expect("cached highest modseq should be valid"))
+    })
+    .expect("getting modseq should succeed")
 }
 
 impl SyncState {
@@ -27,7 +38,7 @@ impl SyncState {
         state: Result<Self, Error>,
     ) {
         match state {
-            Ok(db) => {
+            Ok(mut db) => {
                 open_tx
                     .send(Ok(()))
                     .expect("database load channel should send");
@@ -53,7 +64,10 @@ impl SyncState {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        Ok(Self { db })
+        Ok(Self {
+            cached_highest_modseq: get_highest_modseq(&db),
+            db,
+        })
     }
 
     pub fn init(state_file: &Path, uid_validity: UidValidity) -> Result<Self, Error> {
@@ -81,18 +95,26 @@ impl SyncState {
         )
         .expect("uid_validity should be settable");
 
-        Ok(Self { db })
+        Ok(Self {
+            cached_highest_modseq: get_highest_modseq(&db),
+            db,
+        })
+    }
+
+    fn set_highest_modseq(&self, mod_seq: ModSeq) {
+        self.db
+            .pragma_update(None, "user_version", u64::from(mod_seq))
+            .expect("setting modseq should succeed");
     }
 
     #[expect(clippy::too_many_lines)]
-    pub fn run(&self, task: Task) {
+    pub fn run(&mut self, task: Task) {
         match task {
-            Task::SetHighestModseq(value, sender) => {
-                trace!("setting cached highest_modseq {value}");
+            Task::SetHighestModseq(mod_seq, sender) => {
+                trace!("setting cached highest_modseq {mod_seq}");
                 {
-                    self.db
-                        .pragma_update(None, "user_version", u64::from(value))
-                        .expect("setting modseq should succeed");
+                    self.set_highest_modseq(mod_seq);
+                    self.cached_highest_modseq = mod_seq;
                     sender.send(())
                 }
                 .expect("db task return channel should still be open");
@@ -100,16 +122,20 @@ impl SyncState {
             Task::GetHighestModseq(sender) => {
                 trace!("getting cached highest_modseq");
                 sender
-                    .send(
-                        self.db
-                            .query_one("select * from pragma_user_version", [], |row| {
-                                let modseq: u64 = row.get(0)?;
-                                Ok(modseq
-                                    .try_into()
-                                    .expect("cached highest modseq should be valid"))
-                            })
-                            .expect("getting modseq should succeed"),
-                    )
+                    .send(self.cached_highest_modseq)
+                    .expect("db task return channel should still be open");
+            }
+            Task::UpdateHighedtModseq(mod_seq, sender) => {
+                trace!(
+                    "Check for updating highest_modseq {:?} with {mod_seq:?}",
+                    self.cached_highest_modseq
+                );
+                if mod_seq > self.cached_highest_modseq {
+                    self.set_highest_modseq(mod_seq);
+                    self.cached_highest_modseq = mod_seq;
+                }
+                sender
+                    .send(())
                     .expect("db task return channel should still be open");
             }
             Task::GetAll(sender) => {
@@ -228,6 +254,7 @@ impl Drop for SyncState {
 enum Task {
     SetHighestModseq(ModSeq, oneshot::Sender<()>),
     GetHighestModseq(oneshot::Sender<ModSeq>),
+    UpdateHighedtModseq(ModSeq, oneshot::Sender<()>),
     GetAll(oneshot::Sender<Vec<LocalMailMetadata>>),
     DeleteByUid(Uid, oneshot::Sender<()>),
     GetByUid(Uid, oneshot::Sender<Option<LocalMailMetadata>>),
@@ -301,10 +328,14 @@ impl State {
     }
 
     pub async fn update_highest_modseq(&self, value: ModSeq) {
-        // todo: think about using cached highest_modseq and maybe mutex
-        if value > self.highest_modseq().await {
-            self.set_highest_modseq(value).await;
-        }
+        trace!("updating highest_modseq");
+        let (tx, rx) = oneshot::channel();
+        self.task_tx
+            .send(Task::UpdateHighedtModseq(value, tx))
+            .await
+            .expect("sending GetUidValidity task should succeed");
+        rx.await
+            .expect("receiving GetUidValidity response should succeed");
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {
