@@ -52,9 +52,6 @@ impl SyncState {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
-        // todo: move this into shutdown logic
-        db.execute("pragma optimize;", [])
-            .expect("sqlite should be optimizable");
 
         Ok(Self { db })
     }
@@ -216,6 +213,14 @@ impl SyncState {
                     .expect("db task return channel should still be open");
             }
         }
+    }
+}
+
+impl Drop for SyncState {
+    fn drop(&mut self) {
+        self.db
+            .execute("pragma optimize;", [])
+            .expect("sqlite should be optimizable");
     }
 }
 
