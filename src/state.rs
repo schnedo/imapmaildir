@@ -246,8 +246,7 @@ impl State {
         let (open_tx, open_rx) = oneshot::channel();
         let (task_tx, task_rx) = mpsc::channel::<Task>(32);
 
-        // todo: use thread::spawn
-        tokio::task::spawn_blocking(move || SyncState::create(open_tx, task_rx, state));
+        std::thread::spawn(move || SyncState::create(open_tx, task_rx, state));
 
         open_rx
             .await
