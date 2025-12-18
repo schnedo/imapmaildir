@@ -26,6 +26,15 @@ fn get_highest_modseq(db: &Connection) -> ModSeq {
     .expect("getting modseq should succeed")
 }
 
+fn get_state_version(db: &Connection) -> u32 {
+    db.query_one("select state_version from maildir_info", [], |row| {
+        row.get(0)
+    })
+    .expect("stored state version should be gettable")
+}
+
+const CURRENT_VERSION: u32 = 1;
+
 #[derive(Clone)]
 pub struct State {
     db: Arc<Mutex<Connection>>,
@@ -55,6 +64,10 @@ impl State {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
+        if get_state_version(&db) != CURRENT_VERSION {
+            todo!("handle state version mismatch")
+        }
+
         Ok(Self::new(db))
     }
 
@@ -76,18 +89,19 @@ impl State {
                 flags integer not null,
                 fileprefix text not null
             ) strict;
-            create table uid_validity (
-                uid_validity integer primary key
+            create table maildir_info (
+                uid_validity integer primary key,
+                state_version integer not null
             ) strict;
             pragma optimize;",
         )
         .expect("creation of tables should succeed");
         trace!("setting cached uid_validity {uid_validity}");
         db.execute(
-            "insert or ignore into uid_validity (uid_validity) values (?1)",
-            [u32::from(uid_validity)],
+            "insert or ignore into maildir_info (state_version, uid_validity) values (?1, ?2)",
+            [CURRENT_VERSION, u32::from(uid_validity)],
         )
-        .expect("uid_validity should be settable");
+        .expect("maildir_info should be settable");
 
         Ok(Self::new(db))
     }
@@ -114,7 +128,7 @@ impl State {
         self.db
             .lock()
             .expect("should be able to acquire db lock")
-            .query_one("select * from uid_validity", (), |row| {
+            .query_one("select uid_validity from maildir_info", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity
                     .try_into()
