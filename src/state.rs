@@ -3,12 +3,13 @@ use std::{
     fmt::Debug,
     fs::create_dir_all,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use enumflags2::BitFlag;
 use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::{
     imap::{ModSeq, Uid, UidValidity},
@@ -18,7 +19,6 @@ use crate::{
 
 struct SyncState {
     db: Connection,
-    cached_highest_modseq: ModSeq,
 }
 
 fn get_highest_modseq(db: &Connection) -> ModSeq {
@@ -32,23 +32,9 @@ fn get_highest_modseq(db: &Connection) -> ModSeq {
 }
 
 impl SyncState {
-    fn create(
-        open_tx: oneshot::Sender<Result<(), Error>>,
-        mut task_rx: mpsc::Receiver<Task>,
-        state: Result<Self, Error>,
-    ) {
-        match state {
-            Ok(mut db) => {
-                open_tx
-                    .send(Ok(()))
-                    .expect("database load channel should send");
-                while let Some(task) = task_rx.blocking_recv() {
-                    db.run(task);
-                }
-            }
-            Err(e) => open_tx
-                .send(Err(e))
-                .expect("database load channel should send"),
+    fn create(mut task_rx: mpsc::Receiver<Task>, mut state: Self) {
+        while let Some(task) = task_rx.blocking_recv() {
+            state.run(task);
         }
     }
 
@@ -64,10 +50,7 @@ impl SyncState {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        Ok(Self {
-            cached_highest_modseq: get_highest_modseq(&db),
-            db,
-        })
+        Ok(Self { db })
     }
 
     pub fn init(state_file: &Path, uid_validity: UidValidity) -> Result<Self, Error> {
@@ -75,7 +58,7 @@ impl SyncState {
         let db = Connection::open(state_file)?;
         db.execute_batch(
             "pragma journal_mode=wal;
-            pragma user_version=0;
+            pragma user_version=1;
             pragma synchronous=1;
             create table mail_metadata (
                 uid integer primary key,
@@ -95,10 +78,7 @@ impl SyncState {
         )
         .expect("uid_validity should be settable");
 
-        Ok(Self {
-            cached_highest_modseq: get_highest_modseq(&db),
-            db,
-        })
+        Ok(Self { db })
     }
 
     fn set_highest_modseq(&self, mod_seq: ModSeq) {
@@ -114,7 +94,6 @@ impl SyncState {
                 trace!("setting cached highest_modseq {mod_seq}");
                 {
                     self.set_highest_modseq(mod_seq);
-                    self.cached_highest_modseq = mod_seq;
                     sender.send(())
                 }
                 .expect("db task return channel should still be open");
@@ -122,20 +101,7 @@ impl SyncState {
             Task::GetHighestModseq(sender) => {
                 trace!("getting cached highest_modseq");
                 sender
-                    .send(self.cached_highest_modseq)
-                    .expect("db task return channel should still be open");
-            }
-            Task::UpdateHighedtModseq(mod_seq, sender) => {
-                trace!(
-                    "Check for updating highest_modseq {:?} with {mod_seq:?}",
-                    self.cached_highest_modseq
-                );
-                if mod_seq > self.cached_highest_modseq {
-                    self.set_highest_modseq(mod_seq);
-                    self.cached_highest_modseq = mod_seq;
-                }
-                sender
-                    .send(())
+                    .send(get_highest_modseq(&self.db))
                     .expect("db task return channel should still be open");
             }
             Task::GetAll(sender) => {
@@ -254,7 +220,6 @@ impl Drop for SyncState {
 enum Task {
     SetHighestModseq(ModSeq, oneshot::Sender<()>),
     GetHighestModseq(oneshot::Sender<ModSeq>),
-    UpdateHighedtModseq(ModSeq, oneshot::Sender<()>),
     GetAll(oneshot::Sender<Vec<LocalMailMetadata>>),
     DeleteByUid(Uid, oneshot::Sender<()>),
     GetByUid(Uid, oneshot::Sender<Option<LocalMailMetadata>>),
@@ -266,20 +231,25 @@ enum Task {
 #[derive(Clone)]
 pub struct State {
     task_tx: mpsc::Sender<Task>,
+    cached_highest_modseq: Arc<Mutex<ModSeq>>,
 }
 
 impl State {
     async fn new(state: Result<SyncState, Error>) -> Result<Self, Error> {
-        let (open_tx, open_rx) = oneshot::channel();
-        let (task_tx, task_rx) = mpsc::channel::<Task>(32);
-
-        std::thread::spawn(move || SyncState::create(open_tx, task_rx, state));
-
-        open_rx
+        let mut state = state?;
+        let (tx, rx) = oneshot::channel();
+        state.run(Task::GetHighestModseq(tx));
+        let cached_highest_modseq = rx
             .await
-            .expect("database load channel should receive")?;
+            .expect("requesting initial highest modseq should succeed");
 
-        Ok(Self { task_tx })
+        let (task_tx, task_rx) = mpsc::channel::<Task>(32);
+        std::thread::spawn(move || SyncState::create(task_rx, state));
+
+        Ok(Self {
+            task_tx,
+            cached_highest_modseq: Arc::new(Mutex::new(cached_highest_modseq)),
+        })
     }
 
     pub async fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
@@ -304,7 +274,7 @@ impl State {
 
         tokio::spawn(async move {
             while let Some(highest_modseq) = highest_modseq_rx.recv().await {
-                state.update_highest_modseq(highest_modseq).await;
+                state.set_highest_modseq(highest_modseq).await;
             }
         });
     }
@@ -328,14 +298,21 @@ impl State {
     }
 
     pub async fn update_highest_modseq(&self, value: ModSeq) {
-        trace!("updating highest_modseq");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::UpdateHighedtModseq(value, tx))
-            .await
-            .expect("sending GetUidValidity task should succeed");
-        rx.await
-            .expect("receiving GetUidValidity response should succeed");
+        trace!(
+            "check for updating highest_modseq {:?} with {value:?}",
+            self.cached_highest_modseq
+        );
+        let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
+        if value > *cached_highest_modseq {
+            let (tx, rx) = oneshot::channel();
+            self.task_tx
+                .send(Task::SetHighestModseq(value, tx))
+                .await
+                .expect("sending GetUidValidity task should succeed");
+            rx.await
+                .expect("receiving GetUidValidity response should succeed");
+            *cached_highest_modseq = value;
+        }
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {

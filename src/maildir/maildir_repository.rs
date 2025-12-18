@@ -131,6 +131,7 @@ impl LocalChanges {
 pub struct LocalMailMetadata {
     // todo: different struct for new local mail that has no uid yet
     uid: Option<Uid>,
+    // todo: add modseq to handle highest_modseq transactional
     flags: BitFlags<Flag>,
     fileprefix: String,
 }
@@ -293,6 +294,7 @@ impl MaildirRepository {
 
     pub async fn store(&self, mail: &RemoteMail) {
         trace!("storing mail {mail:?}");
+        // todo: check if update is necessary
         if self.update_flags(mail.metadata()).await.is_err() {
             let metadata = self.maildir.store(mail);
             self.state.store(metadata).await;
