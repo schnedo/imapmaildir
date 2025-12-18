@@ -26,7 +26,7 @@ impl Syncer {
         let (highest_modseq_tx, highest_modseq_rx) = mpsc::channel(32);
         let (deleted_tx, mut deleted_rx) = mpsc::channel(32);
         let maildir_repository = if let Some(maildir_repository) =
-            MaildirRepository::load(account, mailbox, mail_dir, state_dir).await
+            MaildirRepository::load(account, mailbox, mail_dir, state_dir)
         {
             Self::sync_existing(
                 &maildir_repository,
@@ -59,11 +59,11 @@ impl Syncer {
             loop {
                 tokio::select! {
                     Some(mail) = mail_rx.recv() => {
-                        maildir_repository.store(&mail).await;
+                        maildir_repository.store(&mail);
                     }
                     Some(set) = deleted_rx.recv() => {
                     for uid in set.iter() {
-                        maildir_repository.delete(uid).await;
+                        maildir_repository.delete(uid);
                     }
                     }
                 }
@@ -79,8 +79,8 @@ impl Syncer {
         deleted_tx: mpsc::Sender<SequenceSet>,
         mailbox: &str,
     ) {
-        let uid_validity = maildir_repository.uid_validity().await;
-        let highest_modseq = maildir_repository.highest_modseq().await;
+        let uid_validity = maildir_repository.uid_validity();
+        let highest_modseq = maildir_repository.highest_modseq();
 
         let Selection {
             mut client,
@@ -103,7 +103,7 @@ impl Syncer {
             "remote uid validity should be the same as local"
         );
 
-        let mut local_changes = maildir_repository.detect_changes().await;
+        let mut local_changes = maildir_repository.detect_changes();
         Self::handle_conflicts(&remote_changes, &mut local_changes);
 
         Self::handle_remote_changes(
@@ -132,8 +132,8 @@ impl Syncer {
         let mut mailinfos = client.store(mailbox, news.into_iter()).await;
         // todo: parallelize these
         while let Some(info) = mailinfos.recv().await {
-            let (metadata, uid) = info.unpack();
-            maildir_repository.add_synced(metadata, uid).await;
+            let (mut metadata, uid) = info.unpack();
+            maildir_repository.add_synced(&mut metadata, uid);
         }
         let updates = updates.build();
         for (flag, sequence_set) in updates.removed_flags() {
@@ -155,22 +155,20 @@ impl Syncer {
     ) {
         if let Some(set) = &remote_changes.deletions {
             for uid in set.iter() {
-                maildir_repository.delete(uid).await;
+                maildir_repository.delete(uid);
             }
         }
 
         let mut sequence_set = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
-            if maildir_repository.update_flags(update).await.is_err() {
+            if maildir_repository.update_flags(update).is_err() {
                 sequence_set.add(update.uid());
             }
         }
         if let Ok(sequence_set) = sequence_set.build() {
             client.fetch_mail(&sequence_set).await;
         }
-        maildir_repository
-            .set_highest_modseq(mailbox_data.highest_modseq())
-            .await;
+        maildir_repository.set_highest_modseq(mailbox_data.highest_modseq());
     }
 
     // todo: add configurable conflict strategy; right now: remote wins
@@ -214,12 +212,9 @@ impl Syncer {
             selection.mailbox_data.uid_validity(),
             mail_dir,
             state_dir,
-        )
-        .await;
+        );
         selection.client.fetch_all().await;
-        maildir_repository
-            .set_highest_modseq(selection.mailbox_data.highest_modseq())
-            .await;
+        maildir_repository.set_highest_modseq(selection.mailbox_data.highest_modseq());
 
         maildir_repository
     }

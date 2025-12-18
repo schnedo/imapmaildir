@@ -1,25 +1,20 @@
 use std::{
     convert::Into,
-    fmt::Debug,
     fs::create_dir_all,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use enumflags2::BitFlag;
 use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::{
     imap::{ModSeq, Uid, UidValidity},
     maildir::LocalMailMetadata,
     sync::Flag,
 };
-
-struct SyncState {
-    db: Connection,
-}
 
 fn get_highest_modseq(db: &Connection) -> ModSeq {
     db.query_one("select * from pragma_user_version", [], |row| {
@@ -31,14 +26,24 @@ fn get_highest_modseq(db: &Connection) -> ModSeq {
     .expect("getting modseq should succeed")
 }
 
-impl SyncState {
-    fn create(mut task_rx: mpsc::Receiver<Task>, mut state: Self) {
-        while let Some(task) = task_rx.blocking_recv() {
-            state.run(task);
+#[derive(Clone)]
+pub struct State {
+    db: Arc<Mutex<Connection>>,
+    cached_highest_modseq: Arc<Mutex<ModSeq>>,
+}
+
+impl State {
+    fn new(db: Connection) -> Self {
+        let cached_highest_modseq = get_highest_modseq(&db);
+
+        Self {
+            db: Arc::new(std::sync::Mutex::new(db)),
+            cached_highest_modseq: Arc::new(Mutex::new(cached_highest_modseq)),
         }
     }
 
-    fn load(state_file: &Path) -> Result<Self, Error> {
+    pub fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
+        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
         debug!(
             "try loading existing state file {}",
             state_file.to_string_lossy()
@@ -50,10 +55,16 @@ impl SyncState {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        Ok(Self { db })
+        Ok(Self::new(db))
     }
 
-    pub fn init(state_file: &Path, uid_validity: UidValidity) -> Result<Self, Error> {
+    pub fn init(
+        state_dir: &Path,
+        account: &str,
+        mailbox: &str,
+        uid_validity: UidValidity,
+    ) -> Result<Self, Error> {
+        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
         debug!("creating new state file {}", state_file.to_string_lossy());
         let db = Connection::open(state_file)?;
         db.execute_batch(
@@ -78,195 +89,7 @@ impl SyncState {
         )
         .expect("uid_validity should be settable");
 
-        Ok(Self { db })
-    }
-
-    fn set_highest_modseq(&self, mod_seq: ModSeq) {
-        self.db
-            .pragma_update(None, "user_version", u64::from(mod_seq))
-            .expect("setting modseq should succeed");
-    }
-
-    #[expect(clippy::too_many_lines)]
-    pub fn run(&mut self, task: Task) {
-        match task {
-            Task::SetHighestModseq(mod_seq, sender) => {
-                trace!("setting cached highest_modseq {mod_seq}");
-                {
-                    self.set_highest_modseq(mod_seq);
-                    sender.send(())
-                }
-                .expect("db task return channel should still be open");
-            }
-            Task::GetHighestModseq(sender) => {
-                trace!("getting cached highest_modseq");
-                sender
-                    .send(get_highest_modseq(&self.db))
-                    .expect("db task return channel should still be open");
-            }
-            Task::GetAll(sender) => {
-                trace!("getting all stored mail metadata");
-                let mut stmt = self
-                    .db
-                    .prepare_cached("select uid,flags,fileprefix from mail_metadata;")
-                    .expect("select all mail_metadata should be preparable");
-                sender
-                    .send(
-                        stmt.query_map([], |row| LocalMailMetadata::try_from(row))
-                            .expect("all metadata should be selectable")
-                            .map(|maybe_row| {
-                                maybe_row
-                                    .expect("local mail metadata should be buildable from db row")
-                            })
-                            .collect(),
-                    )
-                    .expect("db task return channel should still be open");
-            }
-            Task::DeleteByUid(uid, sender) => {
-                trace!("deleting {uid:?}");
-                let mut stmt = self
-                    .db
-                    .prepare_cached("delete from mail_metadata where uid = ?1")
-                    .expect("deletion of existing mails should be preparable");
-                stmt.execute([u32::from(uid)])
-                    .expect("deletion of existing mail should succeed");
-
-                sender
-                    .send(())
-                    .expect("db task return channel should still be open");
-            }
-            Task::GetByUid(uid, sender) => {
-                trace!("get existing metadata with {uid:?}");
-                let mut stmt = self
-                    .db
-                    .prepare_cached("select * from mail_metadata where uid = ?1")
-                    .expect("selection of existing mails should be preparable");
-                sender
-                    .send(
-                        stmt.query_one([u32::from(uid)], |row| {
-                            Ok(row.try_into().expect("stateentry should be parsable"))
-                        })
-                        .optional()
-                        .expect("existing matadata should be queryable"),
-                    )
-                    .expect("db task return channel should still be open");
-            }
-            Task::Store(local_mail_metadata, sender) => {
-                trace!("storing mail cache {local_mail_metadata:?}");
-                let uid = local_mail_metadata
-                    .uid()
-                    .expect("stored mail should have uid");
-                let mut stmt = self
-                    .db
-                    .prepare_cached(
-                        "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
-                    )
-                    .expect("preparation of cached insert mail metadata should succeed");
-                stmt.execute((
-                    u32::from(uid),
-                    local_mail_metadata.flags().bits(),
-                    &local_mail_metadata.fileprefix(),
-                ))
-                .expect("storing mail should succeed");
-
-                sender
-                    .send(())
-                    .expect("db task return channel should still be open");
-            }
-            Task::Update(local_mail_metadata, sender) => {
-                trace!("updating mail cache {local_mail_metadata:?}");
-                let mut stmt = self
-                    .db
-                    .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
-                    .expect("preparation of cached update mail statement should succeed");
-                stmt.execute((
-                    local_mail_metadata.flags().bits(),
-                    local_mail_metadata.uid().map_or(0, Into::into),
-                ))
-                .expect("updating metadata should succeed");
-                sender
-                    .send(())
-                    .expect("db task return channel should still be open");
-            }
-            Task::GetUidValidity(sender) => {
-                trace!("getting cached uid_validity");
-                sender
-                    .send(
-                        self.db
-                            .query_one("select * from uid_validity", (), |row| {
-                                let validity: u32 = row.get(0)?;
-                                let validity = validity
-                                    .try_into()
-                                    .expect("cached uid validity should be spec compliant");
-                                Ok(validity)
-                            })
-                            .expect("uid_validity should be selectable"),
-                    )
-                    .expect("db task return channel should still be open");
-            }
-        }
-    }
-}
-
-impl Drop for SyncState {
-    fn drop(&mut self) {
-        self.db
-            .execute("pragma optimize;", [])
-            .expect("sqlite should be optimizable");
-    }
-}
-
-#[derive(Debug)]
-enum Task {
-    SetHighestModseq(ModSeq, oneshot::Sender<()>),
-    GetHighestModseq(oneshot::Sender<ModSeq>),
-    GetAll(oneshot::Sender<Vec<LocalMailMetadata>>),
-    DeleteByUid(Uid, oneshot::Sender<()>),
-    GetByUid(Uid, oneshot::Sender<Option<LocalMailMetadata>>),
-    Store(LocalMailMetadata, oneshot::Sender<()>),
-    Update(LocalMailMetadata, oneshot::Sender<()>),
-    GetUidValidity(oneshot::Sender<UidValidity>),
-}
-
-#[derive(Clone)]
-pub struct State {
-    task_tx: mpsc::Sender<Task>,
-    cached_highest_modseq: Arc<Mutex<ModSeq>>,
-}
-
-impl State {
-    async fn new(state: Result<SyncState, Error>) -> Result<Self, Error> {
-        let mut state = state?;
-        let (tx, rx) = oneshot::channel();
-        state.run(Task::GetHighestModseq(tx));
-        let cached_highest_modseq = rx
-            .await
-            .expect("requesting initial highest modseq should succeed");
-
-        let (task_tx, task_rx) = mpsc::channel::<Task>(32);
-        std::thread::spawn(move || SyncState::create(task_rx, state));
-
-        Ok(Self {
-            task_tx,
-            cached_highest_modseq: Arc::new(Mutex::new(cached_highest_modseq)),
-        })
-    }
-
-    pub async fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
-
-        Self::new(SyncState::load(&state_file)).await
-    }
-
-    pub async fn init(
-        state_dir: &Path,
-        account: &str,
-        mailbox: &str,
-        uid_validity: UidValidity,
-    ) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
-
-        Self::new(SyncState::init(&state_file, uid_validity)).await
+        Ok(Self::new(db))
     }
 
     pub fn handle_highest_modseq(&self, mut highest_modseq_rx: mpsc::Receiver<ModSeq>) {
@@ -274,7 +97,7 @@ impl State {
 
         tokio::spawn(async move {
             while let Some(highest_modseq) = highest_modseq_rx.recv().await {
-                state.set_highest_modseq(highest_modseq).await;
+                state.set_highest_modseq(highest_modseq);
             }
         });
     }
@@ -286,112 +109,135 @@ impl State {
         state_dir
     }
 
-    pub async fn uid_validity(&self) -> UidValidity {
+    pub fn uid_validity(&self) -> UidValidity {
         trace!("getting cached uid_validity");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::GetUidValidity(tx))
-            .await
-            .expect("sending GetUidValidity task should succeed");
-        rx.await
-            .expect("receiving GetUidValidity response should succeed")
+        self.db
+            .lock()
+            .expect("should be able to acquire db lock")
+            .query_one("select * from uid_validity", (), |row| {
+                let validity: u32 = row.get(0)?;
+                let validity = validity
+                    .try_into()
+                    .expect("cached uid validity should be spec compliant");
+                Ok(validity)
+            })
+            .expect("uid_validity should be selectable")
     }
 
-    pub async fn update_highest_modseq(&self, value: ModSeq) {
+    pub fn update_highest_modseq(&self, value: ModSeq) {
         trace!(
             "check for updating highest_modseq {:?} with {value:?}",
             self.cached_highest_modseq
         );
-        let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
+        let mut cached_highest_modseq = self
+            .cached_highest_modseq
+            .lock()
+            .expect("should be able to acquire highest modseq lock");
         if value > *cached_highest_modseq {
-            let (tx, rx) = oneshot::channel();
-            self.task_tx
-                .send(Task::SetHighestModseq(value, tx))
-                .await
-                .expect("sending GetUidValidity task should succeed");
-            rx.await
-                .expect("receiving GetUidValidity response should succeed");
+            self.set_highest_modseq_uncached(value);
             *cached_highest_modseq = value;
         }
     }
 
-    pub async fn set_highest_modseq(&self, value: ModSeq) {
+    fn set_highest_modseq_uncached(&self, value: ModSeq) {
+        trace!("setting highest_modseq {value}");
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        db.pragma_update(None, "user_version", u64::from(value))
+            .expect("setting modseq should succeed");
+    }
+
+    pub fn set_highest_modseq(&self, value: ModSeq) {
         trace!("setting cached highest_modseq {value}");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::SetHighestModseq(value, tx))
-            .await
-            .expect("sending SetHighestModseq task should succeed");
-        rx.await
-            .expect("receiving SetHighestModseq response should succeed");
+        let mut cached_highest_modseq = self
+            .cached_highest_modseq
+            .lock()
+            .expect("should be able to acquire highest modseq lock");
+        self.set_highest_modseq_uncached(value);
+        *cached_highest_modseq = value;
     }
 
-    pub async fn highest_modseq(&self) -> ModSeq {
+    pub fn highest_modseq(&self) -> ModSeq {
         trace!("getting cached highest_modseq");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::GetHighestModseq(tx))
-            .await
-            .expect("sending GetHighestModseq task should succeed");
-        rx.await
-            .expect("receiving GetHighestModseq response should succeed")
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        get_highest_modseq(&db)
     }
 
-    pub async fn update(&self, data: LocalMailMetadata) {
+    pub fn update(&self, data: &LocalMailMetadata) {
         trace!("updating mail cache {data:?}");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::Update(data, tx))
-            .await
-            .expect("sending Update task should succeed");
-        rx.await.expect("receiving Update response should succeed");
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        let mut stmt = db
+            .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
+            .expect("preparation of cached update mail statement should succeed");
+        stmt.execute((data.flags().bits(), data.uid().map_or(0, Into::into)))
+            .expect("updating metadata should succeed");
     }
 
-    pub async fn store(&self, data: LocalMailMetadata) {
+    pub fn store(&self, data: &LocalMailMetadata) {
         trace!("storing mail cache {data:?}");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::Store(data, tx))
-            .await
-            .expect("sending Store task should succeed");
-        rx.await.expect("receiving Store response should succeed");
+        let uid = data.uid().expect("stored mail should have uid");
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        let mut stmt = db
+            .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")
+            .expect("preparation of cached insert mail metadata should succeed");
+        stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))
+            .expect("storing mail should succeed");
     }
 
-    pub async fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
+    pub fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
         trace!("get existing metadata with {uid:?}");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::GetByUid(uid, tx))
-            .await
-            .expect("sending GetByUid task should succeed");
-        rx.await
-            .expect("receiving GetByUid response should succeed")
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        let mut stmt = db
+            .prepare_cached("select * from mail_metadata where uid = ?1")
+            .expect("selection of existing mails should be preparable");
+
+        stmt.query_one([u32::from(uid)], |row| {
+            Ok(row.try_into().expect("stateentry should be parsable"))
+        })
+        .optional()
+        .expect("existing matadata should be queryable")
     }
 
     // todo: delete multiple
-    pub async fn delete_by_id(&self, uid: Uid) {
+    pub fn delete_by_id(&self, uid: Uid) {
         trace!("deleting {uid:?}");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::DeleteByUid(uid, tx))
-            .await
-            .expect("sending DeleteByUid task should succeed");
-        rx.await
-            .expect("receiving DeleteByUid response should succeed");
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        let mut stmt = db
+            .prepare_cached("delete from mail_metadata where uid = ?1")
+            .expect("deletion of existing mails should be preparable");
+        stmt.execute([u32::from(uid)])
+            .expect("deletion of existing mail should succeed");
+    }
+
+    pub fn get_all(&self) -> Vec<LocalMailMetadata> {
+        trace!("getting all stored mail metadata");
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        let mut stmt = db
+            .prepare_cached("select uid,flags,fileprefix from mail_metadata;")
+            .expect("select all mail_metadata should be preparable");
+
+        stmt.query_map([], |row| LocalMailMetadata::try_from(row))
+            .expect("all metadata should be selectable")
+            .map(|maybe_row| {
+                maybe_row.expect("local mail metadata should be buildable from db row")
+            })
+            .collect()
     }
 
     // todo: think about streaming this
-    pub async fn for_each(&self, mut cb: impl FnMut(&LocalMailMetadata)) {
+    pub fn for_each(&self, mut cb: impl FnMut(&LocalMailMetadata)) {
         trace!("consuming all cached mail data");
-        let (tx, rx) = oneshot::channel();
-        self.task_tx
-            .send(Task::GetAll(tx))
-            .await
-            .expect("sending GetAll task should succeed");
-        let rows = rx.await.expect("receiving GetAll response should succeed");
+        let rows = self.get_all();
         for row in rows {
             cb(&row);
         }
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        let db = self.db.lock().expect("should be able to acquire db lock");
+        db.execute("pragma optimize;", [])
+            .expect("sqlite should be optimizable");
     }
 }
 
