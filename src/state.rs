@@ -2,13 +2,13 @@ use std::{
     convert::Into,
     fs::create_dir_all,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use enumflags2::BitFlag;
 use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     imap::{ModSeq, Uid, UidValidity},
@@ -46,7 +46,7 @@ impl State {
         let cached_highest_modseq = get_highest_modseq(&db);
 
         Self {
-            db: Arc::new(std::sync::Mutex::new(db)),
+            db: Arc::new(Mutex::new(db)),
             cached_highest_modseq: Arc::new(Mutex::new(cached_highest_modseq)),
         }
     }
@@ -111,7 +111,7 @@ impl State {
 
         tokio::spawn(async move {
             while let Some(highest_modseq) = highest_modseq_rx.recv().await {
-                state.set_highest_modseq(highest_modseq);
+                state.set_highest_modseq(highest_modseq).await;
             }
         });
     }
@@ -123,11 +123,11 @@ impl State {
         state_dir
     }
 
-    pub fn uid_validity(&self) -> UidValidity {
+    pub async fn uid_validity(&self) -> UidValidity {
         trace!("getting cached uid_validity");
         self.db
             .lock()
-            .expect("should be able to acquire db lock")
+            .await
             .query_one("select uid_validity from maildir_info", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity
@@ -138,47 +138,41 @@ impl State {
             .expect("uid_validity should be selectable")
     }
 
-    pub fn update_highest_modseq(&self, value: ModSeq) {
+    pub async fn update_highest_modseq(&self, value: ModSeq) {
         trace!(
             "check for updating highest_modseq {:?} with {value:?}",
             self.cached_highest_modseq
         );
-        let mut cached_highest_modseq = self
-            .cached_highest_modseq
-            .lock()
-            .expect("should be able to acquire highest modseq lock");
+        let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
         if value > *cached_highest_modseq {
-            self.set_highest_modseq_uncached(value);
+            self.set_highest_modseq_uncached(value).await;
             *cached_highest_modseq = value;
         }
     }
 
-    fn set_highest_modseq_uncached(&self, value: ModSeq) {
+    async fn set_highest_modseq_uncached(&self, value: ModSeq) {
         trace!("setting highest_modseq {value}");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         db.pragma_update(None, "user_version", u64::from(value))
             .expect("setting modseq should succeed");
     }
 
-    pub fn set_highest_modseq(&self, value: ModSeq) {
+    pub async fn set_highest_modseq(&self, value: ModSeq) {
         trace!("setting cached highest_modseq {value}");
-        let mut cached_highest_modseq = self
-            .cached_highest_modseq
-            .lock()
-            .expect("should be able to acquire highest modseq lock");
-        self.set_highest_modseq_uncached(value);
+        let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
+        self.set_highest_modseq_uncached(value).await;
         *cached_highest_modseq = value;
     }
 
-    pub fn highest_modseq(&self) -> ModSeq {
+    pub async fn highest_modseq(&self) -> ModSeq {
         trace!("getting cached highest_modseq");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         get_highest_modseq(&db)
     }
 
-    pub fn update(&self, data: &LocalMailMetadata) {
+    pub async fn update(&self, data: &LocalMailMetadata) {
         trace!("updating mail cache {data:?}");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
             .expect("preparation of cached update mail statement should succeed");
@@ -186,10 +180,10 @@ impl State {
             .expect("updating metadata should succeed");
     }
 
-    pub fn store(&self, data: &LocalMailMetadata) {
+    pub async fn store(&self, data: &LocalMailMetadata) {
         trace!("storing mail cache {data:?}");
         let uid = data.uid().expect("stored mail should have uid");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")
             .expect("preparation of cached insert mail metadata should succeed");
@@ -197,9 +191,9 @@ impl State {
             .expect("storing mail should succeed");
     }
 
-    pub fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
+    pub async fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
         trace!("get existing metadata with {uid:?}");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("select * from mail_metadata where uid = ?1")
             .expect("selection of existing mails should be preparable");
@@ -211,10 +205,9 @@ impl State {
         .expect("existing matadata should be queryable")
     }
 
-    // todo: delete multiple
-    pub fn delete_by_id(&self, uid: Uid) {
+    pub async fn delete_by_id(&self, uid: Uid) {
         trace!("deleting {uid:?}");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("delete from mail_metadata where uid = ?1")
             .expect("deletion of existing mails should be preparable");
@@ -222,34 +215,31 @@ impl State {
             .expect("deletion of existing mail should succeed");
     }
 
-    pub fn get_all(&self) -> Vec<LocalMailMetadata> {
+    pub async fn get_all(&self, all_entries_tx: mpsc::Sender<LocalMailMetadata>) {
         trace!("getting all stored mail metadata");
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("select uid,flags,fileprefix from mail_metadata;")
             .expect("select all mail_metadata should be preparable");
 
-        stmt.query_map([], |row| LocalMailMetadata::try_from(row))
+        for entry in stmt
+            .query_map([], |row| LocalMailMetadata::try_from(row))
             .expect("all metadata should be selectable")
             .map(|maybe_row| {
                 maybe_row.expect("local mail metadata should be buildable from db row")
             })
-            .collect()
-    }
-
-    // todo: think about streaming this
-    pub fn for_each(&self, mut cb: impl FnMut(&LocalMailMetadata)) {
-        trace!("consuming all cached mail data");
-        let rows = self.get_all();
-        for row in rows {
-            cb(&row);
+        {
+            all_entries_tx
+                .send(entry)
+                .await
+                .expect("sending all mail metadata should succeed");
         }
     }
 }
 
 impl Drop for State {
     fn drop(&mut self) {
-        let db = self.db.lock().expect("should be able to acquire db lock");
+        let db = self.db.blocking_lock();
         db.execute("pragma optimize;", [])
             .expect("sqlite should be optimizable");
     }

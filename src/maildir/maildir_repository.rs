@@ -274,61 +274,66 @@ impl MaildirRepository {
         }
     }
 
-    pub fn uid_validity(&self) -> UidValidity {
-        self.state.uid_validity()
+    pub async fn uid_validity(&self) -> UidValidity {
+        self.state.uid_validity().await
     }
 
-    pub fn highest_modseq(&self) -> ModSeq {
-        self.state.highest_modseq()
+    pub async fn highest_modseq(&self) -> ModSeq {
+        self.state.highest_modseq().await
     }
 
-    pub fn set_highest_modseq(&self, value: ModSeq) {
-        self.state.set_highest_modseq(value);
+    pub async fn set_highest_modseq(&self, value: ModSeq) {
+        self.state.set_highest_modseq(value).await;
     }
 
-    pub fn store(&self, mail: &RemoteMail) {
+    pub async fn store(&self, mail: &RemoteMail) {
         trace!("storing mail {mail:?}");
         // todo: check if update is necessary
-        if self.update_flags(mail.metadata()).is_err() {
+        if self.update_flags(mail.metadata()).await.is_err() {
             let metadata = self.maildir.store(mail);
-            self.state.store(&metadata);
+            self.state.store(&metadata).await;
         }
     }
 
-    pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
+    pub async fn update_flags(
+        &self,
+        mail_metadata: &RemoteMailMetadata,
+    ) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
-        let res = if let Some(mut entry) = self.state.get_by_id(uid) {
+        let res = if let Some(mut entry) = self.state.get_by_id(uid).await {
             trace!("updating existing mail with uid {uid:?}");
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
                 self.maildir.update_flags(&mut entry, new_flags);
-                self.state.update(&entry);
+                self.state.update(&entry).await;
             }
 
             Ok(())
         } else {
             Err(NoExistsError { uid })
         };
-        self.state.update_highest_modseq(mail_metadata.modseq());
+        self.state
+            .update_highest_modseq(mail_metadata.modseq())
+            .await;
 
         res
     }
 
-    pub fn add_synced(&self, mail_metadata: &mut LocalMailMetadata, new_uid: Uid) {
+    pub async fn add_synced(&self, mail_metadata: &mut LocalMailMetadata, new_uid: Uid) {
         self.maildir.update_uid(mail_metadata, new_uid);
-        self.state.store(mail_metadata);
+        self.state.store(mail_metadata).await;
     }
 
-    pub fn delete(&self, uid: Uid) {
-        if let Some(entry) = self.state.get_by_id(uid) {
+    pub async fn delete(&self, uid: Uid) {
+        if let Some(entry) = self.state.get_by_id(uid).await {
             self.maildir.delete(&entry);
-            self.state.delete_by_id(uid);
+            self.state.delete_by_id(uid).await;
         } else {
             trace!("mail {uid:?} already gone");
         }
     }
 
-    pub fn detect_changes(&self) -> LocalChanges {
+    pub async fn detect_changes(&self) -> LocalChanges {
         let mut deletions = Vec::new();
         let mut news = Vec::new();
         let maildir_metadata = self.maildir.list_cur();
@@ -344,7 +349,9 @@ impl MaildirRepository {
         }
 
         let mut updates = LocalFlagChangesBuilder::default();
-        self.state.for_each(|entry| {
+        let (all_entries_tx, mut all_entries_rx) = mpsc::channel(32);
+        self.state.get_all(all_entries_tx).await;
+        while let Some(entry) = all_entries_rx.recv().await {
             let uid = entry.uid().expect("all mails in state should have a uid");
             if let Some(data) = maildir_mails.remove(&uid) {
                 let mut additional_flags = data.flags();
@@ -360,9 +367,9 @@ impl MaildirRepository {
             } else {
                 deletions.push(entry.uid().expect("uid should exist here"));
             }
-        });
+        }
         // todo: get highest_modseq in same db transaction;
-        let highest_modseq = self.state.highest_modseq();
+        let highest_modseq = self.state.highest_modseq().await;
         for maildata in maildir_mails.into_values() {
             // todo: return Iterator and chain here
             news.push(self.maildir.read(maildata));
