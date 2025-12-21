@@ -1,12 +1,12 @@
 use crate::repository::{ModSeq, UidValidity};
 
 #[derive(Debug)]
-pub struct Mailbox {
+pub struct MailboxMetadata {
     uid_validity: UidValidity,
     highest_modseq: ModSeq,
 }
 
-impl Mailbox {
+impl MailboxMetadata {
     pub fn uid_validity(&self) -> UidValidity {
         self.uid_validity
     }
@@ -17,15 +17,15 @@ impl Mailbox {
 }
 
 #[derive(Default, Debug)]
-pub struct MailboxBuilder {
+pub struct MailboxMetadataBuilder {
     uid_validity: Option<UidValidity>,
     highest_modseq: Option<ModSeq>,
 }
 
-impl MailboxBuilder {
-    pub fn build(self) -> Result<Mailbox, &'static str> {
+impl MailboxMetadataBuilder {
+    pub fn build(self) -> Result<MailboxMetadata, &'static str> {
         match (self.uid_validity, self.highest_modseq) {
-            (Some(uid_validity), Some(highest_modseq)) => Ok(Mailbox {
+            (Some(uid_validity), Some(highest_modseq)) => Ok(MailboxMetadata {
                 uid_validity,
                 highest_modseq,
             }),

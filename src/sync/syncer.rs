@@ -1,7 +1,8 @@
 use crate::{
     imap::{RemoteChanges, SelectedClient, Selection},
-    maildir::LocalChanges,
-    repository::{Mailbox, ModSeq, RemoteMail, SequenceSet, SequenceSetBuilder},
+    repository::{
+        LocalChanges, MailboxMetadata, ModSeq, RemoteMail, SequenceSet, SequenceSetBuilder,
+    },
 };
 use std::{collections::HashSet, path::Path};
 
@@ -149,7 +150,7 @@ impl Syncer {
         client: &mut SelectedClient,
         maildir_repository: &MaildirRepository,
         remote_changes: &RemoteChanges,
-        mailbox_data: &Mailbox,
+        mailbox_data: &MailboxMetadata,
     ) {
         if let Some(set) = &remote_changes.deletions {
             for uid in set.iter() {

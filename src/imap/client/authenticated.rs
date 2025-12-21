@@ -10,7 +10,7 @@ use crate::{
         transport::{Connection, ResponseData},
     },
     repository::{
-        Flag, Mailbox, MailboxBuilder, ModSeq, RemoteMail, RemoteMailMetadata,
+        Flag, MailboxMetadata, MailboxMetadataBuilder, ModSeq, RemoteMail, RemoteMailMetadata,
         RemoteMailMetadataBuilder, SequenceSet, UidValidity,
     },
 };
@@ -23,7 +23,7 @@ pub struct RemoteChanges {
 pub struct Selection {
     //todo: remove pub and use getters instead
     pub client: SelectedClient,
-    pub mailbox_data: Mailbox,
+    pub mailbox_data: MailboxMetadata,
     pub remote_changes: RemoteChanges,
 }
 
@@ -114,7 +114,7 @@ impl AuthenticatedClient {
             .await
             .expect("selecting a mailbox should succeed");
 
-        let mut new_mailbox = MailboxBuilder::default();
+        let mut new_mailbox = MailboxMetadataBuilder::default();
 
         let mut updates: Vec<RemoteMailMetadata> = Vec::new();
         let mut deletions = None;
