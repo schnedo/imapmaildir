@@ -24,7 +24,6 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-// TODO: Check correct license handling
 // original code copied from
 // https://github.com/djc/tokio-imap/blob/7cf1ee962ee1981bd3cb5f543a27eedece7e5edc/tokio-imap/src/codec.rs
 // just using the crate lead to issues with consuming the response stream. probably due to version

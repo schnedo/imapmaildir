@@ -17,7 +17,6 @@
 // OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// TODO: Check Licencing issue
 // Original code found here:
 // https://github.com/swsnr/systemd-journal-logger.rs/blob/v2.2.1/src/lib.rs#L76
 
