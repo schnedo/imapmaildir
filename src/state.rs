@@ -215,13 +215,14 @@ impl State {
             .expect("deletion of existing mail should succeed");
     }
 
-    pub async fn get_all(&self, all_entries_tx: mpsc::Sender<LocalMailMetadata>) {
+    pub async fn get_all(&self, all_entries_tx: mpsc::Sender<LocalMailMetadata>) -> ModSeq {
         trace!("getting all stored mail metadata");
         let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("select uid,flags,fileprefix from mail_metadata;")
             .expect("select all mail_metadata should be preparable");
 
+        let current_highest_modseq = *self.cached_highest_modseq.lock().await;
         for entry in stmt
             .query_map([], |row| LocalMailMetadata::try_from(row))
             .expect("all metadata should be selectable")
@@ -234,6 +235,8 @@ impl State {
                 .await
                 .expect("sending all mail metadata should succeed");
         }
+
+        current_highest_modseq
     }
 }
 

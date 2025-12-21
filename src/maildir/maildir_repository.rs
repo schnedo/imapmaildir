@@ -350,7 +350,7 @@ impl MaildirRepository {
 
         let mut updates = LocalFlagChangesBuilder::default();
         let (all_entries_tx, mut all_entries_rx) = mpsc::channel(32);
-        self.state.get_all(all_entries_tx).await;
+        let highest_modseq = self.state.get_all(all_entries_tx).await;
         while let Some(entry) = all_entries_rx.recv().await {
             let uid = entry.uid().expect("all mails in state should have a uid");
             if let Some(data) = maildir_mails.remove(&uid) {
@@ -368,8 +368,6 @@ impl MaildirRepository {
                 deletions.push(entry.uid().expect("uid should exist here"));
             }
         }
-        // todo: get highest_modseq in same db transaction;
-        let highest_modseq = self.state.highest_modseq().await;
         for maildata in maildir_mails.into_values() {
             // todo: return Iterator and chain here
             news.push(self.maildir.read(maildata));
