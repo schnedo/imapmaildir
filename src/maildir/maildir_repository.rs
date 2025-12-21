@@ -5,13 +5,10 @@ use log::trace;
 use tokio::sync::mpsc;
 
 use crate::{
-    maildir::{
-        local_mail::{LocalMail, LocalMailMetadata},
-        state::State,
-    },
+    maildir::state::State,
     repository::{
-        Flag, ModSeq, RemoteMail, RemoteMailMetadata, SequenceSet, SequenceSetBuilder, Uid,
-        UidValidity,
+        Flag, LocalMail, LocalMailMetadata, ModSeq, RemoteMail, RemoteMailMetadata, SequenceSet,
+        SequenceSetBuilder, Uid, UidValidity,
     },
 };
 

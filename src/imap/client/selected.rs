@@ -9,10 +9,9 @@ use crate::{
         client::capability::{Capabilities, Capability},
         transport::{Connection, ResponseData},
     },
-    maildir::{LocalMail, LocalMailMetadata},
     repository::{
-        Flag, ModSeq, RemoteContent, RemoteMail, RemoteMailMetadata, SequenceRange, SequenceSet,
-        Uid,
+        Flag, LocalMail, LocalMailMetadata, ModSeq, RemoteContent, RemoteMail, RemoteMailMetadata,
+        SequenceRange, SequenceSet, Uid,
     },
 };
 
