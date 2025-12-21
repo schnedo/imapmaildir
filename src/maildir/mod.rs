@@ -1,5 +1,6 @@
 mod maildir;
 mod maildir_repository;
+mod state;
 
 pub use maildir::LocalMail;
 pub use maildir::Maildir;

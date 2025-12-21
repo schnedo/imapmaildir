@@ -17,8 +17,7 @@ use crate::{
     imap::{
         ModSeq, RemoteMail, RemoteMailMetadata, SequenceSet, SequenceSetBuilder, Uid, UidValidity,
     },
-    maildir::maildir::LocalMail,
-    state::State,
+    maildir::{maildir::LocalMail, state::State},
     sync::Flag,
 };
 
