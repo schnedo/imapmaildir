@@ -8,12 +8,11 @@ use crate::{
             SelectedClient,
             capability::{Capabilities, Capability},
         },
-        codec::ResponseData,
-        connection::Connection,
         mailbox::{
             Mailbox, MailboxBuilder, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder,
             SequenceSet,
         },
+        transport::{Connection, ResponseData},
     },
     sync::Flag,
 };

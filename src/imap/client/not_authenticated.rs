@@ -6,8 +6,7 @@ use crate::imap::{
         AuthenticatedClient,
         capability::{AuthCapabilities, AuthCapability, Capabilities},
     },
-    codec::ResponseData,
-    connection::Connection,
+    transport::{Connection, ResponseData},
 };
 
 pub struct Client {

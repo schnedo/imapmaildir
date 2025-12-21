@@ -6,7 +6,7 @@ use tokio::{net::TcpStream, sync::mpsc};
 use tokio_native_tls::{TlsConnector, native_tls};
 use tokio_util::codec::Framed;
 
-use crate::imap::{
+use crate::imap::transport::{
     codec::{ImapCodec, ResponseData},
     tag_generator::TagGenerator,
 };

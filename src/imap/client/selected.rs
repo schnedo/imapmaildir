@@ -8,9 +8,8 @@ use crate::{
     imap::{
         ModSeq, Uid,
         client::capability::{Capabilities, Capability},
-        codec::ResponseData,
-        connection::Connection,
         mailbox::{RemoteContent, RemoteMail, RemoteMailMetadata, SequenceRange, SequenceSet},
+        transport::{Connection, ResponseData},
     },
     maildir::{LocalMail, LocalMailMetadata},
     sync::Flag,

@@ -1,8 +1,6 @@
 mod client;
-mod codec;
-mod connection;
 mod mailbox;
-mod tag_generator;
+mod transport;
 
 pub use client::AuthenticatedClient;
 pub use client::Client;
