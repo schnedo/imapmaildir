@@ -37,23 +37,24 @@ async fn main() -> Result<()> {
         nuke(&config);
         Ok(())
     } else {
-        let host: &str = config.host();
-        let port = config.port();
-        let username = config.user();
-        let password = &config.password();
-        let mailbox = config
-            .mailboxes()
-            .first()
-            .expect("there should be a mailbox configured");
         let state_dir = config.statedir();
-        let account = config.account();
         let mail_dir = config.maildir();
 
-        let client = Client::login(host, port, username, password).await;
+        for (account_name, account_config) in config.accounts() {
+            let host: &str = account_config.host();
+            let port = account_config.port();
 
-        let sync_handle = Syncer::sync(account, mailbox, mail_dir, state_dir, client).await;
-        sync_handle.await?;
+            let mailbox = account_config
+                .mailboxes()
+                .first()
+                .expect("there should be a mailbox configured");
 
+            let client = Client::login(host, port, account_config.auth()).await;
+
+            let sync_handle =
+                Syncer::sync(account_name, mailbox, mail_dir, state_dir, client).await;
+            sync_handle.await?;
+        }
         Ok(())
     }
 }

@@ -1,13 +1,15 @@
 use ::std::env;
 use std::{
+    collections::HashMap,
     fs::{create_dir_all, read_to_string},
     path::PathBuf,
-    process::Command,
     str::FromStr,
 };
 
 use derive_getters::Getters;
 use serde::Deserialize;
+
+use crate::config::account::AccountConfig;
 
 #[derive(Deserialize, Getters)]
 pub struct Config {
@@ -15,14 +17,7 @@ pub struct Config {
     statedir: PathBuf,
     #[serde(default = "maildir")]
     maildir: PathBuf,
-    #[getter(skip)]
-    account: Option<String>,
-    user: String,
-    #[getter(skip)]
-    password_cmd: String,
-    host: String,
-    port: u16,
-    mailboxes: Vec<String>,
+    accounts: HashMap<String, AccountConfig>,
 }
 
 impl Config {
@@ -30,33 +25,6 @@ impl Config {
         let config_file = file.unwrap_or_else(default_location);
         let config_contents = read_to_string(config_file).expect("config file should be readable");
         toml::from_str(&config_contents).expect("config should be parseable")
-    }
-
-    pub fn account(&self) -> &str {
-        self.account.as_ref().unwrap_or_else(|| self.user())
-    }
-
-    pub fn password(&self) -> String {
-        let mut cmd_parts = self.password_cmd.split(' ');
-        let mut cmd = Command::new(
-            cmd_parts
-                .next()
-                .expect("password_cmd should specify a program"),
-        );
-        for part in cmd_parts {
-            cmd.arg(part);
-        }
-        let output = cmd.output().expect("password_cmd should be executable");
-
-        assert!(
-            !output.stdout.is_empty(),
-            "could not retrieve password from password_cmd"
-        );
-
-        String::from_utf8(output.stdout)
-            .expect("password_cmd should evaluate to password")
-            .trim_end()
-            .to_string()
     }
 }
 
@@ -83,6 +51,7 @@ fn home() -> PathBuf {
         .expect("HOME should be a parseable path")
 }
 
+// todo: default to state and colocate state?
 fn maildir() -> PathBuf {
     let mut maildir = home();
     maildir.push(".mail");

@@ -1,12 +1,15 @@
 use log::{debug, trace};
 use tokio::sync::mpsc;
 
-use crate::imap::{
-    client::{
-        AuthenticatedClient,
-        capability::{AuthCapabilities, AuthCapability, Capabilities},
+use crate::{
+    config::AuthConfig,
+    imap::{
+        client::{
+            AuthenticatedClient,
+            capability::{AuthCapabilities, AuthCapability, Capabilities},
+        },
+        transport::{Connection, ResponseData},
     },
-    transport::{Connection, ResponseData},
 };
 
 pub struct Client {
@@ -17,14 +20,9 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn login(
-        host: &str,
-        port: u16,
-        username: &str,
-        password: &str,
-    ) -> AuthenticatedClient {
+    pub async fn login(host: &str, port: u16, auth_config: &AuthConfig) -> AuthenticatedClient {
         let connected = Self::connect(host, port).await;
-        connected.authenticate(username, password).await
+        connected.authenticate(auth_config).await
     }
 
     async fn connect(host: &str, port: u16) -> Self {
@@ -87,33 +85,44 @@ impl Client {
         }
     }
 
-    async fn authenticate(mut self, username: &str, password: &str) -> AuthenticatedClient {
-        assert!(
-            self.auth_capabilities.contains(AuthCapability::Plain),
-            "server should support PLAIN auth capability"
-        );
-        debug!("LOGIN <user> <password>");
-        let response = self
-            .connection
-            .send(format!("LOGIN {username} {password}").into())
-            .await
-            .expect("login should succeed");
-        if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
-            response.unsafe_get_tagged_response_code()
-        {
-            update_capabilities(&mut self.capabilities, &mut self.auth_capabilities, caps);
-        } else {
-            self.connection
-                .send("CAPABILITY".into())
-                .await
-                .expect("capabilities should succeed");
-        }
+    async fn authenticate(mut self, auth_config: &AuthConfig) -> AuthenticatedClient {
+        match auth_config {
+            AuthConfig::Plain(plain_auth_config) => {
+                assert!(
+                    self.auth_capabilities.contains(AuthCapability::Plain),
+                    "server should support PLAIN auth capability"
+                );
+                debug!("LOGIN <user> <password>");
+                let response = self
+                    .connection
+                    .send(
+                        format!(
+                            "LOGIN {} {}",
+                            plain_auth_config.user(),
+                            plain_auth_config.password()
+                        )
+                        .into(),
+                    )
+                    .await
+                    .expect("login should succeed");
+                if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
+                    response.unsafe_get_tagged_response_code()
+                {
+                    update_capabilities(&mut self.capabilities, &mut self.auth_capabilities, caps);
+                } else {
+                    self.connection
+                        .send("CAPABILITY".into())
+                        .await
+                        .expect("capabilities should succeed");
+                }
 
-        AuthenticatedClient::new(
-            self.connection,
-            self.capabilities,
-            self.untagged_response_receiver,
-        )
+                AuthenticatedClient::new(
+                    self.connection,
+                    self.capabilities,
+                    self.untagged_response_receiver,
+                )
+            }
+        }
     }
 }
 
