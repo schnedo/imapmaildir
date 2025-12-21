@@ -6,13 +6,11 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
+        RemoteContent, RemoteMail, RemoteMailMetadata,
         client::capability::{Capabilities, Capability},
         transport::{Connection, ResponseData},
     },
-    repository::{
-        Flag, LocalMail, LocalMailMetadata, ModSeq, RemoteContent, RemoteMail, RemoteMailMetadata,
-        SequenceRange, SequenceSet, Uid,
-    },
+    repository::{Flag, LocalMail, LocalMailMetadata, ModSeq, SequenceRange, SequenceSet, Uid},
 };
 
 pub struct StoredMailInfo {

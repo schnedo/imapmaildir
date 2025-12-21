@@ -11,7 +11,10 @@ use enumflags2::BitFlags;
 use log::{info, trace, warn};
 use thiserror::Error;
 
-use crate::repository::{Flag, LocalMail, LocalMailMetadata, RemoteMail, Uid};
+use crate::{
+    imap::RemoteMail,
+    repository::{Flag, LocalMail, LocalMailMetadata, Uid},
+};
 
 #[derive(Debug)]
 pub struct Maildir {

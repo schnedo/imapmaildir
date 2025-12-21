@@ -1,6 +1,6 @@
 use crate::{
-    imap::SelectedClient,
-    repository::{MailboxMetadata, RemoteMailMetadata, SequenceSet},
+    imap::{RemoteMailMetadata, SelectedClient},
+    repository::{MailboxMetadata, SequenceSet},
 };
 
 pub struct RemoteChanges {

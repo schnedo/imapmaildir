@@ -5,10 +5,10 @@ use log::trace;
 use tokio::sync::mpsc;
 
 use crate::{
+    imap::{RemoteMail, RemoteMailMetadata},
     maildir::state::State,
     repository::{
-        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, ModSeq, RemoteMail,
-        RemoteMailMetadata, Uid, UidValidity,
+        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, ModSeq, Uid, UidValidity,
     },
 };
 

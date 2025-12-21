@@ -1,8 +1,6 @@
 use crate::{
-    imap::{RemoteChanges, SelectedClient, Selection},
-    repository::{
-        LocalChanges, MailboxMetadata, ModSeq, RemoteMail, SequenceSet, SequenceSetBuilder,
-    },
+    imap::{RemoteChanges, RemoteMail, SelectedClient, Selection},
+    repository::{LocalChanges, MailboxMetadata, ModSeq, SequenceSet, SequenceSetBuilder},
 };
 use std::{collections::HashSet, path::Path};
 

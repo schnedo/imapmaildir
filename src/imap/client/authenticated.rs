@@ -3,17 +3,14 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
-        RemoteChanges, Selection,
+        RemoteChanges, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder, Selection,
         client::{
             SelectedClient,
             capability::{Capabilities, Capability},
         },
         transport::{Connection, ResponseData},
     },
-    repository::{
-        Flag, MailboxMetadataBuilder, ModSeq, RemoteMail, RemoteMailMetadata,
-        RemoteMailMetadataBuilder, SequenceSet, UidValidity,
-    },
+    repository::{Flag, MailboxMetadataBuilder, ModSeq, SequenceSet, UidValidity},
 };
 
 pub struct AuthenticatedClient {
