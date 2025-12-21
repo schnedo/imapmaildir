@@ -4,7 +4,7 @@ use enumflags2::BitFlags;
 use std::fmt::{Debug, Formatter, Result};
 
 use crate::{
-    imap::{ModSeq, Uid},
+    repository::{ModSeq, Uid},
     sync::Flag,
 };
 

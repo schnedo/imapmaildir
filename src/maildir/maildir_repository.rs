@@ -14,10 +14,10 @@ use log::trace;
 use tokio::sync::mpsc;
 
 use crate::{
-    imap::{
+    maildir::{maildir::LocalMail, state::State},
+    repository::{
         ModSeq, RemoteMail, RemoteMailMetadata, SequenceSet, SequenceSetBuilder, Uid, UidValidity,
     },
-    maildir::{maildir::LocalMail, state::State},
     sync::Flag,
 };
 

@@ -1,4 +1,4 @@
-use crate::imap::mailbox::{ModSeq, uid_validity::UidValidity};
+use crate::repository::{ModSeq, UidValidity};
 
 #[derive(Debug)]
 pub struct Mailbox {

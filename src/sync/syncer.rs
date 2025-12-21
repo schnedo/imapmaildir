@@ -1,16 +1,14 @@
 use crate::{
-    imap::{Mailbox, ModSeq, RemoteChanges, RemoteMail, SelectedClient, Selection},
+    imap::{RemoteChanges, SelectedClient, Selection},
     maildir::LocalChanges,
+    repository::{Mailbox, ModSeq, RemoteMail, SequenceSet, SequenceSetBuilder},
 };
 use std::{collections::HashSet, path::Path};
 
 use log::debug;
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{
-    imap::{AuthenticatedClient, SequenceSet, SequenceSetBuilder},
-    maildir::MaildirRepository,
-};
+use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
 
 pub struct Syncer {}
 

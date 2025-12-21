@@ -11,8 +11,8 @@ use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
-    imap::{ModSeq, Uid, UidValidity},
     maildir::LocalMailMetadata,
+    repository::{ModSeq, Uid, UidValidity},
     sync::Flag,
 };
 

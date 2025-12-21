@@ -12,8 +12,8 @@ use log::{info, trace, warn};
 use thiserror::Error;
 
 use crate::{
-    imap::{RemoteMail, Uid},
     maildir::maildir_repository::LocalMailMetadata,
+    repository::{RemoteMail, Uid},
     sync::Flag,
 };
 

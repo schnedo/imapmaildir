@@ -5,7 +5,7 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::imap::{Uid, mailbox::uid::UidRangeInclusiveIterator};
+use crate::repository::{Uid, uid::UidRangeInclusiveIterator};
 
 #[derive(Debug)]
 pub struct SequenceRange {

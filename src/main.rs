@@ -6,6 +6,7 @@ mod imap;
 mod logging;
 mod maildir;
 mod nuke;
+mod repository;
 mod sync;
 
 use crate::config::Config;
