@@ -83,7 +83,7 @@ impl SelectedClient {
                                         .await
                                         .expect("mail channel should still be open");
                                 } else {
-                                    todo!("handle mail without content")
+                                    unreachable!("mail without content")
                                 }
                             }
                             [
@@ -143,7 +143,6 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all(&mut self) {
-        // todo: move the initializing to appropriate location
         info!("initializing new imap repository");
         self.fetch_mail(&SequenceSet::all()).await;
     }

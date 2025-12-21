@@ -77,9 +77,8 @@ impl Connection {
                                             .await
                                             .expect("sending response out of network task should succeed");
                                     },
-                                    // todo: use unreachable instead of panic?
-                                    imap_proto::Status::PreAuth => panic!("receiving tagged PreAuth response is not possible per specification"),
-                                    imap_proto::Status::Bye => panic!("receiving tagged Bye response is not possible per specification"),
+                                    imap_proto::Status::PreAuth => unreachable!("receiving tagged PreAuth response is not possible per specification"),
+                                    imap_proto::Status::Bye => unreachable!("receiving tagged Bye response is not possible per specification"),
                                 }
                             } ,
                             imap_proto::Response::Continue { code, information } => {
