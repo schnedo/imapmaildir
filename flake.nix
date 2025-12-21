@@ -60,7 +60,7 @@
                 xdot
               ];
               text = ''
-                cargo-modules dependencies --no-externs --no-private | xdot -
+                cargo-modules dependencies --no-externs --no-private --no-owns --no-fns | xdot -
               '';
             };
 
