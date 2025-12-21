@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{
+        RemoteChanges, Selection,
         client::{
             SelectedClient,
             capability::{Capabilities, Capability},
@@ -10,22 +11,10 @@ use crate::{
         transport::{Connection, ResponseData},
     },
     repository::{
-        Flag, MailboxMetadata, MailboxMetadataBuilder, ModSeq, RemoteMail, RemoteMailMetadata,
+        Flag, MailboxMetadataBuilder, ModSeq, RemoteMail, RemoteMailMetadata,
         RemoteMailMetadataBuilder, SequenceSet, UidValidity,
     },
 };
-
-pub struct RemoteChanges {
-    pub updates: Vec<RemoteMailMetadata>,
-    pub deletions: Option<SequenceSet>,
-}
-
-pub struct Selection {
-    //todo: remove pub and use getters instead
-    pub client: SelectedClient,
-    pub mailbox_data: MailboxMetadata,
-    pub remote_changes: RemoteChanges,
-}
 
 pub struct AuthenticatedClient {
     connection: Connection,
