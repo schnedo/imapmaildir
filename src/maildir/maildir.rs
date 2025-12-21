@@ -12,7 +12,7 @@ use log::{info, trace, warn};
 use thiserror::Error;
 
 use crate::{
-    maildir::maildir_repository::LocalMailMetadata,
+    maildir::{LocalMail, LocalMailMetadata},
     repository::{Flag, RemoteMail, Uid},
 };
 
@@ -187,34 +187,6 @@ impl Maildir {
                 }
             }
         }
-    }
-}
-
-pub struct LocalMail {
-    metadata: LocalMailMetadata,
-    // todo: consider streaming this
-    content: Vec<u8>,
-}
-
-impl LocalMail {
-    pub fn new(content: Vec<u8>, metadata: LocalMailMetadata) -> Self {
-        Self { metadata, content }
-    }
-
-    pub fn metadata(&self) -> &LocalMailMetadata {
-        &self.metadata
-    }
-
-    pub fn unpack(self) -> (LocalMailMetadata, Vec<u8>) {
-        (self.metadata, self.content)
-    }
-}
-
-impl Debug for LocalMail {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalMail")
-            .field("metadata", &self.metadata)
-            .finish_non_exhaustive()
     }
 }
 
