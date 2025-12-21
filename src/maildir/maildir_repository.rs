@@ -6,10 +6,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
-    maildir::state::State,
-    repository::{
-        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, ModSeq, Uid, UidValidity,
-    },
+    maildir::{LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, state::State},
+    repository::{ModSeq, Uid, UidValidity},
 };
 
 use super::Maildir;

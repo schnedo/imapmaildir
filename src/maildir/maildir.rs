@@ -13,7 +13,8 @@ use thiserror::Error;
 
 use crate::{
     imap::RemoteMail,
-    repository::{Flag, LocalMail, LocalMailMetadata, Uid},
+    maildir::{LocalMail, LocalMailMetadata},
+    repository::{Flag, Uid},
 };
 
 #[derive(Debug)]

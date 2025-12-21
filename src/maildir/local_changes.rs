@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::repository::{Flag, LocalMail, ModSeq, SequenceSet, SequenceSetBuilder, Uid};
+use crate::{
+    maildir::LocalMail,
+    repository::{Flag, ModSeq, SequenceSet, SequenceSetBuilder, Uid},
+};
 
 #[derive(Debug)]
 pub struct LocalFlagChanges {

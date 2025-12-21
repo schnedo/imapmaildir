@@ -1,6 +1,4 @@
 mod flag;
-mod local_changes;
-mod local_mail;
 mod mailbox_metadata;
 mod modseq;
 mod sequence_set;
@@ -8,10 +6,6 @@ mod uid;
 mod uid_validity;
 
 pub use flag::Flag;
-pub use local_changes::LocalChanges;
-pub use local_changes::LocalFlagChangesBuilder;
-pub use local_mail::LocalMail;
-pub use local_mail::LocalMailMetadata;
 pub use mailbox_metadata::MailboxMetadata;
 pub use mailbox_metadata::MailboxMetadataBuilder;
 pub use modseq::ModSeq;

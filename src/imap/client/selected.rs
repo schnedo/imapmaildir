@@ -10,7 +10,8 @@ use crate::{
         client::capability::{Capabilities, Capability},
         transport::{Connection, ResponseData},
     },
-    repository::{Flag, LocalMail, LocalMailMetadata, ModSeq, SequenceRange, SequenceSet, Uid},
+    maildir::{LocalMail, LocalMailMetadata},
+    repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
 };
 
 pub struct StoredMailInfo {

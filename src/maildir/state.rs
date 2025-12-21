@@ -10,7 +10,10 @@ use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
 use tokio::sync::{Mutex, mpsc};
 
-use crate::repository::{Flag, LocalMailMetadata, ModSeq, Uid, UidValidity};
+use crate::{
+    maildir::LocalMailMetadata,
+    repository::{Flag, ModSeq, Uid, UidValidity},
+};
 
 fn get_highest_modseq(db: &Connection) -> ModSeq {
     db.query_one("select * from pragma_user_version", [], |row| {
