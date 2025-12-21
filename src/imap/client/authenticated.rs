@@ -10,10 +10,9 @@ use crate::{
         transport::{Connection, ResponseData},
     },
     repository::{
-        Mailbox, MailboxBuilder, ModSeq, RemoteMail, RemoteMailMetadata, RemoteMailMetadataBuilder,
-        SequenceSet, UidValidity,
+        Flag, Mailbox, MailboxBuilder, ModSeq, RemoteMail, RemoteMailMetadata,
+        RemoteMailMetadataBuilder, SequenceSet, UidValidity,
     },
-    sync::Flag,
 };
 
 pub struct RemoteChanges {

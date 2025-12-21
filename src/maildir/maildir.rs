@@ -13,8 +13,7 @@ use thiserror::Error;
 
 use crate::{
     maildir::maildir_repository::LocalMailMetadata,
-    repository::{RemoteMail, Uid},
-    sync::Flag,
+    repository::{Flag, RemoteMail, Uid},
 };
 
 #[derive(Debug)]

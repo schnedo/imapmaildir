@@ -3,10 +3,7 @@ use derive_builder::Builder;
 use enumflags2::BitFlags;
 use std::fmt::{Debug, Formatter, Result};
 
-use crate::{
-    repository::{ModSeq, Uid},
-    sync::Flag,
-};
+use crate::repository::{Flag, ModSeq, Uid};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Builder)]
 pub struct RemoteMailMetadata {

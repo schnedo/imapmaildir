@@ -11,9 +11,9 @@ use crate::{
     },
     maildir::{LocalMail, LocalMailMetadata},
     repository::{
-        ModSeq, RemoteContent, RemoteMail, RemoteMailMetadata, SequenceRange, SequenceSet, Uid,
+        Flag, ModSeq, RemoteContent, RemoteMail, RemoteMailMetadata, SequenceRange, SequenceSet,
+        Uid,
     },
-    sync::Flag,
 };
 
 pub struct StoredMailInfo {

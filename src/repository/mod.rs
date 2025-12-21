@@ -1,3 +1,4 @@
+mod flag;
 mod mailbox;
 mod modseq;
 mod remote_mail;
@@ -5,6 +6,7 @@ mod sequence_set;
 mod uid;
 mod uid_validity;
 
+pub use flag::Flag;
 pub use mailbox::Mailbox;
 pub use mailbox::MailboxBuilder;
 pub use modseq::ModSeq;

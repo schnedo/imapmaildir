@@ -16,9 +16,9 @@ use tokio::sync::mpsc;
 use crate::{
     maildir::{maildir::LocalMail, state::State},
     repository::{
-        ModSeq, RemoteMail, RemoteMailMetadata, SequenceSet, SequenceSetBuilder, Uid, UidValidity,
+        Flag, ModSeq, RemoteMail, RemoteMailMetadata, SequenceSet, SequenceSetBuilder, Uid,
+        UidValidity,
     },
-    sync::Flag,
 };
 
 use super::Maildir;

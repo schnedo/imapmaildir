@@ -12,8 +12,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     maildir::LocalMailMetadata,
-    repository::{ModSeq, Uid, UidValidity},
-    sync::Flag,
+    repository::{Flag, ModSeq, Uid, UidValidity},
 };
 
 fn get_highest_modseq(db: &Connection) -> ModSeq {
