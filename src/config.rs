@@ -26,22 +26,9 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load_from_file() -> Self {
-        let mut config_dir = if let Ok(config_home) = env::var("XDG_CONFIG_HOME") {
-            PathBuf::from_str(&config_home).expect("XDG_CONFIG_HOME should be a parseable path")
-        } else {
-            let mut config_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
-                .expect("HOME should be a parseable path");
-            config_home.push(".config");
-            config_home
-        };
-        config_dir.push(env!("CARGO_PKG_NAME"));
-        if !config_dir.exists() {
-            create_dir_all(&config_dir).expect("config_dir should be creatable");
-        }
-        config_dir.push("config.toml");
-
-        let config_contents = read_to_string(config_dir).expect("config file should be readable");
+    pub fn load_from_file(file: Option<PathBuf>) -> Self {
+        let config_file = file.unwrap_or_else(default_location);
+        let config_contents = read_to_string(config_file).expect("config file should be readable");
         toml::from_str(&config_contents).expect("config should be parseable")
     }
 
@@ -71,6 +58,24 @@ impl Config {
             .trim_end()
             .to_string()
     }
+}
+
+fn default_location() -> PathBuf {
+    let mut config_dir = if let Ok(config_home) = env::var("XDG_CONFIG_HOME") {
+        PathBuf::from_str(&config_home).expect("XDG_CONFIG_HOME should be a parseable path")
+    } else {
+        let mut config_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
+            .expect("HOME should be a parseable path");
+        config_home.push(".config");
+        config_home
+    };
+    config_dir.push(env!("CARGO_PKG_NAME"));
+    if !config_dir.exists() {
+        create_dir_all(&config_dir).expect("config_dir should be creatable");
+    }
+    config_dir.push("config.toml");
+
+    config_dir
 }
 
 fn home() -> PathBuf {

@@ -1,4 +1,5 @@
 use core::str;
+use std::path::PathBuf;
 
 use clap::Parser;
 mod config;
@@ -21,6 +22,8 @@ struct Args {
     /// `rm -rf` the configured account (WARNING: includes all mails)
     #[arg(long)]
     nuke: bool,
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -28,7 +31,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     logging::init();
 
-    let config = Config::load_from_file();
+    let config = Config::load_from_file(args.config);
 
     if args.nuke {
         nuke(&config);
