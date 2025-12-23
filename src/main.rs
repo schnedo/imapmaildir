@@ -23,7 +23,7 @@ struct Args {
     #[arg(long)]
     nuke: bool,
     #[arg(long)]
-    config: Option<PathBuf>,
+    config_directory: Option<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     logging::init();
 
-    let config = Config::load_from_file(args.config);
+    let config = Config::load_from_file(args.config_directory);
 
     if args.nuke {
         nuke(&config);

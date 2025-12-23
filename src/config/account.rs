@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Getters)]
 pub struct PlainAuthConfig {
+    name: String,
     user: String,
     #[getter(skip)]
     password_cmd: String,

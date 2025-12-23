@@ -17,13 +17,15 @@ pub struct Config {
     statedir: PathBuf,
     #[serde(default = "maildir")]
     maildir: PathBuf,
-    accounts: HashMap<String, AccountConfig>,
+    account: AccountConfig,
 }
 
 impl Config {
-    pub fn load_from_file(file: Option<PathBuf>) -> Self {
-        let config_file = file.unwrap_or_else(default_location);
-        let config_contents = read_to_string(config_file).expect("config file should be readable");
+    pub fn load_from_file(directory: Option<PathBuf>) -> Self {
+        let mut config_dir = directory.unwrap_or_else(default_location);
+        config_dir.push("config.toml");
+
+        let config_contents = read_to_string(config_dir).expect("config file should be readable");
         toml::from_str(&config_contents).expect("config should be parseable")
     }
 }
@@ -41,7 +43,6 @@ fn default_location() -> PathBuf {
     if !config_dir.exists() {
         create_dir_all(&config_dir).expect("config_dir should be creatable");
     }
-    config_dir.push("config.toml");
 
     config_dir
 }
