@@ -1,49 +1,37 @@
 use ::std::env;
-use std::{
-    collections::HashMap,
-    fs::{create_dir_all, read_to_string},
-    path::PathBuf,
-    str::FromStr,
-};
+use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 
 use derive_getters::Getters;
 use serde::Deserialize;
 
-use crate::config::account::AccountConfig;
+use crate::config::default_config_dir;
 
+// todo: is this even necessary?
 #[derive(Deserialize, Getters)]
 pub struct Config {
     #[serde(default = "statedir")]
     statedir: PathBuf,
+    #[serde(default = "accountsdir")]
+    accountsdir: PathBuf,
     #[serde(default = "maildir")]
     maildir: PathBuf,
-    accounts: HashMap<String, AccountConfig>,
 }
 
 impl Config {
-    pub fn load_from_file(file: Option<PathBuf>) -> Self {
-        let config_file = file.unwrap_or_else(default_location);
+    pub fn load_from_file(config_file: Option<PathBuf>) -> Self {
+        let mut config_file = config_file.unwrap_or_else(default_config_file);
+        config_file.push("config.toml");
+
         let config_contents = read_to_string(config_file).expect("config file should be readable");
         toml::from_str(&config_contents).expect("config should be parseable")
     }
 }
 
-fn default_location() -> PathBuf {
-    let mut config_dir = if let Ok(config_home) = env::var("XDG_CONFIG_HOME") {
-        PathBuf::from_str(&config_home).expect("XDG_CONFIG_HOME should be a parseable path")
-    } else {
-        let mut config_home = PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
-            .expect("HOME should be a parseable path");
-        config_home.push(".config");
-        config_home
-    };
-    config_dir.push(env!("CARGO_PKG_NAME"));
-    if !config_dir.exists() {
-        create_dir_all(&config_dir).expect("config_dir should be creatable");
-    }
-    config_dir.push("config.toml");
+fn default_config_file() -> PathBuf {
+    let mut config_file = default_config_dir();
+    config_file.push("config.toml");
 
-    config_dir
+    config_file
 }
 
 fn home() -> PathBuf {
@@ -56,6 +44,13 @@ fn maildir() -> PathBuf {
     let mut maildir = home();
     maildir.push(".mail");
     maildir
+}
+
+fn accountsdir() -> PathBuf {
+    let mut config_dir = default_config_dir();
+    config_dir.push("accounts");
+
+    config_dir
 }
 
 fn statedir() -> PathBuf {

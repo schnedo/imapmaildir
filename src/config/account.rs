@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::{fs::read_to_string, path::Path, process::Command};
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -46,4 +46,12 @@ pub struct AccountConfig {
     host: String,
     port: u16,
     mailboxes: Vec<String>,
+}
+
+impl AccountConfig {
+    pub fn load_from_file(config_file: &Path) -> Self {
+        let contents = read_to_string(config_file).expect("account config should be readable");
+
+        toml::from_str(&contents).expect("account config should be parsable")
+    }
 }
