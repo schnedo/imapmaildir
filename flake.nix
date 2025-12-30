@@ -8,6 +8,7 @@
 
   outputs =
     {
+      self,
       flake-parts,
       ...
     }@inputs:
@@ -26,7 +27,9 @@
 
           packages = {
 
-            default =
+            default = self'.packages.imapmaildir;
+
+            imapmaildir =
               let
                 cargoToml = pkgs.lib.importTOML ./Cargo.toml;
               in
@@ -86,6 +89,17 @@
           };
 
         };
+
+      flake = {
+        homeModules = {
+          default = self.homeModules.imapmaildir;
+
+          imapmaildir = import ./module.nix {
+            inherit self;
+          };
+
+        };
+      };
 
     };
 }

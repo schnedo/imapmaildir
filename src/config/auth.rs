@@ -7,12 +7,12 @@ use serde::Deserialize;
 pub struct PlainAuthConfig {
     user: String,
     #[getter(skip)]
-    password_cmd: String,
+    password_cmd: Vec<String>,
 }
 
 impl PlainAuthConfig {
     pub fn password(&self) -> String {
-        let mut cmd_parts = self.password_cmd.split(' ');
+        let mut cmd_parts = self.password_cmd.iter();
         let mut cmd = Command::new(
             cmd_parts
                 .next()
