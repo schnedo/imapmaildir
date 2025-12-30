@@ -20,10 +20,11 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
     ) -> JoinHandle<()> {
-        if let Some(maildir_repository) = MaildirRepository::load(mail_dir, state_dir) {
+        let mailbox_maildir = mail_dir.join(mailbox);
+        if let Some(maildir_repository) = MaildirRepository::load(&mailbox_maildir, state_dir) {
             Self::sync_existing(&maildir_repository, client, mailbox).await
         } else {
-            Self::sync_new(client, mail_dir, state_dir, mailbox).await
+            Self::sync_new(client, &mailbox_maildir, state_dir, mailbox).await
         }
     }
 
