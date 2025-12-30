@@ -28,9 +28,15 @@ impl MaildirRepository {
         Self { maildir, state }
     }
 
-    pub fn init(uid_validity: UidValidity, mail_dir: &Path, state_dir: &Path) -> Self {
+    pub fn init(
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
+        mail_dir: &Path,
+        state_dir: &Path,
+    ) -> Self {
         let mail = Maildir::new(mail_dir);
-        let state = State::init(state_dir, uid_validity).expect("initializing state should work");
+        let state = State::init(state_dir, uid_validity, highest_modseq)
+            .expect("initializing state should work");
 
         Self::new(mail, state)
     }

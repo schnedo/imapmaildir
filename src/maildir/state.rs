@@ -24,6 +24,12 @@ fn get_highest_modseq(db: &Connection) -> ModSeq {
     .expect("getting modseq should succeed")
 }
 
+fn set_highest_modseq(db: &Connection, value: ModSeq) {
+    trace!("setting highest_modseq {value}");
+    db.pragma_update(None, "user_version", u64::from(value))
+        .expect("setting modseq should succeed");
+}
+
 fn get_state_version(db: &Connection) -> u32 {
     db.query_one("select state_version from maildir_info", [], |row| {
         row.get(0)
@@ -69,7 +75,11 @@ impl State {
         Ok(Self::new(db))
     }
 
-    pub fn init(state_dir: &Path, uid_validity: UidValidity) -> Result<Self, Error> {
+    pub fn init(
+        state_dir: &Path,
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
+    ) -> Result<Self, Error> {
         let state_file = Self::prepare_state_file(state_dir);
         debug!("creating new state file {}", state_file.to_string_lossy());
         let db = Connection::open(state_file)?;
@@ -95,6 +105,7 @@ impl State {
             [CURRENT_VERSION, u32::from(uid_validity)],
         )
         .expect("maildir_info should be settable");
+        set_highest_modseq(&db, highest_modseq);
 
         Ok(Self::new(db))
     }
@@ -143,8 +154,7 @@ impl State {
     async fn set_highest_modseq_uncached(&self, value: ModSeq) {
         trace!("setting highest_modseq {value}");
         let db = self.db.lock().await;
-        db.pragma_update(None, "user_version", u64::from(value))
-            .expect("setting modseq should succeed");
+        set_highest_modseq(&db, value);
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {

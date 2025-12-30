@@ -202,12 +202,13 @@ impl Syncer {
             .select(mail_tx, highest_modseq_tx, deleted_tx, mailbox)
             .await;
 
-        let maildir_repository =
-            MaildirRepository::init(selection.mailbox_data.uid_validity(), mail_dir, state_dir);
+        let maildir_repository = MaildirRepository::init(
+            selection.mailbox_data.uid_validity(),
+            selection.mailbox_data.highest_modseq(),
+            mail_dir,
+            state_dir,
+        );
         selection.client.fetch_all().await;
-        maildir_repository
-            .set_highest_modseq(selection.mailbox_data.highest_modseq())
-            .await;
 
         maildir_repository
     }
