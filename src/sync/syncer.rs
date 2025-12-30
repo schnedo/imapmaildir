@@ -20,7 +20,7 @@ impl Syncer {
         client: AuthenticatedClient,
     ) -> JoinHandle<()> {
         let (mail_tx, mut mail_rx) = mpsc::channel(32);
-        let (highest_modseq_tx, highest_modseq_rx) = mpsc::channel(32);
+        let (highest_modseq_tx, mut highest_modseq_rx) = mpsc::channel(32);
         let (deleted_tx, mut deleted_rx) = mpsc::channel(32);
         let maildir_repository =
             if let Some(maildir_repository) = MaildirRepository::load(mail_dir, state_dir) {
@@ -47,7 +47,6 @@ impl Syncer {
                 )
                 .await
             };
-        maildir_repository.handle_highest_modseq(highest_modseq_rx);
 
         tokio::spawn(async move {
             debug!("Listening to incoming mail...");
@@ -57,9 +56,12 @@ impl Syncer {
                         maildir_repository.store(&mail).await;
                     }
                     Some(set) = deleted_rx.recv() => {
-                    for uid in set.iter() {
-                        maildir_repository.delete(uid).await;
+                        for uid in set.iter() {
+                            maildir_repository.delete(uid).await;
+                        }
                     }
+                    Some(highest_modseq) = highest_modseq_rx.recv() => {
+                        maildir_repository.set_highest_modseq(highest_modseq).await;
                     }
                 }
             }

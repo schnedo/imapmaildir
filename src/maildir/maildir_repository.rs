@@ -41,10 +41,6 @@ impl MaildirRepository {
         Self::new(mail, state)
     }
 
-    pub fn handle_highest_modseq(&self, highest_modseq_rx: mpsc::Receiver<ModSeq>) {
-        self.state.handle_highest_modseq(highest_modseq_rx);
-    }
-
     pub fn load(mail_dir: &Path, state_dir: &Path) -> Option<Self> {
         match (State::load(state_dir), Maildir::load(mail_dir)) {
             (Ok(state), Ok(mail)) => Some(Self::new(mail, state)),

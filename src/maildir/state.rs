@@ -110,16 +110,6 @@ impl State {
         Ok(Self::new(db))
     }
 
-    pub fn handle_highest_modseq(&self, mut highest_modseq_rx: mpsc::Receiver<ModSeq>) {
-        let state = self.clone();
-
-        tokio::spawn(async move {
-            while let Some(highest_modseq) = highest_modseq_rx.recv().await {
-                state.set_highest_modseq(highest_modseq).await;
-            }
-        });
-    }
-
     fn prepare_state_file(state_dir: &Path) -> PathBuf {
         state_dir.join("state")
     }
