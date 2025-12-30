@@ -1,6 +1,5 @@
 use std::{
     convert::Into,
-    fs::create_dir_all,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -50,8 +49,8 @@ impl State {
         }
     }
 
-    pub fn load(state_dir: &Path, account: &str, mailbox: &str) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
+    pub fn load(state_dir: &Path) -> Result<Self, Error> {
+        let state_file = Self::prepare_state_file(state_dir);
         debug!(
             "try loading existing state file {}",
             state_file.to_string_lossy()
@@ -70,13 +69,8 @@ impl State {
         Ok(Self::new(db))
     }
 
-    pub fn init(
-        state_dir: &Path,
-        account: &str,
-        mailbox: &str,
-        uid_validity: UidValidity,
-    ) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir, account, mailbox);
+    pub fn init(state_dir: &Path, uid_validity: UidValidity) -> Result<Self, Error> {
+        let state_file = Self::prepare_state_file(state_dir);
         debug!("creating new state file {}", state_file.to_string_lossy());
         let db = Connection::open(state_file)?;
         db.execute_batch(
@@ -115,11 +109,8 @@ impl State {
         });
     }
 
-    fn prepare_state_file(state_dir: &Path, account: &str, mailbox: &str) -> PathBuf {
-        let mut state_dir = state_dir.join(account);
-        create_dir_all(&state_dir).expect("creation of state_dir should succeed");
-        state_dir.push(mailbox);
-        state_dir
+    fn prepare_state_file(state_dir: &Path) -> PathBuf {
+        state_dir.join("state")
     }
 
     pub async fn uid_validity(&self) -> UidValidity {

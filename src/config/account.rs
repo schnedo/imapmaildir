@@ -16,43 +16,50 @@ struct AccountConfigFile {
     host: String,
     port: u16,
     mailboxes: Vec<String>,
+    maildir_base_path: Option<PathBuf>,
 }
 
 #[derive(Getters)]
 pub struct AccountConfig {
-    account: String,
     auth: AuthConfig,
     host: String,
     port: u16,
     mailboxes: Vec<String>,
+    maildir_base_path: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl AccountConfig {
-    pub fn load_from_file(account: String) -> Self {
+    pub fn load_from_file(account: &str) -> Self {
         let mut config_home = config_home();
         config_home.push("accounts");
-        let mut config_file_name = account.clone();
+        let mut config_file_name = account.to_string();
         config_file_name.push_str(".toml");
         config_home.push(&config_file_name);
         let contents = read_to_string(config_home).expect("account config should be readable");
         let config: AccountConfigFile =
             toml::from_str(&contents).expect("account config should be parsable");
 
+        let maildir_base_path = config.maildir_base_path.unwrap_or_else(|| {
+            let mut data_home = data_home();
+            data_home.push(account);
+            data_home.push("mail");
+
+            data_home
+        });
+
+        let mut state_dir = data_home();
+        state_dir.push(account);
+        create_dir_all(&state_dir).expect("creation of state dir should succeed");
+
         Self {
-            account,
             auth: config.auth,
             host: config.host,
             port: config.port,
             mailboxes: config.mailboxes,
+            maildir_base_path,
+            state_dir,
         }
-    }
-
-    pub fn data_dir(&self) -> PathBuf {
-        let mut data_dir = data_home();
-        data_dir.push(self.account());
-        create_dir_all(&data_dir).expect("data_dir should be creatable");
-
-        data_dir
     }
 }
 

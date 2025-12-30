@@ -1,5 +1,3 @@
-use core::str;
-
 use clap::Parser;
 mod config;
 mod imap;
@@ -30,28 +28,27 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     logging::init();
 
-    let config = Config::load_from_file(args.account);
+    let config = Config::load_from_file(&args.account);
 
     if args.nuke {
         nuke(&config);
 
         Ok(())
     } else {
-        let state_dir = config.data_dir();
-        let mail_dir = state_dir.join("mail");
-
-        let host: &str = config.host();
-        let port = config.port();
-
         let mailbox = config
             .mailboxes()
             .first()
             .expect("there should be a mailbox configured");
 
-        let client = Client::login(host, port, config.auth()).await;
+        let client = Client::login(config.host(), config.port(), config.auth()).await;
 
-        let sync_handle =
-            Syncer::sync(config.account(), mailbox, &mail_dir, &state_dir, client).await;
+        let sync_handle = Syncer::sync(
+            mailbox,
+            config.maildir_base_path(),
+            config.state_dir(),
+            client,
+        )
+        .await;
         sync_handle.await?;
 
         Ok(())

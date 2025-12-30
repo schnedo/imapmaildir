@@ -28,16 +28,9 @@ impl MaildirRepository {
         Self { maildir, state }
     }
 
-    pub fn init(
-        account: &str,
-        mailbox: &str,
-        uid_validity: UidValidity,
-        mail_dir: &Path,
-        state_dir: &Path,
-    ) -> Self {
-        let mail = Maildir::new(mail_dir, account, mailbox);
-        let state = State::init(state_dir, account, mailbox, uid_validity)
-            .expect("initializing state should work");
+    pub fn init(uid_validity: UidValidity, mail_dir: &Path, state_dir: &Path) -> Self {
+        let mail = Maildir::new(mail_dir);
+        let state = State::init(state_dir, uid_validity).expect("initializing state should work");
 
         Self::new(mail, state)
     }
@@ -46,11 +39,8 @@ impl MaildirRepository {
         self.state.handle_highest_modseq(highest_modseq_rx);
     }
 
-    pub fn load(account: &str, mailbox: &str, mail_dir: &Path, state_dir: &Path) -> Option<Self> {
-        match (
-            State::load(state_dir, account, mailbox),
-            Maildir::load(mail_dir, account, mailbox),
-        ) {
+    pub fn load(mail_dir: &Path, state_dir: &Path) -> Option<Self> {
+        match (State::load(state_dir), Maildir::load(mail_dir)) {
             (Ok(state), Ok(mail)) => Some(Self::new(mail, state)),
             (Ok(_), Err(_)) => todo!("missing maildir for existing state"),
             (Err(_), Ok(_)) => todo!("missing state for existing maildir"),

@@ -25,29 +25,23 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn new(mail_dir: &Path, account: &str, mailbox: &str) -> Self {
-        let mut maildir_path = mail_dir.join(account);
-        maildir_path.push(mailbox);
-
-        if Maildir::load(mail_dir, account, mailbox).is_ok() {
-            panic!(
-                "unmanaged maildir found at {}",
-                maildir_path.to_string_lossy()
-            );
+    pub fn new(mail_dir: &Path) -> Self {
+        if Maildir::load(mail_dir).is_ok() {
+            panic!("unmanaged maildir found at {}", mail_dir.to_string_lossy());
         } else {
-            info!("creating mailbox in {:#}", maildir_path.display());
+            info!("creating mailbox in {:#}", mail_dir.display());
             let mut builder = DirBuilder::new();
             builder.recursive(true).mode(0o700);
 
-            let tmp = maildir_path.join("tmp");
+            let tmp = mail_dir.join("tmp");
             builder
                 .create(tmp.as_path())
                 .expect("creation of tmp subdir should succeed");
-            let new = maildir_path.join("new");
+            let new = mail_dir.join("new");
             builder
                 .create(new.as_path())
                 .expect("creation of new subdir should succeed");
-            let cur = maildir_path.join("cur");
+            let cur = mail_dir.join("cur");
             builder
                 .create(cur.as_path())
                 .expect("creation of cur subdir should succeed");
@@ -56,17 +50,15 @@ impl Maildir {
         }
     }
 
-    fn unchecked(mail_dir: &Path, account: &str, mailbox: &str) -> Self {
-        let mut maildir_path = mail_dir.join(account);
-        maildir_path.push(mailbox);
-        let new = maildir_path.join("new");
-        let cur = maildir_path.join("cur");
-        let tmp = maildir_path.join("tmp");
+    fn unchecked(mail_dir: &Path) -> Self {
+        let new = mail_dir.join("new");
+        let cur = mail_dir.join("cur");
+        let tmp = mail_dir.join("tmp");
         Self { new, cur, tmp }
     }
 
-    pub fn load(mail_dir: &Path, account: &str, mailbox: &str) -> Result<Self> {
-        let mail = Self::unchecked(mail_dir, account, mailbox);
+    pub fn load(mail_dir: &Path) -> Result<Self> {
+        let mail = Self::unchecked(mail_dir);
         trace!("loading maildir {mail:?}");
         match (
             mail.new.try_exists(),
@@ -76,7 +68,7 @@ impl Maildir {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
             (Ok(false), Ok(false), Ok(false)) => Err(anyhow!("no mailbox present")),
             (Ok(_), Ok(_), Ok(_)) => panic!(
-                "partially initialized maildir detected: {}/{account}/{mailbox}",
+                "partially initialized maildir detected: {}",
                 mail_dir.to_string_lossy()
             ),
             (_, _, _) => panic!("issue with reading {}", mail_dir.to_string_lossy()),

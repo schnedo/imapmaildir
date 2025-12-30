@@ -14,7 +14,6 @@ pub struct Syncer {}
 
 impl Syncer {
     pub async fn sync(
-        account: &str,
         mailbox: &str,
         mail_dir: &Path,
         state_dir: &Path,
@@ -23,33 +22,31 @@ impl Syncer {
         let (mail_tx, mut mail_rx) = mpsc::channel(32);
         let (highest_modseq_tx, highest_modseq_rx) = mpsc::channel(32);
         let (deleted_tx, mut deleted_rx) = mpsc::channel(32);
-        let maildir_repository = if let Some(maildir_repository) =
-            MaildirRepository::load(account, mailbox, mail_dir, state_dir)
-        {
-            Self::sync_existing(
-                &maildir_repository,
-                client,
-                mail_tx,
-                highest_modseq_tx,
-                deleted_tx,
-                mailbox,
-            )
-            .await;
+        let maildir_repository =
+            if let Some(maildir_repository) = MaildirRepository::load(mail_dir, state_dir) {
+                Self::sync_existing(
+                    &maildir_repository,
+                    client,
+                    mail_tx,
+                    highest_modseq_tx,
+                    deleted_tx,
+                    mailbox,
+                )
+                .await;
 
-            maildir_repository
-        } else {
-            Self::sync_new(
-                client,
-                account,
-                mail_dir,
-                state_dir,
-                mail_tx,
-                highest_modseq_tx,
-                deleted_tx,
-                mailbox,
-            )
-            .await
-        };
+                maildir_repository
+            } else {
+                Self::sync_new(
+                    client,
+                    mail_dir,
+                    state_dir,
+                    mail_tx,
+                    highest_modseq_tx,
+                    deleted_tx,
+                    mailbox,
+                )
+                .await
+            };
         maildir_repository.handle_highest_modseq(highest_modseq_rx);
 
         tokio::spawn(async move {
@@ -194,7 +191,6 @@ impl Syncer {
 
     async fn sync_new(
         client: AuthenticatedClient,
-        account: &str,
         mail_dir: &Path,
         state_dir: &Path,
         mail_tx: mpsc::Sender<RemoteMail>,
@@ -206,13 +202,8 @@ impl Syncer {
             .select(mail_tx, highest_modseq_tx, deleted_tx, mailbox)
             .await;
 
-        let maildir_repository = MaildirRepository::init(
-            account,
-            mailbox,
-            selection.mailbox_data.uid_validity(),
-            mail_dir,
-            state_dir,
-        );
+        let maildir_repository =
+            MaildirRepository::init(selection.mailbox_data.uid_validity(), mail_dir, state_dir);
         selection.client.fetch_all().await;
         maildir_repository
             .set_highest_modseq(selection.mailbox_data.highest_modseq())

@@ -6,9 +6,9 @@ use crate::config::Config;
 
 pub fn nuke(config: &Config) {
     info!("Nuking mails and state");
-    let data = config.data_dir();
+    let data = config.state_dir();
     if data.try_exists().expect("cannot read data directory") {
         trace!("removing {:}", data.display());
-        remove_dir_all(&data).expect("removing mails of account should succeed");
+        remove_dir_all(data).expect("removing mails of account should succeed");
     }
 }
