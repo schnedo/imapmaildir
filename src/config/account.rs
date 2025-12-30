@@ -43,7 +43,6 @@ impl AccountConfig {
         let maildir_base_path = config.maildir_base_path.unwrap_or_else(|| {
             let mut data_home = data_home();
             data_home.push(account);
-            data_home.push("mail");
 
             data_home
         });
