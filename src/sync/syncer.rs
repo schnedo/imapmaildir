@@ -20,16 +20,17 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
     ) -> JoinHandle<()> {
-        let (task_tx, mut task_rx) = mpsc::channel(32);
-        let maildir_repository =
-            if let Some(maildir_repository) = MaildirRepository::load(mail_dir, state_dir) {
-                Self::sync_existing(&maildir_repository, client, task_tx, mailbox).await;
+        if let Some(maildir_repository) = MaildirRepository::load(mail_dir, state_dir) {
+            Self::sync_existing(&maildir_repository, client, mailbox).await
+        } else {
+            Self::sync_new(client, mail_dir, state_dir, mailbox).await
+        }
+    }
 
-                maildir_repository
-            } else {
-                Self::sync_new(client, mail_dir, state_dir, task_tx, mailbox).await
-            };
-
+    fn setup_task_processing(
+        mut task_rx: mpsc::Receiver<Task>,
+        maildir_repository: MaildirRepository,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             debug!("Listening to incoming mail...");
             while let Some(task) = task_rx.recv().await {
@@ -53,11 +54,13 @@ impl Syncer {
     async fn sync_existing(
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
-        task_tx: mpsc::Sender<Task>,
         mailbox: &str,
-    ) {
+    ) -> JoinHandle<()> {
         let uid_validity = maildir_repository.uid_validity().await;
         let highest_modseq = maildir_repository.highest_modseq().await;
+
+        let (task_tx, task_rx) = mpsc::channel(32);
+        let handle = Self::setup_task_processing(task_rx, maildir_repository.clone());
 
         let Selection {
             mut client,
@@ -75,7 +78,6 @@ impl Syncer {
 
         let mut local_changes = maildir_repository.detect_changes().await;
         Self::handle_conflicts(&remote_changes, &mut local_changes);
-
         Self::handle_remote_changes(
             &mut client,
             maildir_repository,
@@ -83,8 +85,9 @@ impl Syncer {
             &mailbox_data,
         )
         .await;
-
         Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
+
+        handle
     }
 
     async fn handle_local_changes(
@@ -168,9 +171,9 @@ impl Syncer {
         client: AuthenticatedClient,
         mail_dir: &Path,
         state_dir: &Path,
-        task_tx: mpsc::Sender<Task>,
         mailbox: &str,
-    ) -> MaildirRepository {
+    ) -> JoinHandle<()> {
+        let (task_tx, task_rx) = mpsc::channel(32);
         let mut selection = client.select(task_tx, mailbox).await;
 
         let maildir_repository = MaildirRepository::init(
@@ -179,8 +182,9 @@ impl Syncer {
             mail_dir,
             state_dir,
         );
+        let handle = Self::setup_task_processing(task_rx, maildir_repository);
         selection.client.fetch_all().await;
 
-        maildir_repository
+        handle
     }
 }

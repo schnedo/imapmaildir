@@ -17,7 +17,7 @@ use crate::{
     repository::{Flag, Uid},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Maildir {
     new: PathBuf,
     cur: PathBuf,

@@ -18,6 +18,7 @@ pub struct NoExistsError {
     uid: Uid,
 }
 
+#[derive(Clone)]
 pub struct MaildirRepository {
     maildir: Maildir,
     state: State,
