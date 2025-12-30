@@ -242,7 +242,10 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        let db = self.db.blocking_lock();
+        let db = self
+            .db
+            .try_lock()
+            .expect("db should not be unlocked when dropping State");
         db.execute("pragma optimize;", [])
             .expect("sqlite should be optimizable");
     }
