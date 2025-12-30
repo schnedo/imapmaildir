@@ -12,6 +12,7 @@ use crate::{
     },
     maildir::{LocalMail, LocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
+    sync::Task,
 };
 
 pub struct StoredMailInfo {
@@ -38,9 +39,7 @@ impl SelectedClient {
         connection: Connection,
         capabilities: &Capabilities,
         mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
-        mail_tx: mpsc::Sender<RemoteMail>,
-        highest_modseq_tx: mpsc::Sender<ModSeq>,
-        deleted_tx: mpsc::Sender<SequenceSet>,
+        task_tx: mpsc::Sender<Task>,
     ) -> Self {
         assert!(
             capabilities.contains(Capability::LiteralPlus),
@@ -76,8 +75,8 @@ impl SelectedClient {
                                     let content = RemoteContent::new(response.raw(), content);
 
                                     let remote_mail = RemoteMail::new(metadata, content);
-                                    mail_tx
-                                        .send(remote_mail)
+                                    task_tx
+                                        .send(Task::NewMail(remote_mail))
                                         .await
                                         .expect("mail channel should still be open");
                                 } else {
@@ -102,19 +101,19 @@ impl SelectedClient {
                         code: Some(imap_proto::ResponseCode::HighestModSeq(modseq)),
                         ..
                     } => {
-                        highest_modseq_tx
-                            .send(
+                        task_tx
+                            .send(Task::HighestModSeq(
                                 modseq
                                     .try_into()
                                     .expect("received highest_modseq should be valid"),
-                            )
+                            ))
                             .await
                             .expect("channel should be open");
                     }
                     imap_proto::Response::Vanished { earlier, uids } => {
                         trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
-                        deleted_tx
-                            .send(uids.into())
+                        task_tx
+                            .send(Task::Delete(uids.into()))
                             .await
                             .expect("deletion channel should still be open");
                     }

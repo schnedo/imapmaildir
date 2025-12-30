@@ -1,7 +1,8 @@
 use crate::{
-    imap::{RemoteChanges, RemoteMail, SelectedClient, Selection},
+    imap::{RemoteChanges, SelectedClient, Selection},
     maildir::LocalChanges,
-    repository::{MailboxMetadata, ModSeq, SequenceSet, SequenceSetBuilder},
+    repository::{MailboxMetadata, SequenceSet, SequenceSetBuilder},
+    sync::task::Task,
 };
 use std::{collections::HashSet, path::Path};
 
@@ -19,49 +20,30 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
     ) -> JoinHandle<()> {
-        let (mail_tx, mut mail_rx) = mpsc::channel(32);
-        let (highest_modseq_tx, mut highest_modseq_rx) = mpsc::channel(32);
-        let (deleted_tx, mut deleted_rx) = mpsc::channel(32);
+        let (task_tx, mut task_rx) = mpsc::channel(32);
         let maildir_repository =
             if let Some(maildir_repository) = MaildirRepository::load(mail_dir, state_dir) {
-                Self::sync_existing(
-                    &maildir_repository,
-                    client,
-                    mail_tx,
-                    highest_modseq_tx,
-                    deleted_tx,
-                    mailbox,
-                )
-                .await;
+                Self::sync_existing(&maildir_repository, client, task_tx, mailbox).await;
 
                 maildir_repository
             } else {
-                Self::sync_new(
-                    client,
-                    mail_dir,
-                    state_dir,
-                    mail_tx,
-                    highest_modseq_tx,
-                    deleted_tx,
-                    mailbox,
-                )
-                .await
+                Self::sync_new(client, mail_dir, state_dir, task_tx, mailbox).await
             };
 
         tokio::spawn(async move {
             debug!("Listening to incoming mail...");
-            loop {
-                tokio::select! {
-                    Some(mail) = mail_rx.recv() => {
-                        maildir_repository.store(&mail).await;
+            while let Some(task) = task_rx.recv().await {
+                match task {
+                    Task::NewMail(remote_mail) => {
+                        maildir_repository.store(&remote_mail).await;
                     }
-                    Some(set) = deleted_rx.recv() => {
-                        for uid in set.iter() {
+                    Task::Delete(sequence_set) => {
+                        for uid in sequence_set.iter() {
                             maildir_repository.delete(uid).await;
                         }
                     }
-                    Some(highest_modseq) = highest_modseq_rx.recv() => {
-                        maildir_repository.set_highest_modseq(highest_modseq).await;
+                    Task::HighestModSeq(mod_seq) => {
+                        maildir_repository.set_highest_modseq(mod_seq).await;
                     }
                 }
             }
@@ -71,9 +53,7 @@ impl Syncer {
     async fn sync_existing(
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
-        mail_tx: mpsc::Sender<RemoteMail>,
-        highest_modseq_tx: mpsc::Sender<ModSeq>,
-        deleted_tx: mpsc::Sender<SequenceSet>,
+        task_tx: mpsc::Sender<Task>,
         mailbox: &str,
     ) {
         let uid_validity = maildir_repository.uid_validity().await;
@@ -85,14 +65,7 @@ impl Syncer {
             mailbox_data,
             ..
         } = client
-            .qresync_select(
-                mail_tx,
-                highest_modseq_tx,
-                deleted_tx,
-                mailbox,
-                uid_validity,
-                highest_modseq,
-            )
+            .qresync_select(task_tx, mailbox, uid_validity, highest_modseq)
             .await;
         assert_eq!(
             uid_validity,
@@ -195,14 +168,10 @@ impl Syncer {
         client: AuthenticatedClient,
         mail_dir: &Path,
         state_dir: &Path,
-        mail_tx: mpsc::Sender<RemoteMail>,
-        highest_modseq_tx: mpsc::Sender<ModSeq>,
-        deleted_tx: mpsc::Sender<SequenceSet>,
+        task_tx: mpsc::Sender<Task>,
         mailbox: &str,
     ) -> MaildirRepository {
-        let mut selection = client
-            .select(mail_tx, highest_modseq_tx, deleted_tx, mailbox)
-            .await;
+        let mut selection = client.select(task_tx, mailbox).await;
 
         let maildir_repository = MaildirRepository::init(
             selection.mailbox_data.uid_validity(),
