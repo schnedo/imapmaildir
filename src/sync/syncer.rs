@@ -46,6 +46,9 @@ impl Syncer {
                     Task::HighestModSeq(mod_seq) => {
                         maildir_repository.set_highest_modseq(mod_seq).await;
                     }
+                    Task::Shutdown() => {
+                        task_rx.close();
+                    }
                 }
             }
         })
@@ -68,7 +71,7 @@ impl Syncer {
             mailbox_data,
             ..
         } = client
-            .qresync_select(task_tx, mailbox, uid_validity, highest_modseq)
+            .qresync_select(task_tx.clone(), mailbox, uid_validity, highest_modseq)
             .await;
         assert_eq!(
             uid_validity,
@@ -86,6 +89,10 @@ impl Syncer {
         )
         .await;
         Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
+        task_tx
+            .send(Task::Shutdown())
+            .await
+            .expect("sending shutdown task should succeed");
 
         handle
     }
@@ -174,7 +181,7 @@ impl Syncer {
         mailbox: &str,
     ) -> JoinHandle<()> {
         let (task_tx, task_rx) = mpsc::channel(32);
-        let mut selection = client.select(task_tx, mailbox).await;
+        let mut selection = client.select(task_tx.clone(), mailbox).await;
 
         let maildir_repository = MaildirRepository::init(
             selection.mailbox_data.uid_validity(),
@@ -184,6 +191,10 @@ impl Syncer {
         );
         let handle = Self::setup_task_processing(task_rx, maildir_repository);
         selection.client.fetch_all().await;
+        task_tx
+            .send(Task::Shutdown())
+            .await
+            .expect("sending shutdown task should succeed");
 
         handle
     }

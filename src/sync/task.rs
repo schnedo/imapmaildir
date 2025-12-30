@@ -7,4 +7,5 @@ pub enum Task {
     NewMail(RemoteMail),
     Delete(SequenceSet),
     HighestModSeq(ModSeq),
+    Shutdown(),
 }
