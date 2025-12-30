@@ -1,4 +1,5 @@
 use clap::Parser;
+use log::LevelFilter;
 mod cli;
 mod config;
 mod imap;
@@ -19,11 +20,13 @@ struct Args {
     account: String,
     #[arg(long)]
     mailbox: Option<String>,
+    #[arg(long, default_value_t=LevelFilter::Trace)]
+    log_level: LevelFilter,
 }
 
 fn main() {
     let args = Args::parse();
-    logging::init(args.mailbox.as_deref());
+    logging::init(args.log_level, args.mailbox.as_deref());
     let config = Config::load_from_file(&args.account);
 
     cli::run(&args, &config);

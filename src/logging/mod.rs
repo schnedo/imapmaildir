@@ -4,10 +4,12 @@ use std::{io::Write as _, time::SystemTime};
 
 use anstyle::{AnsiColor, Effects};
 use connected_to_journal::connected_to_journal;
-use env_logger::Env;
+use env_logger::Builder;
+use log::LevelFilter;
 
-pub fn init(mailbox: Option<&str>) {
-    let mut builder = env_logger::Builder::from_env(Env::default().default_filter_or("trace"));
+pub fn init(level: LevelFilter, mailbox: Option<&str>) {
+    let mut builder = Builder::new();
+    builder.filter_level(level);
     let mailbox = if let Some(mailbox) = mailbox {
         format!("{mailbox} ")
     } else {
