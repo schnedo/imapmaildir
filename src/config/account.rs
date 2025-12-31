@@ -1,9 +1,5 @@
 use ::std::env;
-use std::{
-    fs::{create_dir_all, read_to_string},
-    path::PathBuf,
-    str::FromStr,
-};
+use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -50,7 +46,6 @@ impl AccountConfig {
 
         let mut state_dir = data_home();
         state_dir.push(account);
-        create_dir_all(&state_dir).expect("creation of state dir should succeed");
 
         Self {
             auth: config.auth,
