@@ -15,6 +15,7 @@ struct AccountConfigFile {
     auth: AuthConfig,
     host: String,
     port: u16,
+    // todo: "all" for generic fetch of all mailboxes
     mailboxes: Vec<String>,
     maildir_base_path: Option<PathBuf>,
 }
