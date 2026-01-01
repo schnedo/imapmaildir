@@ -113,7 +113,6 @@ impl MaildirRepository {
     }
 
     pub async fn detect_changes(&self) -> LocalChanges {
-        let mut deletions = Vec::new();
         let mut news = Vec::new();
         let maildir_metadata = self.maildir.list_cur();
 
@@ -127,26 +126,34 @@ impl MaildirRepository {
             }
         }
 
-        let mut updates = LocalFlagChangesBuilder::default();
-        let (all_entries_tx, mut all_entries_rx) = mpsc::channel(32);
-        let highest_modseq = self.state.get_all(all_entries_tx).await;
-        while let Some(entry) = all_entries_rx.recv().await {
-            let uid = entry.uid().expect("all mails in state should have a uid");
-            if let Some(data) = maildir_mails.remove(&uid) {
-                let mut additional_flags = data.flags();
-                additional_flags.remove(entry.flags());
-                for flag in additional_flags {
-                    updates.insert_additional(flag, uid);
+        let (all_entries_tx, mut all_entries_rx) = mpsc::channel::<LocalMailMetadata>(32);
+        let build_updates_handle = tokio::spawn(async move {
+            let mut updates = LocalFlagChangesBuilder::default();
+            let mut deletions = Vec::new();
+            while let Some(entry) = all_entries_rx.recv().await {
+                let uid = entry.uid().expect("all mails in state should have a uid");
+                if let Some(data) = maildir_mails.remove(&uid) {
+                    let mut additional_flags = data.flags();
+                    additional_flags.remove(entry.flags());
+                    for flag in additional_flags {
+                        updates.insert_additional(flag, uid);
+                    }
+                    let mut removed_flags = entry.flags();
+                    removed_flags.remove(data.flags());
+                    for flag in removed_flags {
+                        updates.insert_removed(flag, uid);
+                    }
+                } else {
+                    deletions.push(entry.uid().expect("uid should exist here"));
                 }
-                let mut removed_flags = entry.flags();
-                removed_flags.remove(data.flags());
-                for flag in removed_flags {
-                    updates.insert_removed(flag, uid);
-                }
-            } else {
-                deletions.push(entry.uid().expect("uid should exist here"));
             }
-        }
+
+            (updates, deletions, maildir_mails)
+        });
+        let highest_modseq = self.state.get_all(all_entries_tx).await;
+        let (updates, deletions, maildir_mails) = build_updates_handle
+            .await
+            .expect("building local updates should succeed");
         for maildata in maildir_mails.into_values() {
             // todo: return Iterator and chain here
             news.push(self.maildir.read(maildata));
