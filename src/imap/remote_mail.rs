@@ -5,6 +5,7 @@ use std::fmt::{Debug, Formatter, Result};
 
 use crate::repository::{Flag, ModSeq, Uid};
 
+// todo: check if Arc covers Clone use cases
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Builder)]
 pub struct RemoteMailMetadata {
     uid: Uid,

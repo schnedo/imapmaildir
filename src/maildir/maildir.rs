@@ -17,6 +17,7 @@ use crate::{
     repository::{Flag, Uid},
 };
 
+// todo: check if Arc covers clone use case
 #[derive(Debug, Clone)]
 pub struct Maildir {
     new: PathBuf,

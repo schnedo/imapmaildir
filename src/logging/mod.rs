@@ -1,22 +1,22 @@
 mod connected_to_journal;
 
-use std::{io::Write as _, time::SystemTime};
+use std::{io::Write as _, thread, time::SystemTime};
 
 use anstyle::{AnsiColor, Effects};
 use connected_to_journal::connected_to_journal;
 use env_logger::Builder;
 use log::LevelFilter;
 
-pub fn init(level: LevelFilter, mailbox: Option<&str>) {
+pub fn init(level: LevelFilter) {
     let mut builder = Builder::new();
     builder.filter_level(level);
-    let mailbox = if let Some(mailbox) = mailbox {
-        format!("{mailbox} ")
-    } else {
-        String::new()
-    };
     if connected_to_journal() {
         builder.format(move |buf, record| {
+            let mailbox = if let Some(mailbox) = thread::current().name() {
+                format!("{mailbox} ")
+            } else {
+                String::new()
+            };
             writeln!(
                 buf,
                 "<{}>{}{}: {}",
@@ -47,6 +47,11 @@ pub fn init(level: LevelFilter, mailbox: Option<&str>) {
                 log::Level::Info => AnsiColor::Green.on_default(),
                 log::Level::Debug => AnsiColor::Blue.on_default(),
                 log::Level::Trace => AnsiColor::Cyan.on_default(),
+            };
+            let mailbox = if let Some(mailbox) = thread::current().name() {
+                format!("{mailbox} ")
+            } else {
+                String::new()
             };
             write!(
                 buf,

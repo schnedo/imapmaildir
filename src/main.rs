@@ -26,8 +26,8 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    logging::init(args.log_level, args.mailbox.as_deref());
+    logging::init(args.log_level);
     let config = Config::load_from_file(&args.account);
 
-    cli::run(&args, &config);
+    cli::run(&args, config);
 }

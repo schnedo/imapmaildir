@@ -38,6 +38,7 @@ impl Debug for LocalMail {
     }
 }
 
+// todo: check if Arc would cover Clone use cases
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
     // todo: different struct for new local mail that has no uid yet

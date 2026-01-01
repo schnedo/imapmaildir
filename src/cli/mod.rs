@@ -9,12 +9,12 @@ use crate::{
     config::Config,
 };
 
-pub fn run(args: &Args, config: &Config) {
+pub fn run(args: &Args, config: Config) {
     if args.nuke {
-        nuke(config);
+        nuke(&config);
     } else if let Some(mailbox) = &args.mailbox {
-        sync_mailbox(config, mailbox);
+        sync_mailbox(&config, mailbox);
     } else {
-        sync_all(config, &args.account);
+        sync_all(config);
     }
 }

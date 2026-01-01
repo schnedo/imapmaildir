@@ -1,9 +1,9 @@
 use std::{
-    env,
-    process::{Child, Command},
+    sync::Arc,
+    thread::{self, JoinHandle},
 };
 
-use log::error;
+use log::{error, info};
 
 use crate::{config::Config, imap::Client, sync::Syncer};
 
@@ -26,29 +26,34 @@ pub fn sync_mailbox(config: &Config, mailbox: &str) {
     });
 }
 
-pub fn sync_all(config: &Config, account: &str) {
-    let program = env::args_os()
-        .next()
-        .expect("first command line argument should always be program name");
-    let children: Vec<(&str, Child)> = config
+pub fn sync_all(config: Config) {
+    let config = Arc::new(config);
+    let sync_handles: Vec<JoinHandle<()>> = config
         .mailboxes()
         .iter()
         .map(|mailbox| {
-            let mut subprocess = Command::new(&program);
-            subprocess.args(["--account", account, "--mailbox", mailbox]);
-            (
-                mailbox.as_str(),
-                subprocess
-                    .spawn()
-                    .expect("mailbox specific subprocess should be runnable"),
-            )
+            let config = config.clone();
+            // todo: Cow instead of cloning String multiple times
+            let mailbox_clone = mailbox.clone();
+            let thread_builder = thread::Builder::new().name(mailbox.clone());
+            thread_builder
+                .spawn(move || {
+                    sync_mailbox(&config, &mailbox_clone);
+                    info!("finished syncing {mailbox_clone}");
+                })
+                .expect("spawning sync thread should succeed")
         })
         .collect();
 
     let mut error_happened = false;
-    for (mailbox, mut child) in children {
-        let exit_code = child.wait().expect("child process should be awaitable");
-        if !exit_code.success() {
+    for handle in sync_handles {
+        let mailbox = handle
+            .thread()
+            .name()
+            .expect("thread should have mailbox as name")
+            .to_string();
+        let sync_result = handle.join();
+        if sync_result.is_err() {
             error!("syncing mailbox {mailbox} failed");
             error_happened = true;
         }
