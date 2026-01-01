@@ -1,7 +1,7 @@
 use std::io::Write as _;
 use std::mem::transmute;
 
-use log::{debug, info, trace};
+use log::{debug, trace};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -140,7 +140,6 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all(&mut self) {
-        info!("initializing new imap repository");
         self.fetch_mail(&SequenceSet::all()).await;
     }
 

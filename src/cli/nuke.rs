@@ -1,11 +1,10 @@
 use std::fs::remove_dir_all;
 
-use log::{info, trace};
+use log::trace;
 
 use crate::config::Config;
 
 pub fn nuke(config: &Config) {
-    info!("Nuking mails and state");
     let mails = config.maildir_base_path();
     if mails.try_exists().expect("cannot read mail directory") {
         trace!("removing {:}", mails.display());

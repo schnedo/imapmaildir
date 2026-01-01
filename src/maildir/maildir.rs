@@ -29,7 +29,7 @@ impl Maildir {
         if Maildir::load(mail_dir).is_ok() {
             panic!("unmanaged maildir found at {}", mail_dir.to_string_lossy());
         } else {
-            info!("creating mailbox in {:#}", mail_dir.display());
+            info!("creating maildir in {:#}", mail_dir.display());
             let mut builder = DirBuilder::new();
             builder.recursive(true).mode(0o700);
 

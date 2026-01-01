@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path};
 
-use log::debug;
+use log::{debug, info};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
@@ -27,6 +27,7 @@ impl Syncer {
         {
             Self::sync_existing(&maildir_repository, client, mailbox).await
         } else {
+            info!("no existing maildir found. Running inital sync");
             Self::sync_new(client, &mailbox_maildir, &mailbox_statedir, mailbox).await
         }
     }

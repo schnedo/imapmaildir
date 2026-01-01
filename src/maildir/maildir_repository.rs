@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::Path};
 use thiserror::Error;
 
-use log::trace;
+use log::{info, trace};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -64,7 +64,7 @@ impl MaildirRepository {
     }
 
     pub async fn store(&self, mail: &RemoteMail) {
-        trace!("storing mail {mail:?}");
+        info!("storing mail {}", mail.metadata().uid());
         // todo: check if update is necessary
         if self.update_flags(mail.metadata()).await.is_err() {
             let metadata = self.maildir.store(mail);
@@ -78,7 +78,7 @@ impl MaildirRepository {
     ) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
         let res = if let Some(mut entry) = self.state.get_by_id(uid).await {
-            trace!("updating existing mail with uid {uid:?}");
+            info!("update flags of mail {uid}");
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
                 self.maildir.update_flags(&mut entry, new_flags);
@@ -97,11 +97,13 @@ impl MaildirRepository {
     }
 
     pub async fn add_synced(&self, mail_metadata: &mut LocalMailMetadata, new_uid: Uid) {
+        info!("adding {new_uid} to newly synced mail");
         self.maildir.update_uid(mail_metadata, new_uid);
         self.state.store(mail_metadata).await;
     }
 
     pub async fn delete(&self, uid: Uid) {
+        info!("deleting mail {uid}");
         if let Some(entry) = self.state.get_by_id(uid).await {
             self.maildir.delete(&entry);
             self.state.delete_by_id(uid).await;
