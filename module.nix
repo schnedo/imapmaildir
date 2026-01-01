@@ -64,7 +64,6 @@
           {
             Unit = {
               Description = "mail sync via imapmaildir for account ${name}";
-              Documentation = "imapmaildir --help";
             };
             Service = {
               Type = "exec";
@@ -85,7 +84,6 @@
           "${name}" = {
             Unit = {
               Description = "timer for ${name}";
-              Documentation = "imapmaildir --help";
             };
             Timer = {
               OnStartupSec = 0;
