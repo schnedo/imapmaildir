@@ -23,17 +23,25 @@
               type = lib.types.listOf lib.types.str;
               default = [ ];
             };
-            serviceName = lib.mkOption {
-              type = lib.types.str;
-              readOnly = true;
+            service = lib.mkOption {
+              type = lib.types.submodule {
+                options = {
+                  name = lib.mkOption {
+                    type = lib.types.str;
+                  };
+                  intervalSec = lib.mkOption {
+                    type = lib.types.int;
+                    default = 5 * 60;
+                  };
+                  extraConfig = lib.mkOption {
+                    type = lib.types.attrs;
+                  };
+                };
+                config = {
+                  name = lib.mkDefault "imapmaildir-sync-${name}";
+                };
+              };
             };
-            intervalSec = lib.mkOption {
-              type = lib.types.int;
-              default = 5 * 60;
-            };
-          };
-          config.imapmaildir = {
-            serviceName = lib.mkDefault "imapmaildir-sync-${name}";
           };
         }
       )
@@ -51,23 +59,26 @@
       enable = (builtins.length (builtins.attrNames accounts)) > 0;
 
       mkService = name: account: {
-        "${account.imapmaildir.serviceName}" = {
-          Unit = {
-            Description = "mail sync via imapmaildir for account ${name}";
-            Documentation = "imapmaildir --help";
-          };
-          Service = {
-            ExecStart = "${
-              lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
-            } --account ${name}";
-          };
-        };
+        "${account.imapmaildir.service.name}" = lib.mkMerge [
+          account.imapmaildir.service.extraConfig
+          {
+            Unit = {
+              Description = "mail sync via imapmaildir for account ${name}";
+              Documentation = "imapmaildir --help";
+            };
+            Service = {
+              ExecStart = "${
+                lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
+              } --account ${name}";
+            };
+          }
+        ];
       };
 
       mkTimer =
         name: account:
         let
-          name = account.imapmaildir.serviceName;
+          inherit (account.imapmaildir.service) name;
         in
         {
           "${name}" = {
@@ -77,7 +88,7 @@
             };
             Timer = {
               OnStartupSec = 0;
-              OnUnitInactiveSec = account.imapmaildir.intervalSec;
+              OnUnitInactiveSec = account.imapmaildir.service.intervalSec;
             };
             Install = {
               WantedBy = [
