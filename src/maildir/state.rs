@@ -151,10 +151,15 @@ impl State {
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {
-        trace!("setting cached highest_modseq {value}");
+        trace!(
+            "check for setting highest_modseq {:?} to {value:?}",
+            self.cached_highest_modseq
+        );
         let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
-        self.set_highest_modseq_uncached(value).await;
-        *cached_highest_modseq = value;
+        if *cached_highest_modseq != value {
+            self.set_highest_modseq_uncached(value).await;
+            *cached_highest_modseq = value;
+        }
     }
 
     pub async fn highest_modseq(&self) -> ModSeq {
