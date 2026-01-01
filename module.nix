@@ -115,7 +115,7 @@
                 # todo: assert use tls
                 port = if builtins.isNull port then 993 else port;
                 inherit (account.imapmaildir) mailboxes;
-                maildir_base_path = account.maildir.path;
+                maildir_base_path = account.maildir.absPath;
                 auth = {
                   type = "Plain";
                   user = account.userName;
