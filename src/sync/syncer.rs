@@ -6,8 +6,8 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path};
 
-use log::{debug, info};
-use tokio::{sync::mpsc, task::JoinHandle};
+use log::info;
+use tokio::sync::mpsc;
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
 
@@ -19,56 +19,38 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
-    ) -> JoinHandle<()> {
+    ) {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
-        if let Some(maildir_repository) =
-            MaildirRepository::load(&mailbox_maildir, &mailbox_statedir)
-        {
-            Self::sync_existing(&maildir_repository, client, mailbox).await
-        } else {
-            info!("no existing maildir found. Running inital sync");
-            Self::sync_new(client, &mailbox_maildir, &mailbox_statedir, mailbox).await
-        }
-    }
+        let (task_tx, task_rx) = mpsc::channel(32);
 
-    fn setup_task_processing(
-        mut task_rx: mpsc::Receiver<Task>,
-        maildir_repository: MaildirRepository,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            debug!("Listening to incoming mail...");
-            while let Some(task) = task_rx.recv().await {
-                match task {
-                    Task::NewMail(remote_mail) => {
-                        maildir_repository.store(&remote_mail).await;
-                    }
-                    Task::Delete(sequence_set) => {
-                        for uid in sequence_set.iter() {
-                            maildir_repository.delete(uid).await;
-                        }
-                    }
-                    Task::HighestModSeq(mod_seq) => {
-                        maildir_repository.set_highest_modseq(mod_seq).await;
-                    }
-                    Task::Shutdown() => {
-                        task_rx.close();
-                    }
-                }
+        match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir, task_rx) {
+            Ok(maildir_repository) => {
+                Self::sync_existing(&maildir_repository, client, mailbox, task_tx).await;
             }
-        })
+            Err(task_rx) => {
+                info!("no existing maildir found. Running inital sync");
+                Self::sync_new(
+                    client,
+                    &mailbox_maildir,
+                    &mailbox_statedir,
+                    mailbox,
+                    task_rx,
+                    task_tx,
+                )
+                .await;
+            }
+        }
     }
 
     async fn sync_existing(
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
-    ) -> JoinHandle<()> {
+        task_tx: mpsc::Sender<Task>,
+    ) {
         let uid_validity = maildir_repository.uid_validity().await;
         let highest_modseq = maildir_repository.highest_modseq().await;
-
-        let (task_tx, task_rx) = mpsc::channel(32);
-        let handle = Self::setup_task_processing(task_rx, maildir_repository.clone());
 
         let Selection {
             mut client,
@@ -98,8 +80,6 @@ impl Syncer {
             .send(Task::Shutdown())
             .await
             .expect("sending shutdown task should succeed");
-
-        handle
     }
 
     async fn handle_local_changes(
@@ -184,23 +164,22 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         mailbox: &str,
-    ) -> JoinHandle<()> {
-        let (task_tx, task_rx) = mpsc::channel(32);
+        task_rx: mpsc::Receiver<Task>,
+        task_tx: mpsc::Sender<Task>,
+    ) {
         let mut selection = client.select(task_tx.clone(), mailbox).await;
 
-        let maildir_repository = MaildirRepository::init(
+        MaildirRepository::init(
             selection.mailbox_data.uid_validity(),
             selection.mailbox_data.highest_modseq(),
             mail_dir,
             state_dir,
+            task_rx,
         );
-        let handle = Self::setup_task_processing(task_rx, maildir_repository);
         selection.client.fetch_all().await;
         task_tx
             .send(Task::Shutdown())
             .await
             .expect("sending shutdown task should succeed");
-
-        handle
     }
 }

@@ -16,17 +16,14 @@ pub fn sync_mailbox(config: &Config, mailbox: &str) {
     rt.block_on(async {
         let client = Client::login(config.host(), config.port(), config.auth()).await;
 
-        let sync_handle = Syncer::sync(
+        Syncer::sync(
             mailbox,
             config.maildir_base_path(),
             config.state_dir(),
             client,
         )
         .await;
-
-        sync_handle.await
-    })
-    .expect("syncing should complete without error");
+    });
 }
 
 pub fn sync_all(config: &Config, account: &str) {

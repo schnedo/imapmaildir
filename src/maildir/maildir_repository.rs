@@ -1,13 +1,14 @@
 use std::{collections::HashMap, path::Path};
 use thiserror::Error;
 
-use log::{info, trace};
+use log::{debug, info, trace};
 use tokio::sync::mpsc;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, state::State},
     repository::{ModSeq, Uid, UidValidity},
+    sync::Task,
 };
 
 use super::Maildir;
@@ -34,20 +35,31 @@ impl MaildirRepository {
         highest_modseq: ModSeq,
         mail_dir: &Path,
         state_dir: &Path,
-    ) -> Self {
+        task_rx: mpsc::Receiver<Task>,
+    ) {
         let mail = Maildir::new(mail_dir);
         let state = State::init(state_dir, uid_validity, highest_modseq)
             .expect("initializing state should work");
 
-        Self::new(mail, state)
+        let repository = Self::new(mail, state);
+        repository.setup_task_processing(task_rx);
     }
 
-    pub fn load(mail_dir: &Path, state_dir: &Path) -> Option<Self> {
+    pub fn load(
+        mail_dir: &Path,
+        state_dir: &Path,
+        task_rx: mpsc::Receiver<Task>,
+    ) -> Result<Self, mpsc::Receiver<Task>> {
         match (State::load(state_dir), Maildir::load(mail_dir)) {
-            (Ok(state), Ok(mail)) => Some(Self::new(mail, state)),
+            (Ok(state), Ok(mail)) => {
+                let repo = Self::new(mail, state);
+                repo.clone().setup_task_processing(task_rx);
+
+                Ok(repo)
+            }
             (Ok(_), Err(_)) => todo!("missing maildir for existing state"),
             (Err(_), Ok(_)) => todo!("missing state for existing maildir"),
-            (Err(_), Err(_)) => None,
+            (Err(_), Err(_)) => Err(task_rx),
         }
     }
 
@@ -160,5 +172,32 @@ impl MaildirRepository {
         }
 
         LocalChanges::new(highest_modseq, deletions, news, updates)
+    }
+
+    fn setup_task_processing(
+        self,
+        mut task_rx: mpsc::Receiver<Task>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            debug!("Listening to incoming mail...");
+            while let Some(task) = task_rx.recv().await {
+                match task {
+                    Task::NewMail(remote_mail) => {
+                        self.store(&remote_mail).await;
+                    }
+                    Task::Delete(sequence_set) => {
+                        for uid in sequence_set.iter() {
+                            self.delete(uid).await;
+                        }
+                    }
+                    Task::HighestModSeq(mod_seq) => {
+                        self.set_highest_modseq(mod_seq).await;
+                    }
+                    Task::Shutdown() => {
+                        task_rx.close();
+                    }
+                }
+            }
+        })
     }
 }
