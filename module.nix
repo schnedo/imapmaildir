@@ -67,6 +67,7 @@
               Documentation = "imapmaildir --help";
             };
             Service = {
+              Type = "exec";
               ExecStart = "${
                 lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
               } --account ${name}";
