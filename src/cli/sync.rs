@@ -50,8 +50,9 @@ pub fn sync_all(config: &Config, account: &str) {
 
     let mut error_happened = false;
     for (mailbox, mut child) in children {
-        if let Err(e) = child.wait() {
-            error!("syncing mailbox {mailbox} failed with {e}");
+        let exit_code = child.wait().expect("child process should be awaitable");
+        if !exit_code.success() {
+            error!("syncing mailbox {mailbox} failed");
             error_happened = true;
         }
     }
