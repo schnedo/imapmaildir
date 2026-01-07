@@ -133,11 +133,17 @@ impl Maildir {
             new.try_exists()
                 .expect("should be able to check if new name exists"),
         ) {
-            (true, true) => todo!(
-                "updating {} to {} failed, because both files already exist",
-                current.to_string_lossy(),
-                new.to_string_lossy()
-            ),
+            (true, true) => {
+                if Self::is_content_identical(current, new) {
+                    fs::rename(current, new).expect("renaming mail in maildir should succeed");
+                } else {
+                    panic!(
+                        "moving {} to {} would overwrite mail with different content",
+                        current.display(),
+                        new.display()
+                    );
+                }
+            }
             (true, false) => {
                 trace!("renaming {:} to {:}", current.display(), new.display());
                 fs::rename(current, new).expect("renaming mail in maildir should succeed");
@@ -152,6 +158,18 @@ impl Maildir {
                 current.to_string_lossy()
             ),
         }
+    }
+
+    fn is_content_identical(current: &Path, new: &Path) -> bool {
+        trace!(
+            "checking if content of {} and {} is identical",
+            current.display(),
+            new.display()
+        );
+        let current_content = fs::read(current).expect("current file should be readable");
+        let new_content = fs::read(new).expect("new file should be readable");
+
+        current_content == new_content
     }
 
     pub fn update_uid(&self, entry: &mut LocalMailMetadata, new_uid: Uid) {
