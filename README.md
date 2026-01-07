@@ -43,6 +43,11 @@ Example for usage in a flake based nixos config:
                     home-manager.sharedModules = [
                         imapmaildir.homeModules.imapmaildir
                     ];
+                    nix.settings = {
+                        trusted-substituters = [
+                            "https://schnedo.cachix.org"
+                        ];
+                    };
                 }
             ];
         };

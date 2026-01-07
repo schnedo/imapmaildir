@@ -6,6 +6,7 @@ on:
     branches: ["main"]
 
 env:
+  CACHIX_CACHE: schnedo
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -19,9 +20,9 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v14
         with:
-          name: imapmaildir
+          name: "${{ env.CACHIX_CACHE }}"
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - name: Build
         run: nix build --no-update-lock-file --print-build-logs .
       - name: deploy
-        run: cachix push imapmaildir ./result
+        run: cachix push "${{ env.CACHIX_CACHE }}" ./result
