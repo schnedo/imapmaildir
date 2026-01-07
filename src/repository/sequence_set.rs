@@ -94,8 +94,8 @@ impl SequenceSetBuilder {
         self.nums.insert(uid);
     }
 
-    pub fn remove(&mut self, uid: Uid) {
-        self.nums.remove(&uid);
+    pub fn remove(&mut self, uid: Uid) -> bool {
+        self.nums.remove(&uid)
     }
 
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {

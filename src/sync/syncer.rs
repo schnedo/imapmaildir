@@ -1,7 +1,7 @@
 use crate::{
-    imap::{RemoteChanges, SelectedClient, Selection},
+    imap::{RemoteChanges, RemoteMailMetadata, SelectedClient, Selection},
     maildir::LocalChanges,
-    repository::{MailboxMetadata, SequenceSet, SequenceSetBuilder},
+    repository::{MailboxMetadata, SequenceSet, SequenceSetBuilder, Uid},
     sync::task::Task,
 };
 use std::{collections::HashSet, path::Path};
@@ -140,21 +140,24 @@ impl Syncer {
 
     // todo: add configurable conflict strategy; right now: remote wins
     fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
-        let mut remote_deletions = HashSet::new();
-        if let Some(deletions) = &remote_changes.deletions {
-            for deletion in deletions.iter() {
-                remote_deletions.insert(deletion);
-            }
-        }
-        let mut remote_updates = HashSet::new();
-        for update in &remote_changes.updates {
-            remote_updates.insert(update.uid());
-        }
-
-        local_changes
+        info!("handling potential conflicts with `remote wins` strategy");
+        let mut remote_deletions: HashSet<Uid> = remote_changes
             .deletions
-            .retain(|deletion| !remote_updates.contains(deletion));
+            .as_ref()
+            .map_or_else(HashSet::new, |deletions| deletions.iter().collect());
+        let mut remote_updates: HashSet<Uid> = remote_changes
+            .updates
+            .iter()
+            .map(RemoteMailMetadata::uid)
+            .collect();
+
+        local_changes.deletions.retain(|deletion| {
+            !remote_updates.contains(deletion) && !remote_deletions.contains(deletion)
+        });
         for uid in remote_updates.drain() {
+            local_changes.updates.remove(uid);
+        }
+        for uid in remote_deletions.drain() {
             local_changes.updates.remove(uid);
         }
     }
