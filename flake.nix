@@ -2,17 +2,36 @@
   description = "Sync IMAP to maildir";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    # keep-sorted start block=yes
     flake-parts.url = "github:hercules-ci/flake-parts";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # keep-sorted end
   };
 
   outputs =
     {
       self,
       flake-parts,
+      git-hooks,
+      treefmt-nix,
       ...
     }@inputs:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [
+        # keep-sorted start
+        git-hooks.flakeModule
+        treefmt-nix.flakeModule
+        # keep-sorted end
+      ];
+
       systems = [
         "x86_64-linux"
       ];
@@ -20,6 +39,8 @@
       perSystem =
         {
           pkgs,
+          lib,
+          config,
           self',
           ...
         }:
@@ -47,21 +68,72 @@
 
           devShells.default = pkgs.mkShell {
 
-            packages = with pkgs; [
-              cargo
-              clippy
-              openssl.dev
-              pkg-config
-              rust-analyzer
-              rustc
-              rustfmt
-              self'.packages.showDependencyGraph
-              sqlitebrowser
-            ];
+            packages =
+              with pkgs;
+              [
+                # keep-sorted start
+                cargo
+                clippy
+                openssl.dev
+                pkg-config
+                rust-analyzer
+                rustc
+                rustfmt
+                self'.packages.showDependencyGraph
+                sqlitebrowser
+                # keep-sorted end
+              ]
+              ++ config.pre-commit.settings.enabledPackages;
+
+            shellHook = ''
+              ${config.pre-commit.shellHook}
+            '';
 
             # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             # ];
 
+          };
+
+          pre-commit = {
+            check.enable = true;
+            settings = {
+              enabledPackages = with pkgs; [
+                gitleaks
+              ];
+              hooks = {
+                # keep-sorted start block=yes
+                cargo-check.enable = true;
+                clippy.enable = true;
+                gitleaks = {
+                  enable = true;
+                  name = "Detect hardcoded secrets";
+                  entry = "${lib.getExe pkgs.gitleaks} git --pre-commit --redact --staged --verbose";
+                  pass_filenames = false;
+                };
+                keep-sorted.enable = true;
+                reuse.enable = false;
+                treefmt.enable = true;
+                # keep-sorted end
+              };
+            };
+          };
+
+          treefmt = {
+            programs = {
+              # keep-sorted start block=yes
+              deadnix.enable = true;
+              nixfmt.enable = true;
+              rustfmt.enable = true;
+              statix.enable = true;
+              taplo.enable = true;
+              # keep-sorted end
+            };
+            settings = {
+              excludes = [
+                "**/secrets.yaml"
+                "git/lazygit/config.yml"
+              ];
+            };
           };
 
         };
