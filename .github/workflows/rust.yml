@@ -3,6 +3,11 @@ name: Rust
 
 on:
   pull_request:
+    paths:
+      - src/**
+      - Cargo.lock
+      - Cargo.toml
+      - clippy.toml
     branches:
       - "main"
 
