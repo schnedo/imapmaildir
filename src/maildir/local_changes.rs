@@ -35,22 +35,12 @@ impl LocalFlagChangesBuilder {
             additional_flags: self
                 .additional_flags
                 .drain()
-                .map(|(flag, builder)| {
-                    (
-                        flag,
-                        builder.build().expect("sequence set should be buildable"),
-                    )
-                })
+                .filter_map(|(flag, builder)| builder.build().ok().map(|set| (flag, set)))
                 .collect(),
             removed_flags: self
                 .removed_flags
                 .drain()
-                .map(|(flag, builder)| {
-                    (
-                        flag,
-                        builder.build().expect("sequence set should be buildable"),
-                    )
-                })
+                .filter_map(|(flag, builder)| builder.build().ok().map(|set| (flag, set)))
                 .collect(),
         }
     }
