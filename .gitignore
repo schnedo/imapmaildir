@@ -18,3 +18,4 @@ target/
 
 test_maildir/
 result/
+.pre-commit-config.yaml
