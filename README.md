@@ -44,8 +44,11 @@ Example for usage in a flake based nixos config:
                         imapmaildir.homeModules.imapmaildir
                     ];
                     nix.settings = {
-                        trusted-substituters = [
+                        substituters = [
                             "https://schnedo.cachix.org"
+                        ];
+                        trusted-public-keys = [
+                          "schnedo.cachix.org-1:SOK0hFcugOr4sde3Rw8+DsbdMHbg/R358weVZMhosC4="
                         ];
                     };
                 }
