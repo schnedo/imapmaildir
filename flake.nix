@@ -111,6 +111,14 @@
                   pass_filenames = false;
                 };
                 keep-sorted.enable = true;
+                no-commit-to-branch = {
+                  enable = true;
+                  settings = {
+                    branch = [
+                      "main"
+                    ];
+                  };
+                };
                 reuse.enable = false;
                 treefmt.enable = true;
                 # keep-sorted end
