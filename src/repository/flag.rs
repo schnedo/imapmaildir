@@ -13,12 +13,13 @@ use thiserror::Error;
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 // todo: support keywords https://datatracker.ietf.org/doc/html/rfc3501#section-2.3.2
+// DO NOT REORDER! The bitflags representation is stored in database. Changing the layout **will** break things.
 pub enum Flag {
-    Seen,
-    Answered,
-    Flagged,
-    Deleted,
     Draft,
+    Flagged,
+    Answered,
+    Seen,
+    Deleted,
     Recent,
 }
 

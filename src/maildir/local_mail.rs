@@ -95,16 +95,22 @@ impl LocalMailMetadata {
         let pid = process::id();
         format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
-}
 
-impl Display for LocalMailMetadata {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn string_flags(&self) -> String {
         let mut string_flags = String::with_capacity(6);
         for flag in self.flags {
             if let Ok(char_flag) = flag.try_into() {
                 string_flags.push(char_flag);
             }
         }
+
+        string_flags
+    }
+}
+
+impl Display for LocalMailMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let string_flags = self.string_flags();
         if let Some(uid) = self.uid {
             write!(f, "{},U={uid}:2,{string_flags}", self.fileprefix)
         } else {
@@ -137,5 +143,18 @@ impl FromStr for LocalMailMetadata {
                 fileprefix: head.to_string(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_maildir_flags_in_ascii_order() {
+        let flags = BitFlags::all();
+        let metadata = LocalMailMetadata::new(Uid::try_from(&3).ok(), flags, None);
+
+        assert_eq!(metadata.string_flags(), "DFRST");
     }
 }
