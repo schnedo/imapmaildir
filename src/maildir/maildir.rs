@@ -125,38 +125,56 @@ impl Maildir {
         )
     }
 
-    fn rename(current: &Path, new: &Path) {
+    fn rename(
+        &self,
+        current: LocalMailMetadata,
+        new: &LocalMailMetadata,
+    ) -> Result<(), UpdateMailError> {
+        let current_path = self.cur.join(current.filename());
+        let new_path = self.cur.join(new.filename());
         match (
-            current
+            current_path
                 .try_exists()
                 .expect("should be able to check if current name exists"),
-            new.try_exists()
+            new_path
+                .try_exists()
                 .expect("should be able to check if new name exists"),
         ) {
             (true, true) => {
-                if Self::is_content_identical(current, new) {
-                    fs::rename(current, new).expect("renaming mail in maildir should succeed");
+                if Self::is_content_identical(current_path.as_path(), new_path.as_path()) {
+                    fs::rename(current_path, new_path)
+                        .expect("renaming mail in maildir should succeed");
+
+                    Ok(())
                 } else {
                     panic!(
                         "moving {} to {} would overwrite mail with different content",
-                        current.display(),
-                        new.display()
+                        current_path.display(),
+                        new_path.display()
                     );
                 }
             }
             (true, false) => {
-                trace!("renaming {:} to {:}", current.display(), new.display());
-                fs::rename(current, new).expect("renaming mail in maildir should succeed");
+                trace!(
+                    "renaming {:} to {:}",
+                    current_path.display(),
+                    new_path.display()
+                );
+                fs::rename(current_path, new_path)
+                    .expect("renaming mail in maildir should succeed");
+
+                Ok(())
             }
-            (false, true) => warn!(
-                "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
-                current.to_string_lossy(),
-                new.to_string_lossy()
-            ),
-            (false, false) => todo!(
-                "Cannot rename {}, because it does not exist",
-                current.to_string_lossy()
-            ),
+            (false, true) => {
+                warn!(
+                    "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
+                    current_path.to_string_lossy(),
+                    new_path.to_string_lossy()
+                );
+
+                Ok(())
+            }
+            (false, false) => Err(UpdateMailError::Missing(current)),
         }
     }
 
@@ -172,18 +190,26 @@ impl Maildir {
         current_content == new_content
     }
 
-    pub fn update_uid(&self, entry: &mut LocalMailMetadata, new_uid: Uid) {
-        let current_mail = self.cur.join(entry.filename());
+    pub fn update_uid(
+        &self,
+        entry: &mut LocalMailMetadata,
+        new_uid: Uid,
+    ) -> Result<(), UpdateMailError> {
+        let current_mail = entry.clone();
         entry.set_uid(new_uid);
-        let new_name = self.cur.join(entry.filename());
-        Self::rename(&current_mail, &new_name);
+
+        self.rename(current_mail, entry)
     }
 
-    pub fn update_flags(&self, entry: &mut LocalMailMetadata, new_flags: BitFlags<Flag>) {
-        let current_mail = self.cur.join(entry.filename());
+    pub fn update_flags(
+        &self,
+        entry: &mut LocalMailMetadata,
+        new_flags: BitFlags<Flag>,
+    ) -> Result<(), UpdateMailError> {
+        let current_mail = entry.clone();
         entry.set_flags(new_flags);
-        let new_name = self.cur.join(entry.filename());
-        Self::rename(&current_mail, &new_name);
+
+        self.rename(current_mail, entry)
     }
 
     pub fn delete(&self, entry: &LocalMailMetadata) {
@@ -202,6 +228,12 @@ impl Maildir {
     }
 }
 
+#[derive(Debug, Error, PartialEq)]
+pub enum UpdateMailError {
+    #[error("Missing mail {0}")]
+    Missing(LocalMailMetadata),
+}
+
 #[derive(Error, Debug)]
 #[error("Unknown Maildir flag")]
 pub struct UnknownMaildirFlagError {}
@@ -218,5 +250,52 @@ impl TryFrom<Flag> for char {
             Flag::Draft => Ok('D'),
             Flag::Recent => Err(UnknownMaildirFlagError {}),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use enumflags2::BitFlag;
+    use rstest::{fixture, rstest};
+    use tempfile::{TempDir, tempdir};
+
+    use super::*;
+
+    #[fixture]
+    fn temp_dir() -> TempDir {
+        tempdir().expect("temporary directory should be creatable")
+    }
+
+    #[rstest]
+    fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
+        let maildir = Maildir::new(temp_dir.path());
+        let mut entry = LocalMailMetadata::new(
+            Some(Uid::try_from(&2).expect("2 should be valid uid")),
+            Flag::empty(),
+            Some("prefix".to_string()),
+        );
+        let expected = entry.clone();
+
+        let result = maildir.update_flags(&mut entry, Flag::all());
+
+        assert_eq!(result, Err(UpdateMailError::Missing(expected)));
+    }
+
+    #[rstest]
+    fn test_update_uid_errors_on_missing_mail(temp_dir: TempDir) {
+        let maildir = Maildir::new(temp_dir.path());
+        let mut entry = LocalMailMetadata::new(
+            Some(Uid::try_from(&2).expect("2 should be valid uid")),
+            Flag::empty(),
+            Some("prefix".to_string()),
+        );
+        let expected = entry.clone();
+
+        let result = maildir.update_uid(
+            &mut entry,
+            Uid::try_from(&3).expect("3 should be valid uid"),
+        );
+
+        assert_eq!(result, Err(UpdateMailError::Missing(expected)));
     }
 }
