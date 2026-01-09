@@ -1,9 +1,10 @@
 use std::{
+    process,
     sync::Arc,
     thread::{self, JoinHandle},
 };
 
-use log::{error, info};
+use log::{error, info, warn};
 
 use crate::{config::Config, imap::Client, sync::Syncer};
 
@@ -58,5 +59,8 @@ pub fn sync_all(config: Config) {
             error_happened = true;
         }
     }
-    assert!(!error_happened, "error happened during syncing mailboxes");
+    if error_happened {
+        warn!("error happened during syncing mailboxes");
+        process::exit(18);
+    }
 }
