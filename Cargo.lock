@@ -68,6 +68,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
+name = "assertables"
+version = "9.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbada39b42413d4db3d9460f6e791702490c40f72924378a1b6fc1a4181188fd"
+
+[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -508,6 +514,7 @@ version = "0.1.0"
 dependencies = [
  "anstyle",
  "anyhow",
+ "assertables",
  "bytes",
  "clap",
  "derive-getters",
