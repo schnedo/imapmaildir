@@ -11,7 +11,7 @@ use std::{
 use anstyle::{AnsiColor, Effects};
 use connected_to_journal::connected_to_journal;
 use env_logger::Builder;
-use log::{LevelFilter, error};
+use log::LevelFilter;
 
 fn get_thread_name() -> String {
     if let Some(name) = thread::current().name() {
@@ -72,7 +72,9 @@ pub fn init(level: LevelFilter) {
             )
         });
         panic::set_hook(Box::new(|info| {
-            error!("<2>{}", format_panic_info(info));
+            for line in format_panic_info(info).lines() {
+                eprintln!("<2>{line}");
+            }
         }));
     } else {
         let subtle = AnsiColor::BrightBlack.on_default();
@@ -110,7 +112,7 @@ pub fn init(level: LevelFilter) {
             writeln!(buf, "{}", record.args())
         });
         panic::set_hook(Box::new(|info| {
-            error!("{}", format_panic_info(info));
+            eprintln!("{}", format_panic_info(info));
         }));
     }
     builder.init();
