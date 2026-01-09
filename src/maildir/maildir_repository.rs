@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
-    maildir::{LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, state::State},
+    maildir::{
+        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, maildir::UpdateMailError,
+        state::State,
+    },
     repository::{ModSeq, Uid, UidValidity},
     sync::Task,
 };
@@ -89,28 +92,40 @@ impl MaildirRepository {
         mail_metadata: &RemoteMailMetadata,
     ) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
-        let res = if let Some(mut entry) = self.state.get_by_id(uid).await {
+
+        if let Some(mut entry) = self.state.get_by_id(uid).await {
             info!("update flags of mail {uid}");
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                self.maildir.update_flags(&mut entry, new_flags);
-                self.state.update(&entry).await;
+                match self.maildir.update_flags(&mut entry, new_flags) {
+                    Ok(()) => {
+                        // todo: update modseq in same step?
+                        self.state.update(&entry).await;
+                        self.state
+                            // todo: check highest modseq handling consistent with channel?
+                            .update_highest_modseq(mail_metadata.modseq())
+                            .await;
+                    }
+                    Err(UpdateMailError::Missing(entry)) => {
+                        if let Some(uid) = entry.uid() {
+                            self.state.delete_by_id(uid).await;
+                        }
+                        return Err(NoExistsError { uid });
+                    }
+                }
             }
 
             Ok(())
         } else {
             Err(NoExistsError { uid })
-        };
-        self.state
-            .update_highest_modseq(mail_metadata.modseq())
-            .await;
-
-        res
+        }
     }
 
     pub async fn add_synced(&self, mail_metadata: &mut LocalMailMetadata, new_uid: Uid) {
         info!("adding {new_uid} to newly synced mail");
-        self.maildir.update_uid(mail_metadata, new_uid);
+        self.maildir
+            .update_uid(mail_metadata, new_uid)
+            .expect("updating maildir with newly synced mail should succeed");
         self.state.store(mail_metadata).await;
     }
 

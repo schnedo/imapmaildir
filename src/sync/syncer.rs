@@ -124,13 +124,13 @@ impl Syncer {
             }
         }
 
-        let mut sequence_set = SequenceSetBuilder::default();
+        let mut refetch_mails = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
             if maildir_repository.update_flags(update).await.is_err() {
-                sequence_set.add(update.uid());
+                refetch_mails.add(update.uid());
             }
         }
-        if let Ok(sequence_set) = sequence_set.build() {
+        if let Ok(sequence_set) = refetch_mails.build() {
             client.fetch_mail(&sequence_set).await;
         }
         maildir_repository
