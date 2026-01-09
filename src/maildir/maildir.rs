@@ -266,6 +266,16 @@ mod tests {
     }
 
     #[rstest]
+    fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        Maildir::new(maildir_path);
+
+        assert!(maildir_path.join("cur").exists());
+        assert!(maildir_path.join("new").exists());
+        assert!(maildir_path.join("tmp").exists());
+    }
+
+    #[rstest]
     fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
         let maildir = Maildir::new(temp_dir.path());
         let mut entry = LocalMailMetadata::new(
