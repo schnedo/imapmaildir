@@ -40,7 +40,7 @@ impl MaildirRepository {
         state_dir: &Path,
         task_rx: mpsc::Receiver<Task>,
     ) {
-        let mail = Maildir::new(mail_dir);
+        let mail = Maildir::try_new(mail_dir).expect("creating maildir should succeed");
         let state = State::init(state_dir, uid_validity, highest_modseq)
             .expect("initializing state should work");
 

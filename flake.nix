@@ -73,6 +73,7 @@
               [
                 # keep-sorted start
                 cargo
+                cargo-nextest
                 clippy
                 openssl.dev
                 pkg-config
