@@ -1,22 +1,62 @@
 mod connected_to_journal;
 
-use std::{io::Write as _, thread, time::SystemTime};
+use std::{
+    backtrace::{Backtrace, BacktraceStatus},
+    io::Write as _,
+    panic::{self, PanicHookInfo},
+    thread,
+    time::SystemTime,
+};
 
 use anstyle::{AnsiColor, Effects};
 use connected_to_journal::connected_to_journal;
 use env_logger::Builder;
-use log::LevelFilter;
+use log::{LevelFilter, error};
+
+fn get_thread_name() -> String {
+    if let Some(name) = thread::current().name() {
+        format!("{name} ")
+    } else {
+        String::new()
+    }
+}
+
+fn format_panic_info(info: &PanicHookInfo) -> String {
+    let thread = get_thread_name();
+    let location = info
+        .location()
+        .map_or("unknown location".to_string(), |location| {
+            format!(
+                "{}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+        });
+    let payload = info
+        .payload_as_str()
+        .map_or(String::new(), |payload| format!("\n{payload}"));
+    let backtrace = Backtrace::capture();
+    let backtrace = match backtrace.status() {
+        BacktraceStatus::Unsupported => {
+            "\nnote: backtraces unsupported on this machine".to_string()
+        }
+        BacktraceStatus::Disabled => {
+            "\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+                .to_string()
+        }
+        BacktraceStatus::Captured => format!("\n{backtrace}"),
+        _ => String::new(),
+    };
+    format!("{thread}panicked at {location}:{payload}{backtrace}")
+}
 
 pub fn init(level: LevelFilter) {
     let mut builder = Builder::new();
     builder.filter_level(level);
     if connected_to_journal() {
         builder.format(move |buf, record| {
-            let mailbox = if let Some(mailbox) = thread::current().name() {
-                format!("{mailbox} ")
-            } else {
-                String::new()
-            };
+            let mailbox = get_thread_name();
             writeln!(
                 buf,
                 "<{}>{}{}: {}",
@@ -31,6 +71,9 @@ pub fn init(level: LevelFilter) {
                 record.args()
             )
         });
+        panic::set_hook(Box::new(|info| {
+            error!("<2>{}", format_panic_info(info));
+        }));
     } else {
         let subtle = AnsiColor::BrightBlack.on_default();
         builder.format(move |buf, record| {
@@ -66,6 +109,9 @@ pub fn init(level: LevelFilter) {
             write!(buf, "{subtle}]{subtle:#} ").expect("logging buffer should be writable");
             writeln!(buf, "{}", record.args())
         });
+        panic::set_hook(Box::new(|info| {
+            error!("{}", format_panic_info(info));
+        }));
     }
     builder.init();
 }
