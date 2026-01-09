@@ -1,12 +1,11 @@
 use std::{
     fmt::Debug,
     fs::{self, DirBuilder, OpenOptions, read_dir, remove_file},
-    io::Write,
+    io::{self, Write},
     os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
 use log::{debug, info, trace, warn};
 use thiserror::Error;
@@ -26,28 +25,32 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn new(mail_dir: &Path) -> Self {
-        if Maildir::load(mail_dir).is_ok() {
-            panic!("unmanaged maildir found at {}", mail_dir.to_string_lossy());
-        } else {
-            info!("creating maildir in {:#}", mail_dir.display());
-            let mut builder = DirBuilder::new();
-            builder.recursive(true).mode(0o700);
+    pub fn try_new(mail_dir: &Path) -> Result<Self, MaildirCreationError<'_>> {
+        match Self::load(mail_dir) {
+            Ok(_) | Err(MaildirLoadError::Partial(_)) => {
+                Err(MaildirCreationError::Exists(mail_dir))
+            }
+            Err(MaildirLoadError::Io(path, kind)) => Err(MaildirCreationError::Io(path, kind)),
+            Err(_) => {
+                info!("creating maildir in {:#}", mail_dir.display());
+                let mut builder = DirBuilder::new();
+                builder.recursive(true).mode(0o700);
 
-            let tmp = mail_dir.join("tmp");
-            builder
-                .create(tmp.as_path())
-                .expect("creation of tmp subdir should succeed");
-            let new = mail_dir.join("new");
-            builder
-                .create(new.as_path())
-                .expect("creation of new subdir should succeed");
-            let cur = mail_dir.join("cur");
-            builder
-                .create(cur.as_path())
-                .expect("creation of cur subdir should succeed");
+                let tmp = mail_dir.join("tmp");
+                let new = mail_dir.join("new");
+                let cur = mail_dir.join("cur");
 
-            Self { new, cur, tmp }
+                match (
+                    builder.create(tmp.as_path()),
+                    builder.create(new.as_path()),
+                    builder.create(cur.as_path()),
+                ) {
+                    (Ok(()), Ok(()), Ok(())) => Ok(Self { new, cur, tmp }),
+                    (Err(e), _, _) => Err(MaildirCreationError::Io(tmp, e.kind())),
+                    (_, Err(e), _) => Err(MaildirCreationError::Io(new, e.kind())),
+                    (_, _, Err(e)) => Err(MaildirCreationError::Io(cur, e.kind())),
+                }
+            }
         }
     }
 
@@ -58,7 +61,7 @@ impl Maildir {
         Self { new, cur, tmp }
     }
 
-    pub fn load(mail_dir: &Path) -> Result<Self> {
+    pub fn load(mail_dir: &Path) -> Result<Self, MaildirLoadError<'_>> {
         let mail = Self::unchecked(mail_dir);
         trace!("loading maildir {mail:?}");
         match (
@@ -67,12 +70,11 @@ impl Maildir {
             mail.tmp.try_exists(),
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
-            (Ok(false), Ok(false), Ok(false)) => Err(anyhow!("no mailbox present")),
-            (Ok(_), Ok(_), Ok(_)) => panic!(
-                "partially initialized maildir detected: {}",
-                mail_dir.to_string_lossy()
-            ),
-            (_, _, _) => panic!("issue with reading {}", mail_dir.to_string_lossy()),
+            (Ok(false), Ok(false), Ok(false)) => Err(MaildirLoadError::Missing(mail_dir)),
+            (Ok(_), Ok(_), Ok(_)) => Err(MaildirLoadError::Partial(mail_dir)),
+            (Err(e), _, _) => Err(MaildirLoadError::Io(mail.new, e.kind())),
+            (_, Err(e), _) => Err(MaildirLoadError::Io(mail.cur, e.kind())),
+            (_, _, Err(e)) => Err(MaildirLoadError::Io(mail.tmp, e.kind())),
         }
     }
 
@@ -235,6 +237,24 @@ impl Maildir {
 }
 
 #[derive(Debug, Error, PartialEq)]
+pub enum MaildirLoadError<'a> {
+    #[error("Found partially existing maildir at {0}")]
+    Partial(&'a Path),
+    #[error("No maildir found at {0}")]
+    Missing(&'a Path),
+    #[error("IO error during loading of maildir directory at {0}: {1}")]
+    Io(PathBuf, io::ErrorKind),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum MaildirCreationError<'a> {
+    #[error("Found preexisting cur, tmp and/or new directories at {0}")]
+    Exists(&'a Path),
+    #[error("IO error during creation of maildir directory at {0}: {1}")]
+    Io(PathBuf, io::ErrorKind),
+}
+
+#[derive(Debug, Error, PartialEq)]
 pub enum UpdateMailError {
     #[error("Missing mail {0}")]
     Missing(LocalMailMetadata),
@@ -254,8 +274,9 @@ impl From<Flag> for char {
 
 #[cfg(test)]
 mod tests {
+    use assertables::*;
     use enumflags2::BitFlag;
-    use rstest::{fixture, rstest};
+    use rstest::*;
     use tempfile::{TempDir, tempdir};
 
     use super::*;
@@ -268,7 +289,7 @@ mod tests {
     #[rstest]
     fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        Maildir::new(maildir_path);
+        Maildir::try_new(maildir_path).expect("creating maildir should succeed");
 
         assert!(maildir_path.join("cur").exists());
         assert!(maildir_path.join("new").exists());
@@ -276,8 +297,19 @@ mod tests {
     }
 
     #[rstest]
+    fn test_new_errors_on_existing_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        let cur = maildir_path.join("cur");
+        fs::create_dir(cur).expect("test maildir cur should be creatable");
+
+        let maybe_maildir = Maildir::try_new(maildir_path);
+
+        assert_matches!(maybe_maildir, Err(MaildirCreationError::Exists(_)));
+    }
+
+    #[rstest]
     fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
-        let maildir = Maildir::new(temp_dir.path());
+        let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
         let mut entry = LocalMailMetadata::new(
             Some(Uid::try_from(&2).expect("2 should be valid uid")),
             Flag::empty(),
@@ -292,7 +324,7 @@ mod tests {
 
     #[rstest]
     fn test_update_uid_errors_on_missing_mail(temp_dir: TempDir) {
-        let maildir = Maildir::new(temp_dir.path());
+        let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
         let mut entry = LocalMailMetadata::new(
             Some(Uid::try_from(&2).expect("2 should be valid uid")),
             Flag::empty(),
