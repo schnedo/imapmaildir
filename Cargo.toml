@@ -38,3 +38,7 @@ toml = "0.8.19"
 [lints.clippy]
 pedantic = { level = "warn", priority = -2 }
 allow_attributes = "warn"
+
+[dev-dependencies]
+rstest = "0.26.1"
+tempfile = "3.24.0"
