@@ -25,7 +25,12 @@ jobs:
             ./target
       - name: Build
         run: cargo build --verbose
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Run tests
-        run: cargo test --verbose
+        # todo: have a look at criterion.rs
+        # todo: have a look at cargo mutants
+        run: cargo nextest run --profile ci
       - name: Lint
         run: cargo clippy --all-targets --all-features
