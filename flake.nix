@@ -64,6 +64,18 @@
               '';
             };
 
+            showCoverage = pkgs.writeShellApplication {
+              name = "showCoverage";
+              runtimeInputs = with pkgs; [
+                cargo-llvm-cov
+              ];
+              text = ''
+                export LLVM_COV=${lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov"}
+                export LLVM_PROFDATA=${lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata"}
+                cargo llvm-cov nextest --html --open "$@"
+              '';
+            };
+
           };
 
           devShells.default = pkgs.mkShell {
@@ -80,6 +92,7 @@
                 rust-analyzer
                 rustc
                 rustfmt
+                self'.packages.showCoverage
                 self'.packages.showDependencyGraph
                 sqlitebrowser
                 # keep-sorted end
