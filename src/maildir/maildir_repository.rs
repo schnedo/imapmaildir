@@ -94,7 +94,11 @@ impl MaildirRepository {
         let uid = mail_metadata.uid();
 
         if let Some(mut entry) = self.state.get_by_id(uid).await {
-            info!("update flags of mail {uid}");
+            info!(
+                "update flags of mail {uid}: {} -> {}",
+                entry.flags(),
+                mail_metadata.flags()
+            );
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
                 match self.maildir.update_flags(&mut entry, new_flags) {
