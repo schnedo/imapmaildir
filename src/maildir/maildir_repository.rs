@@ -219,6 +219,9 @@ impl MaildirRepository {
                     Task::Shutdown() => {
                         task_rx.close();
                     }
+                    Task::UpdateModseq(mod_seq) => {
+                        self.state.update_highest_modseq(mod_seq).await;
+                    }
                 }
             }
         })
