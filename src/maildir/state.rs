@@ -114,7 +114,7 @@ impl State {
     fn prepare_state_file(state_dir: &Path) -> PathBuf {
         create_dir_all(state_dir).expect("creation of state dir should succeed");
 
-        state_dir.join("state")
+        state_dir.join("imapmaildir.db")
     }
 
     pub async fn uid_validity(&self) -> UidValidity {
