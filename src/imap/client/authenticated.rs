@@ -147,6 +147,9 @@ impl AuthenticatedClient {
                     imap_proto::ResponseCode::UidNext(uid_next) => {
                         trace!("not handling Data response UidNext {uid_next:?}");
                     }
+                    imap_proto::ResponseCode::Unseen(unseen) => {
+                        trace!("not handling Data response Unseen {unseen:?}");
+                    }
                     _ => {
                         warn!("ignoring unknown data response to SELECT");
                         if let Some(information) = information {
