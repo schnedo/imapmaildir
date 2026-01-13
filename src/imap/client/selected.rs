@@ -82,7 +82,7 @@ impl SelectedClient {
                                     task_tx
                                         .send(Task::NewMail(remote_mail))
                                         .await
-                                        .expect("mail channel should still be open");
+                                        .expect("task channel should still be open");
                                 } else {
                                     unreachable!("mail without content")
                                 }
@@ -92,7 +92,12 @@ impl SelectedClient {
                                 imap_proto::AttributeValue::ModSeq(modseq),
                             ] => {
                                 trace!("FETCH uid {uid:?} modseq {modseq:?}");
-                                // todo: store modseq of individual mails? Why?
+                                task_tx
+                                    .send(Task::UpdateModseq(
+                                        modseq.try_into().expect("modseq shoud be nonzero"),
+                                    ))
+                                    .await
+                                    .expect("task channel should still be open");
                             }
                             _ => {
                                 trace!("attributes {attributes:?}");
@@ -216,6 +221,7 @@ impl SelectedClient {
         self.connection
             .send(command.into_bytes())
             .await
+            // todo: handle bad response when highest_modseq does not match
             .expect("sending of flag update should succeed");
     }
 
