@@ -40,8 +40,11 @@ impl Client {
             imap_proto::Response::Data {
                 status: imap_proto::Status::Ok,
                 code,
-                information: _,
+                information,
             } => {
+                if let Some(information) = information {
+                    trace!("greeting information: {information}");
+                }
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
                     update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
                 } else {
