@@ -79,7 +79,11 @@ impl MaildirRepository {
     }
 
     pub async fn store(&self, mail: &RemoteMail) {
-        info!("storing mail {}", mail.metadata().uid());
+        info!(
+            "storing mail {} with flags {}",
+            mail.metadata().uid(),
+            mail.metadata().flags()
+        );
         // todo: check if update is necessary
         if self.update_flags(mail.metadata()).await.is_err() {
             let metadata = self.maildir.store(mail);
