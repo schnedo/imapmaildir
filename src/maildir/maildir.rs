@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use thiserror::Error;
 
 use crate::{
@@ -206,6 +206,12 @@ impl Maildir {
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
     ) -> Result<(), UpdateMailError> {
+        debug!(
+            "updating mail {} flags: {} -> {}",
+            entry.uid().map_or(String::new(), |uid| uid.to_string()),
+            entry.flags(),
+            new_flags
+        );
         let current_mail = entry.clone();
         entry.set_flags(new_flags);
 

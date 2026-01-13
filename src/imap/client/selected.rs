@@ -58,7 +58,11 @@ impl SelectedClient {
                                 imap_proto::AttributeValue::Uid(uid),
                                 imap_proto::AttributeValue::ModSeq(modseq),
                                 imap_proto::AttributeValue::Flags(flags),
-                                imap_proto::AttributeValue::Rfc822(content),
+                                imap_proto::AttributeValue::BodySection {
+                                    section: _,
+                                    index: _,
+                                    data: content,
+                                },
                             ] => {
                                 trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
                                 let mail_flags = Flag::into_bitflags(flags);
@@ -91,6 +95,7 @@ impl SelectedClient {
                                 // todo: store modseq of individual mails? Why?
                             }
                             _ => {
+                                trace!("attributes {attributes:?}");
                                 panic!(
                                     "wrong format of FETCH response. check order of attributes in command"
                                 );
@@ -131,7 +136,7 @@ impl SelectedClient {
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
-        let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, RFC822)");
+        let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, BODY.PEEK[])");
         debug!("{command}");
         self.connection
             .send(command.into())
