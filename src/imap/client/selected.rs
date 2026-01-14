@@ -94,6 +94,7 @@ impl SelectedClient {
                                 trace!("FETCH uid {uid:?} modseq {modseq:?}");
                                 task_tx
                                     .send(Task::UpdateModseq(
+                                        uid.try_into().expect("uid should be nonzero"),
                                         modseq.try_into().expect("modseq shoud be nonzero"),
                                     ))
                                     .await

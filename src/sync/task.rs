@@ -1,12 +1,12 @@
 use crate::{
     imap::RemoteMail,
-    repository::{ModSeq, SequenceSet},
+    repository::{ModSeq, SequenceSet, Uid},
 };
 
 pub enum Task {
     NewMail(RemoteMail),
     Delete(SequenceSet),
     HighestModSeq(ModSeq),
-    UpdateModseq(ModSeq),
+    UpdateModseq(Uid, ModSeq),
     Shutdown(),
 }
