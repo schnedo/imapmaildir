@@ -194,7 +194,9 @@ impl MaildirRepository {
             news.push(self.maildir.read(maildata));
         }
 
-        LocalChanges::new(highest_modseq, deletions, news, updates)
+        let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
+        trace!("{changes:?}");
+        changes
     }
 
     fn setup_task_processing(
@@ -220,7 +222,7 @@ impl MaildirRepository {
                         task_rx.close();
                     }
                     Task::UpdateModseq(uid, mod_seq) => {
-                        info!("Setting modseq of mail {uid} to {mod_seq}");
+                        debug!("Setting modseq of mail {uid} to {mod_seq}");
                         self.state.update_highest_modseq(mod_seq).await;
                     }
                 }
