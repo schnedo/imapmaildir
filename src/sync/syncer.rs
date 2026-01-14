@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path};
 
-use log::{debug, info};
+use log::info;
 use tokio::sync::mpsc;
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
@@ -138,9 +138,7 @@ impl Syncer {
             .await;
     }
 
-    // todo: add configurable conflict strategy; right now: remote wins
     fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
-        debug!("handling potential conflicts with `remote wins` strategy");
         let mut remote_deletions: HashSet<Uid> = remote_changes
             .deletions
             .as_ref()
