@@ -20,7 +20,6 @@ pub enum Flag {
     Answered,
     Seen,
     Deleted,
-    Recent,
 }
 
 impl Flag {
@@ -50,7 +49,6 @@ impl Display for Flag {
             Flag::Flagged => write!(f, r"\Flagged"),
             Flag::Deleted => write!(f, r"\Deleted"),
             Flag::Draft => write!(f, r"\Draft"),
-            Flag::Recent => write!(f, r"\Recent"),
         }
     }
 }
@@ -83,7 +81,12 @@ impl FromStr for Flag {
             r"\Flagged" => Ok(Flag::Flagged),
             r"\Deleted" => Ok(Flag::Deleted),
             r"\Draft" => Ok(Flag::Draft),
-            r"\Recent" => Ok(Flag::Recent),
+            r"\Recent" => {
+                trace!(r"\Recent flag handled by server. skipping...");
+                Err(Self::Err {
+                    flag: value.to_string(),
+                })
+            }
             _ => {
                 trace!("Encountered unhandled Flag {value}");
                 Err(Self::Err {
@@ -91,17 +94,5 @@ impl FromStr for Flag {
                 })
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_flag_stringifies_correctly() {
-        let flag = Flag::Recent;
-
-        assert_eq!(flag.to_string(), r"\Recent");
     }
 }
