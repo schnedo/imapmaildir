@@ -97,14 +97,7 @@ impl LocalMailMetadata {
     }
 
     fn string_flags(&self) -> String {
-        let mut string_flags = String::with_capacity(6);
-        for flag in self.flags {
-            if let Ok(char_flag) = flag.try_into() {
-                string_flags.push(char_flag);
-            }
-        }
-
-        string_flags
+        self.flags().iter().map(char::from).collect()
     }
 }
 

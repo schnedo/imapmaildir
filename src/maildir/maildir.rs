@@ -240,21 +240,14 @@ pub enum UpdateMailError {
     Missing(LocalMailMetadata),
 }
 
-#[derive(Error, Debug)]
-#[error("Unknown Maildir flag")]
-pub struct UnknownMaildirFlagError {}
-
-impl TryFrom<Flag> for char {
-    type Error = UnknownMaildirFlagError;
-
-    fn try_from(value: Flag) -> Result<Self, Self::Error> {
+impl From<Flag> for char {
+    fn from(value: Flag) -> Self {
         match value {
-            Flag::Seen => Ok('S'),
-            Flag::Answered => Ok('R'),
-            Flag::Flagged => Ok('F'),
-            Flag::Deleted => Ok('T'),
-            Flag::Draft => Ok('D'),
-            Flag::Recent => Err(UnknownMaildirFlagError {}),
+            Flag::Seen => 'S',
+            Flag::Answered => 'R',
+            Flag::Flagged => 'F',
+            Flag::Deleted => 'T',
+            Flag::Draft => 'D',
         }
     }
 }
