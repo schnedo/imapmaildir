@@ -45,12 +45,12 @@ impl Flag {
 impl Display for Flag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Flag::Seen => write!(f, "\\Seen"),
-            Flag::Answered => write!(f, "\\Answered"),
-            Flag::Flagged => write!(f, "\\Flagged"),
-            Flag::Deleted => write!(f, "\\Deleted"),
-            Flag::Draft => write!(f, "\\Draft"),
-            Flag::Recent => write!(f, "\\Recent"),
+            Flag::Seen => write!(f, r"\Seen"),
+            Flag::Answered => write!(f, r"\Answered"),
+            Flag::Flagged => write!(f, r"\Flagged"),
+            Flag::Deleted => write!(f, r"\Deleted"),
+            Flag::Draft => write!(f, r"\Draft"),
+            Flag::Recent => write!(f, r"\Recent"),
         }
     }
 }
@@ -78,12 +78,12 @@ impl FromStr for Flag {
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
-            "\\Seen" => Ok(Flag::Seen),
-            "\\Answered" => Ok(Flag::Answered),
-            "\\Flagged" => Ok(Flag::Flagged),
-            "\\Deleted" => Ok(Flag::Deleted),
-            "\\Draft" => Ok(Flag::Draft),
-            "\\Recent" => Ok(Flag::Recent),
+            r"\Seen" => Ok(Flag::Seen),
+            r"\Answered" => Ok(Flag::Answered),
+            r"\Flagged" => Ok(Flag::Flagged),
+            r"\Deleted" => Ok(Flag::Deleted),
+            r"\Draft" => Ok(Flag::Draft),
+            r"\Recent" => Ok(Flag::Recent),
             _ => {
                 trace!("Encountered unhandled Flag {value}");
                 Err(Self::Err {
@@ -91,5 +91,17 @@ impl FromStr for Flag {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flag_stringifies_correctly() {
+        let flag = Flag::Recent;
+
+        assert_eq!(flag.to_string(), r"\Recent");
     }
 }
