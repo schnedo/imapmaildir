@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use log::info;
+use log::debug;
 
 use crate::{
     maildir::LocalMail,
@@ -71,7 +71,7 @@ impl LocalFlagChangesBuilder {
     fn remove_from(map: &mut HashMap<Flag, SequenceSetBuilder>, uid: Uid) {
         for set in map.values_mut() {
             if set.remove(uid) {
-                info!("removed {uid} from local changes");
+                debug!("removed {uid} from local changes");
             }
         }
     }
