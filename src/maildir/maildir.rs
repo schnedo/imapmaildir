@@ -311,6 +311,39 @@ mod tests {
     }
 
     #[rstest]
+    fn test_load_loads_exisiting_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        fs::create_dir(maildir_path.join("cur")).unwrap();
+        fs::create_dir(maildir_path.join("new")).unwrap();
+        fs::create_dir(maildir_path.join("tmp")).unwrap();
+
+        assert!(Maildir::load(maildir_path).is_ok());
+    }
+
+    #[rstest]
+    fn test_load_errors_on_missing_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        assert_matches!(
+            Maildir::load(maildir_path),
+            Err(MaildirLoadError::Missing(_))
+        );
+    }
+
+    #[rstest]
+    fn test_load_errors_on_partial_existing_dir(
+        temp_dir: TempDir,
+        #[values("cur", "tmp", "new")] dir: &str,
+    ) {
+        let maildir_path = temp_dir.path();
+        fs::create_dir(maildir_path.join(dir)).unwrap();
+
+        assert_matches!(
+            Maildir::load(maildir_path),
+            Err(MaildirLoadError::Partial(_))
+        );
+    }
+
+    #[rstest]
     fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
         let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
         let mut entry = LocalMailMetadata::new(
