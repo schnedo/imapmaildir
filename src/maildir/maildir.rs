@@ -99,7 +99,7 @@ impl Maildir {
         file.sync_all()
             .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
 
-        fs::rename(&file_path, self.cur.join(new_local_metadata.filename()))
+        fs::rename(&file_path, self.get_path_of(&new_local_metadata))
             .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
 
         Ok(new_local_metadata)
@@ -120,56 +120,47 @@ impl Maildir {
 
     pub fn read(&self, metadata: LocalMailMetadata) -> LocalMail {
         LocalMail::new(
-            fs::read(self.cur.join(metadata.filename())).expect("mail contents should be readable"),
+            fs::read(self.get_path_of(&metadata)).expect("mail contents should be readable"),
             metadata,
         )
     }
 
-    fn rename(
-        &self,
-        current: LocalMailMetadata,
-        new: &LocalMailMetadata,
-    ) -> Result<(), MaildirError> {
-        let current_path = self.cur.join(current.filename());
-        let new_path = self.cur.join(new.filename());
+    fn get_path_of(&self, mail: &LocalMailMetadata) -> PathBuf {
+        self.cur.join(mail.filename())
+    }
+
+    fn rename(current: PathBuf, new: PathBuf) -> Result<(), MaildirError> {
         match (
-            current_path
+            current
                 .try_exists()
                 .expect("should be able to check if current name exists"),
-            new_path
-                .try_exists()
+            new.try_exists()
                 .expect("should be able to check if new name exists"),
         ) {
             (true, true) => {
-                if Self::is_content_identical(current_path.as_path(), new_path.as_path()) {
-                    fs::rename(current_path, new_path)
-                        .expect("renaming mail in maildir should succeed");
+                if Self::is_content_identical(current.as_path(), new.as_path()) {
+                    fs::rename(current, new).expect("renaming mail in maildir should succeed");
 
                     Ok(())
                 } else {
                     panic!(
                         "moving {} to {} would overwrite mail with different content",
-                        current_path.display(),
-                        new_path.display()
+                        current.display(),
+                        new.display()
                     );
                 }
             }
             (true, false) => {
-                trace!(
-                    "renaming {:} to {:}",
-                    current_path.display(),
-                    new_path.display()
-                );
-                fs::rename(current_path, new_path)
-                    .expect("renaming mail in maildir should succeed");
+                trace!("renaming {:} to {:}", current.display(), new.display());
+                fs::rename(current, new).expect("renaming mail in maildir should succeed");
 
                 Ok(())
             }
             (false, true) => {
                 warn!(
                     "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
-                    current_path.to_string_lossy(),
-                    new_path.to_string_lossy()
+                    current.to_string_lossy(),
+                    new.to_string_lossy()
                 );
 
                 Ok(())
@@ -195,10 +186,11 @@ impl Maildir {
         entry: &mut LocalMailMetadata,
         new_uid: Uid,
     ) -> Result<(), MaildirError> {
-        let current_mail = entry.clone();
+        let current_mail = self.get_path_of(entry);
         entry.set_uid(new_uid);
+        let new_mail = self.get_path_of(entry);
 
-        self.rename(current_mail, entry)
+        Self::rename(current_mail, new_mail)
     }
 
     pub fn update_flags(
@@ -212,10 +204,11 @@ impl Maildir {
             entry.flags(),
             new_flags
         );
-        let current_mail = entry.clone();
+        let current_mail = self.get_path_of(entry);
         entry.set_flags(new_flags);
+        let new_mail = self.get_path_of(entry);
 
-        self.rename(current_mail, entry)
+        Self::rename(current_mail, new_mail)
     }
 
     pub fn delete(&self, entry: &LocalMailMetadata) {
@@ -255,7 +248,7 @@ pub enum MaildirCreationError<'a> {
 #[derive(Debug, Error, PartialEq)]
 pub enum MaildirError {
     #[error("Missing mail {0}")]
-    Missing(LocalMailMetadata),
+    Missing(PathBuf),
     #[error("IO error during manipulation of mail {0}")]
     Io(PathBuf, io::ErrorKind),
 }
@@ -387,7 +380,7 @@ mod tests {
             Flag::empty(),
             Some("prefix".to_string()),
         );
-        let expected = entry.clone();
+        let expected = maildir.get_path_of(&entry);
 
         let result = maildir.update_flags(&mut entry, Flag::all());
 
@@ -402,7 +395,7 @@ mod tests {
             Flag::empty(),
             Some("prefix".to_string()),
         );
-        let expected = entry.clone();
+        let expected = maildir.get_path_of(&entry);
 
         let result = maildir.update_uid(
             &mut entry,
