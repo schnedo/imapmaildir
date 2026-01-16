@@ -82,7 +82,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, StoreMailError> {
+    pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, MaildirError> {
         let new_local_metadata =
             LocalMailMetadata::new(Some(mail.metadata().uid()), mail.metadata().flags(), None);
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
@@ -92,15 +92,15 @@ impl Maildir {
             .write(true)
             .create_new(true)
             .open(&file_path)
-            .map_err(|e| StoreMailError::Io(file_path.clone(), e.kind()))?;
+            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
 
         file.write_all(mail.content())
-            .expect("writing new mail to tmp should succeed");
+            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
         file.sync_all()
-            .expect("writing new tmp mail to disc should succeed");
+            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
 
-        fs::rename(file_path, self.cur.join(new_local_metadata.filename()))
-            .expect("moving file from tmp to cur should succeed");
+        fs::rename(&file_path, self.cur.join(new_local_metadata.filename()))
+            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
 
         Ok(new_local_metadata)
     }
@@ -129,7 +129,7 @@ impl Maildir {
         &self,
         current: LocalMailMetadata,
         new: &LocalMailMetadata,
-    ) -> Result<(), UpdateMailError> {
+    ) -> Result<(), MaildirError> {
         let current_path = self.cur.join(current.filename());
         let new_path = self.cur.join(new.filename());
         match (
@@ -174,7 +174,7 @@ impl Maildir {
 
                 Ok(())
             }
-            (false, false) => Err(UpdateMailError::Missing(current)),
+            (false, false) => Err(MaildirError::Missing(current)),
         }
     }
 
@@ -194,7 +194,7 @@ impl Maildir {
         &self,
         entry: &mut LocalMailMetadata,
         new_uid: Uid,
-    ) -> Result<(), UpdateMailError> {
+    ) -> Result<(), MaildirError> {
         let current_mail = entry.clone();
         entry.set_uid(new_uid);
 
@@ -205,7 +205,7 @@ impl Maildir {
         &self,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
-    ) -> Result<(), UpdateMailError> {
+    ) -> Result<(), MaildirError> {
         debug!(
             "updating mail {} flags: {} -> {}",
             entry.uid().map_or(String::new(), |uid| uid.to_string()),
@@ -253,15 +253,11 @@ pub enum MaildirCreationError<'a> {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum StoreMailError {
-    #[error("IO error during storage of mail")]
-    Io(PathBuf, io::ErrorKind),
-}
-
-#[derive(Debug, Error, PartialEq)]
-pub enum UpdateMailError {
+pub enum MaildirError {
     #[error("Missing mail {0}")]
     Missing(LocalMailMetadata),
+    #[error("IO error during manipulation of mail {0}")]
+    Io(PathBuf, io::ErrorKind),
 }
 
 impl From<Flag> for char {
@@ -380,7 +376,7 @@ mod tests {
         assert_ok!(fs::remove_dir(&maildir.tmp));
 
         let result = assert_err!(maildir.store(&new_mail));
-        assert_matches!(result, StoreMailError::Io(_, io::ErrorKind::NotFound));
+        assert_matches!(result, MaildirError::Io(_, io::ErrorKind::NotFound));
     }
 
     #[rstest]
@@ -395,7 +391,7 @@ mod tests {
 
         let result = maildir.update_flags(&mut entry, Flag::all());
 
-        assert_eq!(result, Err(UpdateMailError::Missing(expected)));
+        assert_eq!(result, Err(MaildirError::Missing(expected)));
     }
 
     #[rstest]
@@ -413,6 +409,6 @@ mod tests {
             Uid::try_from(&3).expect("3 should be valid uid"),
         );
 
-        assert_eq!(result, Err(UpdateMailError::Missing(expected)));
+        assert_eq!(result, Err(MaildirError::Missing(expected)));
     }
 }

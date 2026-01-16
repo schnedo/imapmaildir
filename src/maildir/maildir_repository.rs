@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
-        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, maildir::UpdateMailError,
+        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, maildir::MaildirError,
         state::State,
     },
     repository::{ModSeq, Uid, UidValidity},
@@ -117,11 +117,14 @@ impl MaildirRepository {
                             .update_highest_modseq(mail_metadata.modseq())
                             .await;
                     }
-                    Err(UpdateMailError::Missing(entry)) => {
+                    Err(MaildirError::Missing(entry)) => {
                         if let Some(uid) = entry.uid() {
                             self.state.delete_by_id(uid).await;
                         }
                         return Err(NoExistsError { uid });
+                    }
+                    Err(e) => {
+                        todo!("handle error {e:?}")
                     }
                 }
             }
