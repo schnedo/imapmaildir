@@ -82,19 +82,17 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store(&self, mail: &RemoteMail) -> LocalMailMetadata {
+    pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, StoreMailError> {
         let new_local_metadata =
             LocalMailMetadata::new(Some(mail.metadata().uid()), mail.metadata().flags(), None);
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         trace!("writing to {}", file_path.display());
-        let Ok(mut file) = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&file_path)
-        else {
-            todo!("handle tmp file creation errors");
-        };
+            .map_err(|e| StoreMailError::Io(file_path.clone(), e.kind()))?;
 
         file.write_all(mail.content())
             .expect("writing new mail to tmp should succeed");
@@ -104,7 +102,7 @@ impl Maildir {
         fs::rename(file_path, self.cur.join(new_local_metadata.filename()))
             .expect("moving file from tmp to cur should succeed");
 
-        new_local_metadata
+        Ok(new_local_metadata)
     }
 
     pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> {
@@ -255,6 +253,12 @@ pub enum MaildirCreationError<'a> {
 }
 
 #[derive(Debug, Error, PartialEq)]
+pub enum StoreMailError {
+    #[error("IO error during storage of mail")]
+    Io(PathBuf, io::ErrorKind),
+}
+
+#[derive(Debug, Error, PartialEq)]
 pub enum UpdateMailError {
     #[error("Missing mail {0}")]
     Missing(LocalMailMetadata),
@@ -289,6 +293,14 @@ mod tests {
     #[fixture]
     fn temp_dir() -> TempDir {
         tempdir().expect("temporary directory should be creatable")
+    }
+
+    #[fixture]
+    fn new_mail() -> RemoteMail {
+        let metadata = RemoteMailMetadata::new(Uid::MAX, Flag::all(), ModSeq::try_from(8).unwrap());
+        let content = RemoteContent::empty();
+
+        RemoteMail::new(metadata, content)
     }
 
     #[rstest]
@@ -349,14 +361,10 @@ mod tests {
     }
 
     #[rstest]
-    fn test_store_stores_mail(temp_dir: TempDir) {
-        let maildir_path = temp_dir.path();
-        let maildir = Maildir::try_new(maildir_path).unwrap();
-        let metadata = RemoteMailMetadata::new(Uid::MAX, Flag::all(), ModSeq::try_from(8).unwrap());
-        let content = RemoteContent::empty();
-        let new_mail = RemoteMail::new(metadata, content);
+    fn test_store_stores_mail(temp_dir: TempDir, new_mail: RemoteMail) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
 
-        let result = maildir.store(&new_mail);
+        let result = assert_ok!(maildir.store(&new_mail));
         let expected = LocalMailMetadata::new(
             Some(new_mail.metadata().uid()),
             new_mail.metadata().flags(),
@@ -364,6 +372,15 @@ mod tests {
         );
 
         assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn test_store_errors_on_missing_tmp_dir(temp_dir: TempDir, new_mail: RemoteMail) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+        assert_ok!(fs::remove_dir(&maildir.tmp));
+
+        let result = assert_err!(maildir.store(&new_mail));
+        assert_matches!(result, StoreMailError::Io(_, io::ErrorKind::NotFound));
     }
 
     #[rstest]
