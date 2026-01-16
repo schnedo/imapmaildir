@@ -117,10 +117,8 @@ impl MaildirRepository {
                             .update_highest_modseq(mail_metadata.modseq())
                             .await;
                     }
-                    Err(MaildirError::Missing(entry)) => {
-                        if let Some(uid) = entry.uid() {
-                            self.state.delete_by_id(uid).await;
-                        }
+                    Err(MaildirError::Missing(_)) => {
+                        self.state.delete_by_id(uid).await;
                         return Err(NoExistsError { uid });
                     }
                     Err(e) => {
