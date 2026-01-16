@@ -83,8 +83,7 @@ impl Maildir {
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
     pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, MaildirError> {
-        let new_local_metadata =
-            LocalMailMetadata::new(Some(mail.metadata().uid()), mail.metadata().flags(), None);
+        let new_local_metadata = LocalMailMetadata::from(mail.metadata());
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         trace!("writing to {}", file_path.display());
@@ -131,11 +130,10 @@ impl Maildir {
                 if Self::is_content_identical(current.as_path(), new.as_path())? {
                     fs::rename(&current, &new).map_err(MaildirError::from)
                 } else {
-                    panic!(
-                        "moving {} to {} would overwrite mail with different content",
-                        current.display(),
-                        new.display()
-                    );
+                    Err(MaildirError::Existing {
+                        from: current,
+                        to: new,
+                    })
                 }
             }
             (true, false) => {
@@ -237,6 +235,8 @@ pub enum MaildirCreationError<'a> {
 pub enum MaildirError {
     #[error("Missing mail {0}")]
     Missing(PathBuf),
+    #[error("Moving {from} to {to} would overwrite mail with different content")]
+    Existing { from: PathBuf, to: PathBuf },
     #[error("IO error during manipulation of mail {0}")]
     Io(io::Error),
 }
