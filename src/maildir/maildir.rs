@@ -297,9 +297,12 @@ mod tests {
     }
 
     #[rstest]
-    fn test_new_errors_on_existing_dir(temp_dir: TempDir) {
+    fn test_new_errors_on_existing_dir(
+        temp_dir: TempDir,
+        #[values("cur", "tmp", "new")] dir: &str,
+    ) {
         let maildir_path = temp_dir.path();
-        let cur = maildir_path.join("cur");
+        let cur = maildir_path.join(dir);
         fs::create_dir(cur).expect("test maildir cur should be creatable");
 
         let maybe_maildir = Maildir::try_new(maildir_path);
