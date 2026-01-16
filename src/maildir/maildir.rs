@@ -91,16 +91,12 @@ impl Maildir {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&file_path)
-            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
+            .open(&file_path)?;
 
-        file.write_all(mail.content())
-            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
-        file.sync_all()
-            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
+        file.write_all(mail.content())?;
+        file.sync_all()?;
 
-        fs::rename(&file_path, self.get_path_of(&new_local_metadata))
-            .map_err(|e| MaildirError::Io(file_path.clone(), e.kind()))?;
+        Self::rename(file_path, self.get_path_of(&new_local_metadata))?;
 
         Ok(new_local_metadata)
     }
@@ -130,18 +126,10 @@ impl Maildir {
     }
 
     fn rename(current: PathBuf, new: PathBuf) -> Result<(), MaildirError> {
-        match (
-            current
-                .try_exists()
-                .expect("should be able to check if current name exists"),
-            new.try_exists()
-                .expect("should be able to check if new name exists"),
-        ) {
+        match (current.try_exists()?, new.try_exists()?) {
             (true, true) => {
                 if Self::is_content_identical(current.as_path(), new.as_path()) {
-                    fs::rename(current, new).expect("renaming mail in maildir should succeed");
-
-                    Ok(())
+                    fs::rename(&current, &new).map_err(MaildirError::from)
                 } else {
                     panic!(
                         "moving {} to {} would overwrite mail with different content",
@@ -245,12 +233,18 @@ pub enum MaildirCreationError<'a> {
     Io(PathBuf, io::ErrorKind),
 }
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum MaildirError {
     #[error("Missing mail {0}")]
     Missing(PathBuf),
     #[error("IO error during manipulation of mail {0}")]
-    Io(PathBuf, io::ErrorKind),
+    Io(io::Error),
+}
+
+impl From<io::Error> for MaildirError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 impl From<Flag> for char {
@@ -369,7 +363,11 @@ mod tests {
         assert_ok!(fs::remove_dir(&maildir.tmp));
 
         let result = assert_err!(maildir.store(&new_mail));
-        assert_matches!(result, MaildirError::Io(_, io::ErrorKind::NotFound));
+        if let MaildirError::Io(error) = result {
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        } else {
+            panic!("result should be io error")
+        }
     }
 
     #[rstest]
@@ -382,9 +380,13 @@ mod tests {
         );
         let expected = maildir.get_path_of(&entry);
 
-        let result = maildir.update_flags(&mut entry, Flag::all());
+        let result = assert_err!(maildir.update_flags(&mut entry, Flag::all()));
 
-        assert_eq!(result, Err(MaildirError::Missing(expected)));
+        if let MaildirError::Missing(path_buf) = result {
+            assert_eq!(path_buf, expected);
+        } else {
+            panic!("result should be missing error")
+        }
     }
 
     #[rstest]
@@ -397,11 +399,15 @@ mod tests {
         );
         let expected = maildir.get_path_of(&entry);
 
-        let result = maildir.update_uid(
+        let result = assert_err!(maildir.update_uid(
             &mut entry,
             Uid::try_from(&3).expect("3 should be valid uid"),
-        );
+        ));
 
-        assert_eq!(result, Err(MaildirError::Missing(expected)));
+        if let MaildirError::Missing(path_buf) = result {
+            assert_eq!(path_buf, expected);
+        } else {
+            panic!("result should be missing error")
+        }
     }
 }
