@@ -86,7 +86,10 @@ impl MaildirRepository {
         );
         // todo: check if update is necessary
         if self.update_flags(mail.metadata()).await.is_err() {
-            let metadata = self.maildir.store(mail);
+            let metadata = self
+                .maildir
+                .store(mail)
+                .expect("storing mail in maildir should succeed");
             self.state.store(&metadata).await;
         }
     }
