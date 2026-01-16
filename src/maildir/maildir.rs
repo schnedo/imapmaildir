@@ -128,7 +128,7 @@ impl Maildir {
     fn rename(current: PathBuf, new: PathBuf) -> Result<(), MaildirError> {
         match (current.try_exists()?, new.try_exists()?) {
             (true, true) => {
-                if Self::is_content_identical(current.as_path(), new.as_path()) {
+                if Self::is_content_identical(current.as_path(), new.as_path())? {
                     fs::rename(&current, &new).map_err(MaildirError::from)
                 } else {
                     panic!(
@@ -140,7 +140,7 @@ impl Maildir {
             }
             (true, false) => {
                 trace!("renaming {:} to {:}", current.display(), new.display());
-                fs::rename(current, new).expect("renaming mail in maildir should succeed");
+                fs::rename(current, new)?;
 
                 Ok(())
             }
@@ -157,16 +157,16 @@ impl Maildir {
         }
     }
 
-    fn is_content_identical(current: &Path, new: &Path) -> bool {
+    fn is_content_identical(current: &Path, new: &Path) -> io::Result<bool> {
         trace!(
             "checking if content of {} and {} is identical",
             current.display(),
             new.display()
         );
-        let current_content = fs::read(current).expect("current file should be readable");
-        let new_content = fs::read(new).expect("new file should be readable");
+        let current_content = fs::read(current)?;
+        let new_content = fs::read(new)?;
 
-        current_content == new_content
+        Ok(current_content == new_content)
     }
 
     pub fn update_uid(
@@ -358,9 +358,13 @@ mod tests {
     }
 
     #[rstest]
-    fn test_store_errors_on_missing_tmp_dir(temp_dir: TempDir, new_mail: RemoteMail) {
+    fn test_store_errors_on_missing_dir(
+        temp_dir: TempDir,
+        new_mail: RemoteMail,
+        #[values("tmp", "cur")] dir: &str,
+    ) {
         let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
-        assert_ok!(fs::remove_dir(&maildir.tmp));
+        assert_ok!(fs::remove_dir(temp_dir.path().join(dir)));
 
         let result = assert_err!(maildir.store(&new_mail));
         if let MaildirError::Io(error) = result {
