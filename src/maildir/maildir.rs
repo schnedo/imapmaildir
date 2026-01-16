@@ -279,6 +279,11 @@ mod tests {
     use rstest::*;
     use tempfile::{TempDir, tempdir};
 
+    use crate::{
+        imap::{RemoteContent, RemoteMailMetadata},
+        repository::ModSeq,
+    };
+
     use super::*;
 
     #[fixture]
@@ -341,6 +346,24 @@ mod tests {
             Maildir::load(maildir_path),
             Err(MaildirLoadError::Partial(_))
         );
+    }
+
+    #[rstest]
+    fn test_store_stores_mail(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        let maildir = Maildir::try_new(maildir_path).unwrap();
+        let metadata = RemoteMailMetadata::new(Uid::MAX, Flag::all(), ModSeq::try_from(8).unwrap());
+        let content = RemoteContent::empty();
+        let new_mail = RemoteMail::new(metadata, content);
+
+        let result = maildir.store(&new_mail);
+        let expected = LocalMailMetadata::new(
+            Some(new_mail.metadata().uid()),
+            new_mail.metadata().flags(),
+            Some(result.fileprefix().to_string()),
+        );
+
+        assert_eq!(result, expected);
     }
 
     #[rstest]
