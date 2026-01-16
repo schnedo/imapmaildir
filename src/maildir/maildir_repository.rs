@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
-        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, maildir::UpdateMailError,
+        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, maildir::MaildirError,
         state::State,
     },
     repository::{ModSeq, Uid, UidValidity},
@@ -40,7 +40,7 @@ impl MaildirRepository {
         state_dir: &Path,
         task_rx: mpsc::Receiver<Task>,
     ) {
-        let mail = Maildir::new(mail_dir);
+        let mail = Maildir::try_new(mail_dir).expect("creating maildir should succeed");
         let state = State::init(state_dir, uid_validity, highest_modseq)
             .expect("initializing state should work");
 
@@ -86,7 +86,10 @@ impl MaildirRepository {
         );
         // todo: check if update is necessary
         if self.update_flags(mail.metadata()).await.is_err() {
-            let metadata = self.maildir.store(mail);
+            let metadata = self
+                .maildir
+                .store(mail)
+                .expect("storing mail in maildir should succeed");
             self.state.store(&metadata).await;
         }
     }
@@ -114,11 +117,12 @@ impl MaildirRepository {
                             .update_highest_modseq(mail_metadata.modseq())
                             .await;
                     }
-                    Err(UpdateMailError::Missing(entry)) => {
-                        if let Some(uid) = entry.uid() {
-                            self.state.delete_by_id(uid).await;
-                        }
+                    Err(MaildirError::Missing(_)) => {
+                        self.state.delete_by_id(uid).await;
                         return Err(NoExistsError { uid });
+                    }
+                    Err(e) => {
+                        todo!("handle error {e:?}")
                     }
                 }
             }

@@ -1,12 +1,11 @@
 use std::{
     fmt::Debug,
     fs::{self, DirBuilder, OpenOptions, read_dir, remove_file},
-    io::Write,
+    io::{self, Write},
     os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, anyhow};
 use enumflags2::BitFlags;
 use log::{debug, info, trace, warn};
 use thiserror::Error;
@@ -26,28 +25,32 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn new(mail_dir: &Path) -> Self {
-        if Maildir::load(mail_dir).is_ok() {
-            panic!("unmanaged maildir found at {}", mail_dir.to_string_lossy());
-        } else {
-            info!("creating maildir in {:#}", mail_dir.display());
-            let mut builder = DirBuilder::new();
-            builder.recursive(true).mode(0o700);
+    pub fn try_new(mail_dir: &Path) -> Result<Self, MaildirCreationError<'_>> {
+        match Self::load(mail_dir) {
+            Ok(_) | Err(MaildirLoadError::Partial(_)) => {
+                Err(MaildirCreationError::Exists(mail_dir))
+            }
+            Err(MaildirLoadError::Io(path, kind)) => Err(MaildirCreationError::Io(path, kind)),
+            Err(_) => {
+                info!("creating maildir in {:#}", mail_dir.display());
+                let mut builder = DirBuilder::new();
+                builder.recursive(true).mode(0o700);
 
-            let tmp = mail_dir.join("tmp");
-            builder
-                .create(tmp.as_path())
-                .expect("creation of tmp subdir should succeed");
-            let new = mail_dir.join("new");
-            builder
-                .create(new.as_path())
-                .expect("creation of new subdir should succeed");
-            let cur = mail_dir.join("cur");
-            builder
-                .create(cur.as_path())
-                .expect("creation of cur subdir should succeed");
+                let tmp = mail_dir.join("tmp");
+                let new = mail_dir.join("new");
+                let cur = mail_dir.join("cur");
 
-            Self { new, cur, tmp }
+                match (
+                    builder.create(tmp.as_path()),
+                    builder.create(new.as_path()),
+                    builder.create(cur.as_path()),
+                ) {
+                    (Ok(()), Ok(()), Ok(())) => Ok(Self { new, cur, tmp }),
+                    (Err(e), _, _) => Err(MaildirCreationError::Io(tmp, e.kind())),
+                    (_, Err(e), _) => Err(MaildirCreationError::Io(new, e.kind())),
+                    (_, _, Err(e)) => Err(MaildirCreationError::Io(cur, e.kind())),
+                }
+            }
         }
     }
 
@@ -58,7 +61,7 @@ impl Maildir {
         Self { new, cur, tmp }
     }
 
-    pub fn load(mail_dir: &Path) -> Result<Self> {
+    pub fn load(mail_dir: &Path) -> Result<Self, MaildirLoadError<'_>> {
         let mail = Self::unchecked(mail_dir);
         trace!("loading maildir {mail:?}");
         match (
@@ -67,12 +70,11 @@ impl Maildir {
             mail.tmp.try_exists(),
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
-            (Ok(false), Ok(false), Ok(false)) => Err(anyhow!("no mailbox present")),
-            (Ok(_), Ok(_), Ok(_)) => panic!(
-                "partially initialized maildir detected: {}",
-                mail_dir.to_string_lossy()
-            ),
-            (_, _, _) => panic!("issue with reading {}", mail_dir.to_string_lossy()),
+            (Ok(false), Ok(false), Ok(false)) => Err(MaildirLoadError::Missing(mail_dir)),
+            (Ok(_), Ok(_), Ok(_)) => Err(MaildirLoadError::Partial(mail_dir)),
+            (Err(e), _, _) => Err(MaildirLoadError::Io(mail.new, e.kind())),
+            (_, Err(e), _) => Err(MaildirLoadError::Io(mail.cur, e.kind())),
+            (_, _, Err(e)) => Err(MaildirLoadError::Io(mail.tmp, e.kind())),
         }
     }
 
@@ -80,29 +82,22 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store(&self, mail: &RemoteMail) -> LocalMailMetadata {
-        let new_local_metadata =
-            LocalMailMetadata::new(Some(mail.metadata().uid()), mail.metadata().flags(), None);
+    pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, MaildirError> {
+        let new_local_metadata = LocalMailMetadata::from(mail.metadata());
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         trace!("writing to {}", file_path.display());
-        let Ok(mut file) = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&file_path)
-        else {
-            todo!("handle tmp file creation errors");
-        };
+            .open(&file_path)?;
 
-        file.write_all(mail.content())
-            .expect("writing new mail to tmp should succeed");
-        file.sync_all()
-            .expect("writing new tmp mail to disc should succeed");
+        file.write_all(mail.content())?;
+        file.sync_all()?;
 
-        fs::rename(file_path, self.cur.join(new_local_metadata.filename()))
-            .expect("moving file from tmp to cur should succeed");
+        Self::rename(file_path, self.get_path_of(&new_local_metadata))?;
 
-        new_local_metadata
+        Ok(new_local_metadata)
     }
 
     pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> {
@@ -120,102 +115,86 @@ impl Maildir {
 
     pub fn read(&self, metadata: LocalMailMetadata) -> LocalMail {
         LocalMail::new(
-            fs::read(self.cur.join(metadata.filename())).expect("mail contents should be readable"),
+            fs::read(self.get_path_of(&metadata)).expect("mail contents should be readable"),
             metadata,
         )
     }
 
-    fn rename(
-        &self,
-        current: LocalMailMetadata,
-        new: &LocalMailMetadata,
-    ) -> Result<(), UpdateMailError> {
-        let current_path = self.cur.join(current.filename());
-        let new_path = self.cur.join(new.filename());
-        match (
-            current_path
-                .try_exists()
-                .expect("should be able to check if current name exists"),
-            new_path
-                .try_exists()
-                .expect("should be able to check if new name exists"),
-        ) {
-            (true, true) => {
-                if Self::is_content_identical(current_path.as_path(), new_path.as_path()) {
-                    fs::rename(current_path, new_path)
-                        .expect("renaming mail in maildir should succeed");
+    fn get_path_of(&self, mail: &LocalMailMetadata) -> PathBuf {
+        self.cur.join(mail.filename())
+    }
 
-                    Ok(())
+    fn rename(current: PathBuf, new: PathBuf) -> Result<(), MaildirError> {
+        match (current.try_exists()?, new.try_exists()?) {
+            (true, true) => {
+                if Self::is_content_identical(current.as_path(), new.as_path())? {
+                    fs::rename(&current, &new).map_err(MaildirError::from)
                 } else {
-                    panic!(
-                        "moving {} to {} would overwrite mail with different content",
-                        current_path.display(),
-                        new_path.display()
-                    );
+                    Err(MaildirError::Existing {
+                        from: current,
+                        to: new,
+                    })
                 }
             }
             (true, false) => {
-                trace!(
-                    "renaming {:} to {:}",
-                    current_path.display(),
-                    new_path.display()
-                );
-                fs::rename(current_path, new_path)
-                    .expect("renaming mail in maildir should succeed");
+                trace!("renaming {:} to {:}", current.display(), new.display());
+                fs::rename(current, new)?;
 
                 Ok(())
             }
             (false, true) => {
                 warn!(
                     "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
-                    current_path.to_string_lossy(),
-                    new_path.to_string_lossy()
+                    current.to_string_lossy(),
+                    new.to_string_lossy()
                 );
 
                 Ok(())
             }
-            (false, false) => Err(UpdateMailError::Missing(current)),
+            (false, false) => Err(MaildirError::Missing(current)),
         }
     }
 
-    fn is_content_identical(current: &Path, new: &Path) -> bool {
+    fn is_content_identical(current: &Path, new: &Path) -> io::Result<bool> {
         trace!(
             "checking if content of {} and {} is identical",
             current.display(),
             new.display()
         );
-        let current_content = fs::read(current).expect("current file should be readable");
-        let new_content = fs::read(new).expect("new file should be readable");
+        let current_content = fs::read(current)?;
+        let new_content = fs::read(new)?;
 
-        current_content == new_content
+        Ok(current_content == new_content)
     }
 
     pub fn update_uid(
         &self,
         entry: &mut LocalMailMetadata,
         new_uid: Uid,
-    ) -> Result<(), UpdateMailError> {
-        let current_mail = entry.clone();
+    ) -> Result<(), MaildirError> {
+        let current_mail = self.get_path_of(entry);
         entry.set_uid(new_uid);
+        let new_mail = self.get_path_of(entry);
 
-        self.rename(current_mail, entry)
+        Self::rename(current_mail, new_mail)
     }
 
     pub fn update_flags(
         &self,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
-    ) -> Result<(), UpdateMailError> {
+    ) -> Result<(), MaildirError> {
         debug!(
             "updating mail {} flags: {} -> {}",
             entry.uid().map_or(String::new(), |uid| uid.to_string()),
             entry.flags(),
             new_flags
         );
-        let current_mail = entry.clone();
+        let current_mail = self.get_path_of(entry);
         entry.set_flags(new_flags);
+        let new_mail = self.get_path_of(entry);
 
-        self.rename(current_mail, entry)
+        Self::rename(current_mail, new_mail)
     }
 
     pub fn delete(&self, entry: &LocalMailMetadata) {
@@ -235,9 +214,37 @@ impl Maildir {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum UpdateMailError {
+pub enum MaildirLoadError<'a> {
+    #[error("Found partially existing maildir at {0}")]
+    Partial(&'a Path),
+    #[error("No maildir found at {0}")]
+    Missing(&'a Path),
+    #[error("IO error during loading of maildir directory at {0}: {1}")]
+    Io(PathBuf, io::ErrorKind),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum MaildirCreationError<'a> {
+    #[error("Found preexisting cur, tmp and/or new directories at {0}")]
+    Exists(&'a Path),
+    #[error("IO error during creation of maildir directory at {0}: {1}")]
+    Io(PathBuf, io::ErrorKind),
+}
+
+#[derive(Debug, Error)]
+pub enum MaildirError {
     #[error("Missing mail {0}")]
-    Missing(LocalMailMetadata),
+    Missing(PathBuf),
+    #[error("Moving {from} to {to} would overwrite mail with different content")]
+    Existing { from: PathBuf, to: PathBuf },
+    #[error("IO error during manipulation of mail {0}")]
+    Io(io::Error),
+}
+
+impl From<io::Error> for MaildirError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 impl From<Flag> for char {
@@ -254,9 +261,15 @@ impl From<Flag> for char {
 
 #[cfg(test)]
 mod tests {
+    use assertables::*;
     use enumflags2::BitFlag;
-    use rstest::{fixture, rstest};
+    use rstest::*;
     use tempfile::{TempDir, tempdir};
+
+    use crate::{
+        imap::{RemoteContent, RemoteMailMetadata},
+        repository::ModSeq,
+    };
 
     use super::*;
 
@@ -265,36 +278,140 @@ mod tests {
         tempdir().expect("temporary directory should be creatable")
     }
 
+    #[fixture]
+    fn new_mail() -> RemoteMail {
+        let metadata = RemoteMailMetadata::new(Uid::MAX, Flag::all(), ModSeq::try_from(8).unwrap());
+        let content = RemoteContent::empty();
+
+        RemoteMail::new(metadata, content)
+    }
+
+    #[rstest]
+    fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        Maildir::try_new(maildir_path).expect("creating maildir should succeed");
+
+        assert!(maildir_path.join("cur").exists());
+        assert!(maildir_path.join("new").exists());
+        assert!(maildir_path.join("tmp").exists());
+    }
+
+    #[rstest]
+    fn test_new_errors_on_existing_dir(
+        temp_dir: TempDir,
+        #[values("cur", "tmp", "new")] dir: &str,
+    ) {
+        let maildir_path = temp_dir.path();
+        let cur = maildir_path.join(dir);
+        fs::create_dir(cur).expect("test maildir cur should be creatable");
+
+        let maybe_maildir = Maildir::try_new(maildir_path);
+
+        assert_matches!(maybe_maildir, Err(MaildirCreationError::Exists(_)));
+    }
+
+    #[rstest]
+    fn test_load_loads_exisiting_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        fs::create_dir(maildir_path.join("cur")).unwrap();
+        fs::create_dir(maildir_path.join("new")).unwrap();
+        fs::create_dir(maildir_path.join("tmp")).unwrap();
+
+        assert!(Maildir::load(maildir_path).is_ok());
+    }
+
+    #[rstest]
+    fn test_load_errors_on_missing_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        assert_matches!(
+            Maildir::load(maildir_path),
+            Err(MaildirLoadError::Missing(_))
+        );
+    }
+
+    #[rstest]
+    fn test_load_errors_on_partial_existing_dir(
+        temp_dir: TempDir,
+        #[values("cur", "tmp", "new")] dir: &str,
+    ) {
+        let maildir_path = temp_dir.path();
+        fs::create_dir(maildir_path.join(dir)).unwrap();
+
+        assert_matches!(
+            Maildir::load(maildir_path),
+            Err(MaildirLoadError::Partial(_))
+        );
+    }
+
+    #[rstest]
+    fn test_store_stores_mail(temp_dir: TempDir, new_mail: RemoteMail) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+
+        let result = assert_ok!(maildir.store(&new_mail));
+        let expected = LocalMailMetadata::new(
+            Some(new_mail.metadata().uid()),
+            new_mail.metadata().flags(),
+            Some(result.fileprefix().to_string()),
+        );
+
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn test_store_errors_on_missing_dir(
+        temp_dir: TempDir,
+        new_mail: RemoteMail,
+        #[values("tmp", "cur")] dir: &str,
+    ) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+        assert_ok!(fs::remove_dir(temp_dir.path().join(dir)));
+
+        let result = assert_err!(maildir.store(&new_mail));
+        if let MaildirError::Io(error) = result {
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        } else {
+            panic!("result should be io error")
+        }
+    }
+
     #[rstest]
     fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
-        let maildir = Maildir::new(temp_dir.path());
+        let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
         let mut entry = LocalMailMetadata::new(
             Some(Uid::try_from(&2).expect("2 should be valid uid")),
             Flag::empty(),
             Some("prefix".to_string()),
         );
-        let expected = entry.clone();
+        let expected = maildir.get_path_of(&entry);
 
-        let result = maildir.update_flags(&mut entry, Flag::all());
+        let result = assert_err!(maildir.update_flags(&mut entry, Flag::all()));
 
-        assert_eq!(result, Err(UpdateMailError::Missing(expected)));
+        if let MaildirError::Missing(path_buf) = result {
+            assert_eq!(path_buf, expected);
+        } else {
+            panic!("result should be missing error")
+        }
     }
 
     #[rstest]
     fn test_update_uid_errors_on_missing_mail(temp_dir: TempDir) {
-        let maildir = Maildir::new(temp_dir.path());
+        let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
         let mut entry = LocalMailMetadata::new(
             Some(Uid::try_from(&2).expect("2 should be valid uid")),
             Flag::empty(),
             Some("prefix".to_string()),
         );
-        let expected = entry.clone();
+        let expected = maildir.get_path_of(&entry);
 
-        let result = maildir.update_uid(
+        let result = assert_err!(maildir.update_uid(
             &mut entry,
             Uid::try_from(&3).expect("3 should be valid uid"),
-        );
+        ));
 
-        assert_eq!(result, Err(UpdateMailError::Missing(expected)));
+        if let MaildirError::Missing(path_buf) = result {
+            assert_eq!(path_buf, expected);
+        } else {
+            panic!("result should be missing error")
+        }
     }
 }

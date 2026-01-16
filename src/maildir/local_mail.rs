@@ -8,7 +8,10 @@ use std::{
 use enumflags2::BitFlags;
 use rustix::system::uname;
 
-use crate::repository::{Flag, Uid};
+use crate::{
+    imap::RemoteMailMetadata,
+    repository::{Flag, Uid},
+};
 
 pub struct LocalMail {
     metadata: LocalMailMetadata,
@@ -136,6 +139,12 @@ impl FromStr for LocalMailMetadata {
                 fileprefix: head.to_string(),
             })
         }
+    }
+}
+
+impl From<&RemoteMailMetadata> for LocalMailMetadata {
+    fn from(value: &RemoteMailMetadata) -> Self {
+        Self::new(Some(value.uid()), value.flags(), None)
     }
 }
 

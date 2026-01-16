@@ -46,6 +46,17 @@ impl RemoteContent {
     pub fn content(&self) -> &[u8] {
         self.content
     }
+
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        let raw = Bytes::new();
+        let content = unsafe {
+            use std::mem::transmute;
+            transmute::<&[u8], &[u8]>(raw.as_ref())
+        };
+
+        Self { raw, content }
+    }
 }
 
 pub struct RemoteMail {
