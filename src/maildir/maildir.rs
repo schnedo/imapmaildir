@@ -100,7 +100,7 @@ impl Maildir {
         Ok(new_local_metadata)
     }
 
-    pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> {
+    pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> + Debug + 'static {
         read_dir(self.cur.as_path())
             .expect("cur should be readable")
             .map(|entry| {
@@ -372,6 +372,24 @@ mod tests {
         } else {
             panic!("result should be io error")
         }
+    }
+
+    #[rstest]
+    fn test_list_cur_lists_all_mails(temp_dir: TempDir) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+        let mail1 =
+            LocalMailMetadata::new(Uid::try_from(&1).ok(), Flag::all(), Some("1".to_string()));
+        let mail1_path = maildir.cur.join(mail1.filename());
+        assert_ok!(fs::write(mail1_path, "1"));
+        let mail2 =
+            LocalMailMetadata::new(Uid::try_from(&2).ok(), Flag::all(), Some("2".to_string()));
+        let mail2_path = maildir.cur.join(mail2.filename());
+        assert_ok!(fs::write(mail2_path, "2"));
+
+        let expected = vec![mail1, mail2];
+        let result: Vec<_> = maildir.list_cur().collect();
+
+        assert_eq!(result, expected);
     }
 
     #[rstest]
