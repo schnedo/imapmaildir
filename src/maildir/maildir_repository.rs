@@ -153,11 +153,15 @@ impl MaildirRepository {
 
     pub async fn detect_changes(&self) -> LocalChanges {
         let mut news = Vec::new();
-        let maildir_metadata = self.maildir.list_cur();
+        let maildir_metadata = self
+            .maildir
+            .list_cur()
+            .expect("cur directory should be readable");
 
         let mut maildir_mails = HashMap::new();
 
         for metadata in maildir_metadata {
+            let metadata = metadata.expect("file in cur should be readable");
             if let Some(uid) = metadata.uid() {
                 maildir_mails.insert(uid, metadata);
             } else {

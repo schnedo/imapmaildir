@@ -7,6 +7,7 @@ use std::{
 
 use enumflags2::BitFlags;
 use rustix::system::uname;
+use thiserror::Error;
 
 use crate::{
     imap::RemoteMailMetadata,
@@ -115,16 +116,32 @@ impl Display for LocalMailMetadata {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("Missing mail {message}")]
+pub struct ParseLocalMailMetadataError {
+    message: &'static str,
+}
+
+impl ParseLocalMailMetadataError {
+    pub fn message(&self) -> &'static str {
+        self.message
+    }
+}
+
 impl FromStr for LocalMailMetadata {
-    type Err = &'static str;
+    type Err = ParseLocalMailMetadataError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (head, flags) = s.rsplit_once(":2,").ok_or("filename should contain :2,")?;
+        let (head, flags) = s.rsplit_once(":2,").ok_or(ParseLocalMailMetadataError {
+            message: "filename should contain :2,",
+        })?;
         let flags = flags.chars().map(Flag::from).collect();
         if let Some((fileprefix, uid)) = head.rsplit_once(",U=") {
             let uid = uid
                 .parse::<u32>()
-                .map_err(|_| "uid field should be u32")?
+                .map_err(|_| ParseLocalMailMetadataError {
+                    message: "uid field should be u32",
+                })?
                 .try_into()
                 .ok();
             Ok(Self {

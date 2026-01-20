@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::{
     imap::RemoteMail,
-    maildir::{LocalMail, LocalMailMetadata},
+    maildir::{LocalMail, LocalMailMetadata, local_mail::ParseLocalMailMetadataError},
     repository::{Flag, Uid},
 };
 
@@ -100,17 +100,24 @@ impl Maildir {
         Ok(new_local_metadata)
     }
 
-    pub fn list_cur(&self) -> impl Iterator<Item = LocalMailMetadata> + Debug + 'static {
-        read_dir(self.cur.as_path())
-            .expect("cur should be readable")
-            .map(|entry| {
-                let filename = entry
-                    .expect("entry of cur should be readable")
-                    .file_name()
-                    .into_string()
-                    .expect("converting filename from OsString to String should be possible");
-                filename.parse().expect("filename should be parsable")
+    pub fn list_cur(
+        &self,
+    ) -> io::Result<
+        impl Iterator<Item = Result<LocalMailMetadata, MaildirListError>> + Debug + 'static,
+    > {
+        let dir_contents = read_dir(self.cur.as_path())?;
+        Ok(dir_contents.map(|entry| {
+            let entry = entry.map_err(|e| MaildirListError::Io(e.kind()))?;
+            let filename = entry.file_name().into_string().map_err(|os_filename| {
+                MaildirListError::ParseFilename(format!(
+                    "Cannot convert {} from OsString to String",
+                    os_filename.display()
+                ))
+            })?;
+            filename.parse().map_err(|e: ParseLocalMailMetadataError| {
+                MaildirListError::ParseFilename(e.message().to_string())
             })
+        }))
     }
 
     pub fn read(&self, metadata: LocalMailMetadata) -> LocalMail {
@@ -231,6 +238,14 @@ pub enum MaildirCreationError<'a> {
     Io(PathBuf, io::ErrorKind),
 }
 
+#[derive(Debug, Error, PartialEq)]
+pub enum MaildirListError {
+    #[error("Found preexisting cur, tmp and/or new directories at {0}")]
+    ParseFilename(String),
+    #[error("IO error trying to list maildir file")]
+    Io(io::ErrorKind),
+}
+
 #[derive(Debug, Error)]
 pub enum MaildirError {
     #[error("Missing mail {0}")]
@@ -261,6 +276,8 @@ impl From<Flag> for char {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use assertables::*;
     use enumflags2::BitFlag;
     use rstest::*;
@@ -386,8 +403,9 @@ mod tests {
         let mail2_path = maildir.cur.join(mail2.filename());
         assert_ok!(fs::write(mail2_path, "2"));
 
-        let expected = vec![mail1, mail2];
-        let result: Vec<_> = maildir.list_cur().collect();
+        let expected = HashSet::from([mail1, mail2]);
+        let result: Result<HashSet<_>, _> = assert_ok!(maildir.list_cur()).collect();
+        let result = assert_ok!(result);
 
         assert_eq!(result, expected);
     }
