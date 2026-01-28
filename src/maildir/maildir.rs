@@ -411,6 +411,19 @@ mod tests {
     }
 
     #[rstest]
+    fn test_list_cur_errors_on_unparsable_filename(temp_dir: TempDir) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+        assert_ok!(fs::write(maildir.cur.join("asfdasdofj"), ""));
+
+        let expected: Vec<Result<LocalMailMetadata, _>> = vec![Err(
+            MaildirListError::ParseFilename("filename should contain :2,".to_string()),
+        )];
+        let result: Vec<_> = assert_ok!(maildir.list_cur()).collect();
+
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
     fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
         let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
         let mut entry = LocalMailMetadata::new(
