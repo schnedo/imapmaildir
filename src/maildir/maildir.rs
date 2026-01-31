@@ -522,25 +522,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir) {
-        let maildir = maildir.maildir;
-        let mut entry = LocalMailMetadata::new(
-            Some(Uid::try_from(&2).expect("2 should be valid uid")),
-            Flag::empty(),
-            Some("prefix".to_string()),
-        );
-        let expected = maildir.get_path_of(&entry);
-
-        let result = assert_err!(maildir.update_flags(&mut entry, Flag::all()));
-
-        if let MaildirError::Missing(path_buf) = result {
-            assert_eq!(path_buf, expected);
-        } else {
-            panic!("result should be missing error")
-        }
-    }
-
-    #[rstest]
     fn test_update_uid_errors_on_missing_mail(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let mut entry = LocalMailMetadata::new(
@@ -554,6 +535,25 @@ mod tests {
             &mut entry,
             Uid::try_from(&3).expect("3 should be valid uid"),
         ));
+
+        if let MaildirError::Missing(path_buf) = result {
+            assert_eq!(path_buf, expected);
+        } else {
+            panic!("result should be missing error")
+        }
+    }
+
+    #[rstest]
+    fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
+        let mut entry = LocalMailMetadata::new(
+            Some(Uid::try_from(&2).expect("2 should be valid uid")),
+            Flag::empty(),
+            Some("prefix".to_string()),
+        );
+        let expected = maildir.get_path_of(&entry);
+
+        let result = assert_err!(maildir.update_flags(&mut entry, Flag::all()));
 
         if let MaildirError::Missing(path_buf) = result {
             assert_eq!(path_buf, expected);
