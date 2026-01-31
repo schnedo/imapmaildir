@@ -536,6 +536,95 @@ mod tests {
     }
 
     #[rstest]
+    fn test_rename_succeeds_on_missing_source_but_existing_target(temp_dir: TempDir) {
+        let current = temp_dir.path().join("a");
+        assert!(!current.exists());
+        let expected_current = current.clone();
+        let new = temp_dir.path().join("b");
+        assert_ok!(fs::write(&new, ""));
+        let expected_new = new.clone();
+
+        assert_ok!(Maildir::rename(current, new));
+        assert!(!expected_current.exists());
+        assert!(expected_new.exists());
+    }
+
+    #[rstest]
+    fn test_rename_succeeds_if_target_with_same_content_exists(temp_dir: TempDir) {
+        let current = temp_dir.path().join("a");
+        assert_ok!(fs::write(&current, "foo"));
+        let expected_current = current.clone();
+        let new = temp_dir.path().join("b");
+        assert_ok!(fs::write(&new, "foo"));
+        let expected_new = new.clone();
+
+        assert_ok!(Maildir::rename(current, new));
+        assert!(!expected_current.exists());
+        assert!(expected_new.exists());
+    }
+
+    #[rstest]
+    fn test_rename_errors_if_target_with_different_content_exists(temp_dir: TempDir) {
+        let current = temp_dir.path().join("a");
+        assert_ok!(fs::write(&current, "foo"));
+        let expected_current = current.clone();
+        let new = temp_dir.path().join("b");
+        assert_ok!(fs::write(&new, "foobar"));
+        let expected_new = new.clone();
+
+        let result = assert_err!(Maildir::rename(current, new));
+        match result {
+            MaildirError::Existing { from, to } => {
+                assert_eq!(from, expected_current);
+                assert_eq!(to, expected_new);
+            }
+            _ => panic!("rename result should be MaildirError::Existing"),
+        }
+        assert!(expected_current.exists());
+        assert!(expected_new.exists());
+    }
+
+    #[rstest]
+    fn test_rename_errors_on_unwritable_target(temp_dir: TempDir) {
+        let current = temp_dir.path().join("a");
+        assert_ok!(fs::write(&current, "foo"));
+        let expected_current = current.clone();
+        let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
+        let original_permissions = permissions.clone();
+        permissions.set_mode(0o000);
+        assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
+        let new = temp_dir.path().join("b");
+        assert!(!new.exists());
+        let expected_new = new.clone();
+
+        let result = assert_err!(Maildir::rename(current, new));
+        assert_matches!(result, MaildirError::Io(_));
+        assert_ok!(fs::set_permissions(temp_dir.path(), original_permissions));
+        assert!(expected_current.exists());
+        assert!(!expected_new.exists());
+    }
+
+    #[rstest]
+    fn test_rename_errors_on_missing_source_and_missing_target(temp_dir: TempDir) {
+        let current = temp_dir.path().join("a");
+        assert!(!current.exists());
+        let expected_current = current.clone();
+        let new = temp_dir.path().join("b");
+        assert!(!current.exists());
+        let expected_new = new.clone();
+
+        let result = assert_err!(Maildir::rename(current, new));
+        match result {
+            MaildirError::Missing(path_buf) => {
+                assert_eq!(path_buf, expected_current);
+            }
+            _ => panic!("rename result should be MaildirError::Missing"),
+        }
+        assert!(!expected_current.exists());
+        assert!(!expected_new.exists());
+    }
+
+    #[rstest]
     fn test_update_uid_errors_on_missing_mail(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let mut entry = LocalMailMetadata::new(
