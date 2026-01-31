@@ -294,7 +294,7 @@ mod tests {
 
     #[fixture]
     fn temp_dir() -> TempDir {
-        tempdir().expect("temporary directory should be creatable")
+        assert_ok!(tempdir())
     }
 
     #[fixture]
@@ -308,7 +308,7 @@ mod tests {
     #[rstest]
     fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        Maildir::try_new(maildir_path).expect("creating maildir should succeed");
+        assert_ok!(Maildir::try_new(maildir_path));
 
         assert!(maildir_path.join("cur").exists());
         assert!(maildir_path.join("new").exists());
@@ -322,7 +322,7 @@ mod tests {
     ) {
         let maildir_path = temp_dir.path();
         let cur = maildir_path.join(dir);
-        fs::create_dir(cur).expect("test maildir cur should be creatable");
+        assert_ok!(fs::create_dir(cur));
 
         let maybe_maildir = Maildir::try_new(maildir_path);
 
@@ -332,9 +332,9 @@ mod tests {
     #[rstest]
     fn test_load_loads_exisiting_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        fs::create_dir(maildir_path.join("cur")).unwrap();
-        fs::create_dir(maildir_path.join("new")).unwrap();
-        fs::create_dir(maildir_path.join("tmp")).unwrap();
+        assert_ok!(fs::create_dir(maildir_path.join("cur")));
+        assert_ok!(fs::create_dir(maildir_path.join("new")));
+        assert_ok!(fs::create_dir(maildir_path.join("tmp")));
 
         assert!(Maildir::load(maildir_path).is_ok());
     }
@@ -354,7 +354,7 @@ mod tests {
         #[values("cur", "tmp", "new")] dir: &str,
     ) {
         let maildir_path = temp_dir.path();
-        fs::create_dir(maildir_path.join(dir)).unwrap();
+        assert_ok!(fs::create_dir(maildir_path.join(dir)));
 
         assert_matches!(
             Maildir::load(maildir_path),
