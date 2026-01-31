@@ -322,6 +322,14 @@ mod tests {
         RemoteMail::new(metadata, content)
     }
 
+    #[fixture]
+    fn local_mail() -> LocalMail {
+        LocalMail::new(
+            "foo".into(),
+            LocalMailMetadata::new(Some(Uid::MAX), Flag::all(), Some("prefix".to_string())),
+        )
+    }
+
     #[rstest]
     fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
@@ -486,6 +494,22 @@ mod tests {
         let file_read = assert_some!(result.next());
         let read_error = assert_err!(file_read);
         assert_matches!(read_error, MaildirListError::InvalidFilename(_));
+    }
+
+    #[rstest]
+    fn test_read_reads_mail(maildir: TestMaildir, local_mail: LocalMail) {
+        let maildir = maildir.maildir;
+        let (metadata, expected_content) = local_mail.unpack();
+        assert_ok!(fs::write(
+            maildir.cur.join(metadata.filename()),
+            &expected_content
+        ));
+        let expected_metadata = metadata.clone();
+
+        let result = maildir.read(metadata);
+        let (metadata, content) = result.unpack();
+        assert_eq!(metadata, expected_metadata);
+        assert_eq!(content, expected_content);
     }
 
     #[rstest]
