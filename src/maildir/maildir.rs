@@ -278,7 +278,11 @@ impl From<Flag> for char {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, ffi::OsString, os::unix::ffi::OsStringExt};
+    use std::{
+        collections::HashSet,
+        ffi::OsString,
+        os::unix::{ffi::OsStringExt, fs::PermissionsExt},
+    };
 
     use assertables::*;
     use enumflags2::BitFlag;
@@ -360,6 +364,18 @@ mod tests {
             Maildir::load(maildir_path),
             Err(MaildirLoadError::Partial(_))
         );
+    }
+
+    #[rstest]
+    fn test_load_errors_on_unreadable_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        let mut permissions = assert_ok!(fs::metadata(maildir_path)).permissions();
+        permissions.set_mode(0o000);
+        assert_ok!(fs::set_permissions(maildir_path, permissions));
+
+        let result = Maildir::load(maildir_path);
+        let result = assert_err!(result);
+        assert_matches!(result, MaildirLoadError::Io(_, _));
     }
 
     #[rstest]
