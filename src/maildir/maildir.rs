@@ -334,6 +334,18 @@ mod tests {
     }
 
     #[rstest]
+    fn test_new_errors_on_unreadable_dir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        let mut permissions = assert_ok!(fs::metadata(maildir_path)).permissions();
+        permissions.set_mode(0o000);
+        assert_ok!(fs::set_permissions(maildir_path, permissions));
+
+        let result = Maildir::try_new(maildir_path);
+        let result = assert_err!(result);
+        assert_matches!(result, MaildirCreationError::Io(_, _));
+    }
+
+    #[rstest]
     fn test_load_loads_exisiting_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
         assert_ok!(fs::create_dir(maildir_path.join("cur")));
