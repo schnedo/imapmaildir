@@ -411,6 +411,17 @@ mod tests {
     }
 
     #[rstest]
+    fn test_list_cur_errors_on_unreadable_cur_dir(temp_dir: TempDir) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+        assert_ok!(fs::remove_dir(&maildir.cur));
+
+        let result = maildir.list_cur();
+
+        let result = assert_err!(result);
+        assert_matches!(result, io::Error { .. });
+    }
+
+    #[rstest]
     fn test_list_cur_errors_on_unparsable_filename(temp_dir: TempDir) {
         let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
         assert_ok!(fs::write(maildir.cur.join("asfdasdofj"), ""));
