@@ -513,6 +513,15 @@ mod tests {
     }
 
     #[rstest]
+    fn test_read_errors_on_io_error(maildir: TestMaildir, local_mail: LocalMail) {
+        let maildir = maildir.maildir;
+        let (metadata, _) = local_mail.unpack();
+
+        let result = assert_err!(maildir.read(metadata));
+        assert_matches!(result, io::Error { .. });
+    }
+
+    #[rstest]
     fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let mut entry = LocalMailMetadata::new(
