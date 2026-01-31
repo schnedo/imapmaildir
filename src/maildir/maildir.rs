@@ -120,11 +120,11 @@ impl Maildir {
         }))
     }
 
-    pub fn read(&self, metadata: LocalMailMetadata) -> LocalMail {
-        LocalMail::new(
-            fs::read(self.get_path_of(&metadata)).expect("mail contents should be readable"),
+    pub fn read(&self, metadata: LocalMailMetadata) -> io::Result<LocalMail> {
+        Ok(LocalMail::new(
+            fs::read(self.get_path_of(&metadata))?,
             metadata,
-        )
+        ))
     }
 
     fn get_path_of(&self, mail: &LocalMailMetadata) -> PathBuf {
@@ -506,7 +506,7 @@ mod tests {
         ));
         let expected_metadata = metadata.clone();
 
-        let result = maildir.read(metadata);
+        let result = assert_ok!(maildir.read(metadata));
         let (metadata, content) = result.unpack();
         assert_eq!(metadata, expected_metadata);
         assert_eq!(content, expected_content);
