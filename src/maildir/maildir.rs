@@ -109,7 +109,7 @@ impl Maildir {
         Ok(dir_contents.map(|entry| {
             let entry = entry.map_err(|e| MaildirListError::Io(e.kind()))?;
             let filename = entry.file_name().into_string().map_err(|os_filename| {
-                MaildirListError::ParseFilename(format!(
+                MaildirListError::InvalidFilename(format!(
                     "Cannot convert {} from OsString to String",
                     os_filename.display()
                 ))
@@ -240,7 +240,9 @@ pub enum MaildirCreationError<'a> {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum MaildirListError {
-    #[error("Found preexisting cur, tmp and/or new directories at {0}")]
+    #[error("Non utf-8 filename {0}")]
+    InvalidFilename(String),
+    #[error("Incorrect format of mail: {0}")]
     ParseFilename(String),
     #[error("IO error trying to list maildir file")]
     Io(io::ErrorKind),
@@ -276,7 +278,7 @@ impl From<Flag> for char {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, ffi::OsString, os::unix::ffi::OsStringExt};
 
     use assertables::*;
     use enumflags2::BitFlag;
@@ -432,6 +434,18 @@ mod tests {
         let result: Vec<_> = assert_ok!(maildir.list_cur()).collect();
 
         assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn test_list_cur_errors_on_non_utf8_filename(temp_dir: TempDir) {
+        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+        let filename = OsString::from_vec(vec![255]);
+        assert_ok!(fs::write(maildir.cur.join(filename), ""));
+
+        let mut result = assert_ok!(maildir.list_cur());
+        let file_read = assert_some!(result.next());
+        let read_error = assert_err!(file_read);
+        assert_matches!(read_error, MaildirListError::InvalidFilename(_));
     }
 
     #[rstest]
