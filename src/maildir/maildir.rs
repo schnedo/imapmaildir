@@ -301,6 +301,19 @@ mod tests {
         assert_ok!(tempdir())
     }
 
+    struct TestMaildir {
+        dir: TempDir,
+        maildir: Maildir,
+    }
+
+    #[fixture]
+    fn maildir(temp_dir: TempDir) -> TestMaildir {
+        TestMaildir {
+            maildir: assert_ok!(Maildir::try_new(temp_dir.path())),
+            dir: temp_dir,
+        }
+    }
+
     #[fixture]
     fn new_mail() -> RemoteMail {
         let metadata = RemoteMailMetadata::new(Uid::MAX, Flag::all(), ModSeq::try_from(8).unwrap());
@@ -391,8 +404,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_store_stores_mail(temp_dir: TempDir, new_mail: RemoteMail) {
-        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+    fn test_store_stores_mail(maildir: TestMaildir, new_mail: RemoteMail) {
+        let maildir = maildir.maildir;
 
         let result = assert_ok!(maildir.store(&new_mail));
         let expected = LocalMailMetadata::new(
@@ -406,14 +419,13 @@ mod tests {
 
     #[rstest]
     fn test_store_errors_on_missing_dir(
-        temp_dir: TempDir,
+        maildir: TestMaildir,
         new_mail: RemoteMail,
         #[values("tmp", "cur")] dir: &str,
     ) {
-        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
-        assert_ok!(fs::remove_dir(temp_dir.path().join(dir)));
+        assert_ok!(fs::remove_dir(maildir.dir.path().join(dir)));
 
-        let result = assert_err!(maildir.store(&new_mail));
+        let result = assert_err!(maildir.maildir.store(&new_mail));
         if let MaildirError::Io(error) = result {
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
         } else {
@@ -422,8 +434,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_list_cur_lists_all_mails(temp_dir: TempDir) {
-        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+    fn test_list_cur_lists_all_mails(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
         let mail1 =
             LocalMailMetadata::new(Uid::try_from(&1).ok(), Flag::all(), Some("1".to_string()));
         let mail1_path = maildir.cur.join(mail1.filename());
@@ -441,8 +453,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_list_cur_errors_on_unreadable_cur_dir(temp_dir: TempDir) {
-        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+    fn test_list_cur_errors_on_unreadable_cur_dir(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
         assert_ok!(fs::remove_dir(&maildir.cur));
 
         let result = maildir.list_cur();
@@ -452,8 +464,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_list_cur_errors_on_unparsable_filename(temp_dir: TempDir) {
-        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+    fn test_list_cur_errors_on_unparsable_filename(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
         assert_ok!(fs::write(maildir.cur.join("asfdasdofj"), ""));
 
         let expected: Vec<Result<LocalMailMetadata, _>> = vec![Err(
@@ -465,8 +477,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_list_cur_errors_on_non_utf8_filename(temp_dir: TempDir) {
-        let maildir = assert_ok!(Maildir::try_new(temp_dir.path()));
+    fn test_list_cur_errors_on_non_utf8_filename(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
         let filename = OsString::from_vec(vec![255]);
         assert_ok!(fs::write(maildir.cur.join(filename), ""));
 
@@ -477,8 +489,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_flags_errors_on_missing_mail(temp_dir: TempDir) {
-        let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
+    fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
         let mut entry = LocalMailMetadata::new(
             Some(Uid::try_from(&2).expect("2 should be valid uid")),
             Flag::empty(),
@@ -496,8 +508,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_uid_errors_on_missing_mail(temp_dir: TempDir) {
-        let maildir = Maildir::try_new(temp_dir.path()).expect("creating maildir should succeed");
+    fn test_update_uid_errors_on_missing_mail(maildir: TestMaildir) {
+        let maildir = maildir.maildir;
         let mut entry = LocalMailMetadata::new(
             Some(Uid::try_from(&2).expect("2 should be valid uid")),
             Flag::empty(),
