@@ -165,7 +165,11 @@ impl MaildirRepository {
             if let Some(uid) = metadata.uid() {
                 maildir_mails.insert(uid, metadata);
             } else {
-                news.push(self.maildir.read(metadata));
+                news.push(
+                    self.maildir
+                        .read(metadata)
+                        .expect("mail contents should be readable"),
+                );
             }
         }
 
@@ -199,7 +203,11 @@ impl MaildirRepository {
             .expect("building local updates should succeed");
         for maildata in maildir_mails.into_values() {
             // todo: return Iterator and chain here
-            news.push(self.maildir.read(maildata));
+            news.push(
+                self.maildir
+                    .read(maildata)
+                    .expect("mail contents should be readable"),
+            );
         }
 
         let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
