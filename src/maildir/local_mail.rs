@@ -135,7 +135,10 @@ impl FromStr for LocalMailMetadata {
         let (head, flags) = s.rsplit_once(":2,").ok_or(ParseLocalMailMetadataError {
             message: "filename should contain :2,",
         })?;
-        let flags = flags.chars().map(Flag::from).collect();
+        let flags = flags
+            .chars()
+            .map(|flag| Flag::try_from(flag).expect("char flag should be parsable"))
+            .collect();
         if let Some((fileprefix, uid)) = head.rsplit_once(",U=") {
             let uid = uid
                 .parse::<u32>()
