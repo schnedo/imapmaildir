@@ -204,19 +204,17 @@ impl Maildir {
         Self::rename(current_mail, new_mail)
     }
 
-    pub fn delete(&self, entry: &LocalMailMetadata) {
+    pub fn delete(&self, entry: &LocalMailMetadata) -> io::Result<()> {
         let file_path = self.cur.join(entry.filename());
         trace!("deleting {}", file_path.display());
-        match remove_file(&file_path) {
-            Ok(()) => {}
-            Err(e) => {
-                if let std::io::ErrorKind::NotFound = e.kind() {
-                    trace!("{} already gone", &file_path.display());
-                } else {
-                    todo!("handle deletion error {e:?}")
-                }
+        remove_file(&file_path).or_else(|e| {
+            if let std::io::ErrorKind::NotFound = e.kind() {
+                trace!("{} already gone", &file_path.display());
+                Ok(())
+            } else {
+                Err(e)
             }
-        }
+        })
     }
 }
 
@@ -649,5 +647,14 @@ mod tests {
 
         assert_eq!(entry.flags(), expected_flags);
         assert!(maildir.cur.join(entry.filename()).exists());
+    }
+
+    #[rstest]
+    fn test_delete_deletes_existing_mail(maildir: TestMaildir, local_mail: LocalMail) {
+        let maildir = maildir.maildir;
+        let (entry, content) = local_mail.unpack();
+        assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
+
+        assert_ok!(maildir.delete(&entry));
     }
 }

@@ -144,7 +144,9 @@ impl MaildirRepository {
     pub async fn delete(&self, uid: Uid) {
         info!("deleting mail {uid}");
         if let Some(entry) = self.state.get_by_id(uid).await {
-            self.maildir.delete(&entry);
+            self.maildir
+                .delete(&entry)
+                .expect("deleting mail should succeed");
             self.state.delete_by_id(uid).await;
         } else {
             trace!("mail {uid:?} already gone");
