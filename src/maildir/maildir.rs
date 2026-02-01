@@ -262,18 +262,6 @@ impl From<io::Error> for MaildirError {
     }
 }
 
-impl From<Flag> for char {
-    fn from(value: Flag) -> Self {
-        match value {
-            Flag::Seen => 'S',
-            Flag::Answered => 'R',
-            Flag::Flagged => 'F',
-            Flag::Deleted => 'T',
-            Flag::Draft => 'D',
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -675,15 +663,5 @@ mod tests {
 
         let result = assert_err!(maildir.maildir.delete(&entry));
         assert_matches!(result, io::Error { .. });
-    }
-
-    #[rstest]
-    #[case(Flag::Seen, 'S')]
-    #[case(Flag::Answered, 'R')]
-    #[case(Flag::Flagged, 'F')]
-    #[case(Flag::Deleted, 'T')]
-    #[case(Flag::Draft, 'D')]
-    fn test_flag_serializes_to_correct_char(#[case] flag: Flag, #[case] char: char) {
-        assert_eq!(char, char::from(flag));
     }
 }
