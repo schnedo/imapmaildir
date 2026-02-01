@@ -657,4 +657,23 @@ mod tests {
 
         assert_ok!(maildir.delete(&entry));
     }
+
+    #[rstest]
+    fn test_delete_succeeds_on_already_gone_mail(maildir: TestMaildir, local_mail: LocalMail) {
+        let maildir = maildir.maildir;
+        let (entry, ..) = local_mail.unpack();
+
+        assert_ok!(maildir.delete(&entry));
+    }
+
+    #[rstest]
+    fn test_delete_propagates_deletion_error(maildir: TestMaildir, local_mail: LocalMail) {
+        let (entry, ..) = local_mail.unpack();
+        let mut permissions = assert_ok!(maildir.dir.path().metadata()).permissions();
+        permissions.set_mode(0o000);
+        assert_ok!(fs::set_permissions(maildir.dir.path(), permissions));
+
+        let result = assert_err!(maildir.maildir.delete(&entry));
+        assert_matches!(result, io::Error { .. });
+    }
 }
