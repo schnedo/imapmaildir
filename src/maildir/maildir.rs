@@ -676,4 +676,14 @@ mod tests {
         let result = assert_err!(maildir.maildir.delete(&entry));
         assert_matches!(result, io::Error { .. });
     }
+
+    #[rstest]
+    #[case(Flag::Seen, 'S')]
+    #[case(Flag::Answered, 'R')]
+    #[case(Flag::Flagged, 'F')]
+    #[case(Flag::Deleted, 'T')]
+    #[case(Flag::Draft, 'D')]
+    fn test_flag_serializes_to_correct_char(#[case] flag: Flag, #[case] char: char) {
+        assert_eq!(char, char::from(flag));
+    }
 }
