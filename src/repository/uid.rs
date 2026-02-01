@@ -54,20 +54,6 @@ impl TryFrom<u32> for Uid {
     }
 }
 
-impl TryFrom<i64> for Uid {
-    type Error = &'static str;
-
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        if let Ok(num) = value.try_into() {
-            NonZeroU32::new(num)
-                .ok_or("Cannot convert u32 to nonzero")
-                .map(Self)
-        } else {
-            Err("i64 too large")
-        }
-    }
-}
-
 impl From<Uid> for u32 {
     fn from(value: Uid) -> Self {
         value.0.into()
@@ -109,5 +95,68 @@ impl Iterator for UidRangeInclusiveIterator {
 
             Some(self.current.try_into().expect("n cannot be none here"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use rstest::*;
+
+    use super::*;
+
+    #[rstest]
+    fn test_range_inclusive_is_correct_range() {
+        let start = assert_ok!(Uid::try_from(1u32));
+        let end = assert_ok!(Uid::try_from(5u32));
+
+        let expected: Vec<_> = (1u32..=5u32)
+            .map(|n| assert_ok!(Uid::try_from(n)))
+            .collect();
+        let result: Vec<_> = start.range_inclusive(end).collect();
+
+        assert_eq!(expected, result);
+    }
+
+    #[rstest]
+    fn test_uid_add() {
+        let a = assert_ok!(Uid::try_from(1u32));
+
+        let result = a + 5u32;
+        let expected = assert_ok!(Uid::try_from(6u32));
+        assert_eq!(expected, result);
+    }
+
+    #[rstest]
+    fn test_uid_add_assign() {
+        let mut a = assert_ok!(Uid::try_from(1u32));
+
+        a += 5u32;
+        let expected = assert_ok!(Uid::try_from(6u32));
+        assert_eq!(expected, a);
+    }
+
+    #[rstest]
+    fn test_uid_serializes_to_correct_string() {
+        let a = assert_ok!(Uid::try_from(1u32));
+
+        assert_eq!("1", a.to_string());
+    }
+
+    #[rstest]
+    fn test_uid_from_u32_and_refu32_is_the_same() {
+        let a = assert_ok!(Uid::try_from(1u32));
+        let b = assert_ok!(Uid::try_from(&1u32));
+
+        assert_eq!(a, b);
+    }
+
+    #[rstest]
+    fn test_uid_from_and_into_u32_are_consistent() {
+        let expected = 1u32;
+        let a = assert_ok!(Uid::try_from(expected));
+
+        assert_eq!(expected, a.into());
+        assert_eq!(expected, (&a).into());
     }
 }
