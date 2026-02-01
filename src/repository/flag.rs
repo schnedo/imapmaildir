@@ -66,6 +66,18 @@ impl From<char> for Flag {
     }
 }
 
+impl From<Flag> for char {
+    fn from(value: Flag) -> Self {
+        match value {
+            Flag::Seen => 'S',
+            Flag::Answered => 'R',
+            Flag::Flagged => 'F',
+            Flag::Deleted => 'T',
+            Flag::Draft => 'D',
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 #[error("unknown flag {flag}")]
 pub struct UnknownFlagError {
@@ -143,6 +155,16 @@ mod tests {
     fn test_flag_parses_from_char(#[case] expected: Flag, #[case] char: char) {
         let result = char.into();
         assert_eq!(expected, result);
+    }
+
+    #[rstest]
+    #[case(Flag::Seen, 'S')]
+    #[case(Flag::Answered, 'R')]
+    #[case(Flag::Flagged, 'F')]
+    #[case(Flag::Deleted, 'T')]
+    #[case(Flag::Draft, 'D')]
+    fn test_flag_serializes_to_correct_char(#[case] flag: Flag, #[case] char: char) {
+        assert_eq!(char, flag.into());
     }
 
     #[rstest]
