@@ -96,3 +96,68 @@ impl FromStr for Flag {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use rstest::*;
+
+    use super::*;
+
+    #[rstest]
+    #[case(Flag::Seen, r"\Seen")]
+    #[case(Flag::Answered, r"\Answered")]
+    #[case(Flag::Flagged, r"\Flagged")]
+    #[case(Flag::Deleted, r"\Deleted")]
+    #[case(Flag::Draft, r"\Draft")]
+    fn test_flag_parses_from_string(#[case] expected: Flag, #[case] string: &str) {
+        let result = assert_ok!(string.parse());
+        assert_eq!(expected, result);
+    }
+
+    #[rstest]
+    fn test_flag_parsing_errors_on_invalid_string(
+        #[values(r"\Recent", "adskljfalk")] string: &str,
+    ) {
+        let result = assert_err!(Flag::from_str(string));
+        assert_eq!(result.flag, string);
+    }
+
+    #[rstest]
+    #[case(Flag::Seen, r"\Seen")]
+    #[case(Flag::Answered, r"\Answered")]
+    #[case(Flag::Flagged, r"\Flagged")]
+    #[case(Flag::Deleted, r"\Deleted")]
+    #[case(Flag::Draft, r"\Draft")]
+    fn test_flag_serializes_to_string(#[case] flag: Flag, #[case] expected: &str) {
+        let result = flag.to_string();
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case(Flag::Seen, 'S')]
+    #[case(Flag::Answered, 'R')]
+    #[case(Flag::Flagged, 'F')]
+    #[case(Flag::Deleted, 'T')]
+    #[case(Flag::Draft, 'D')]
+    fn test_flag_parses_from_char(#[case] expected: Flag, #[case] char: char) {
+        let result = char.into();
+        assert_eq!(expected, result);
+    }
+
+    #[rstest]
+    fn test_flags_parse_from_multiple_strings() {
+        let raw = vec![Cow::Borrowed(r"\Seen"), Cow::Borrowed(r"\Draft")];
+        let result = Flag::into_bitflags(&raw);
+
+        assert_eq!(result, Flag::Seen | Flag::Draft);
+    }
+
+    #[rstest]
+    fn test_flags_serialize_to_string() {
+        let flags = Flag::Seen | Flag::Draft;
+
+        let result = assert_some!(Flag::format(flags));
+        assert_eq!(result, r"\Draft \Seen");
+    }
+}
