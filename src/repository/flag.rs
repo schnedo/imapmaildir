@@ -53,15 +53,18 @@ impl Display for Flag {
     }
 }
 
-impl From<char> for Flag {
-    fn from(value: char) -> Self {
+impl TryFrom<char> for Flag {
+    type Error = UnknownFlagError;
+    fn try_from(value: char) -> Result<Self, Self::Error> {
         match value {
-            'D' => Flag::Draft,
-            'F' => Flag::Flagged,
-            'R' => Flag::Answered,
-            'S' => Flag::Seen,
-            'T' => Flag::Deleted,
-            _ => panic!("unknown flag"),
+            'D' => Ok(Flag::Draft),
+            'F' => Ok(Flag::Flagged),
+            'R' => Ok(Flag::Answered),
+            'S' => Ok(Flag::Seen),
+            'T' => Ok(Flag::Deleted),
+            f => Err(UnknownFlagError {
+                flag: f.to_string(),
+            }),
         }
     }
 }
@@ -153,8 +156,15 @@ mod tests {
     #[case(Flag::Deleted, 'T')]
     #[case(Flag::Draft, 'D')]
     fn test_flag_parses_from_char(#[case] expected: Flag, #[case] char: char) {
-        let result = char.into();
+        let result = assert_ok!(char.try_into());
         assert_eq!(expected, result);
+    }
+
+    #[rstest]
+    fn test_flag_parsing_errors_on_invalid_char() {
+        let expected = 'ü';
+        let result = assert_err!(Flag::try_from(expected));
+        assert_eq!(expected.to_string(), result.flag);
     }
 
     #[rstest]
