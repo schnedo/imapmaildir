@@ -625,43 +625,29 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_uid_errors_on_missing_mail(maildir: TestMaildir) {
+    fn test_update_uid_updates_uid(maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
-        let mut entry = LocalMailMetadata::new(
-            Some(Uid::try_from(&2).expect("2 should be valid uid")),
-            Flag::empty(),
-            Some("prefix".to_string()),
-        );
-        let expected = maildir.get_path_of(&entry);
+        let (mut entry, content) = local_mail.unpack();
+        assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
 
-        let result = assert_err!(maildir.update_uid(
-            &mut entry,
-            Uid::try_from(&3).expect("3 should be valid uid"),
-        ));
+        let expected_uid = assert_ok!(Uid::try_from(&3));
+        assert_ok!(maildir.update_uid(&mut entry, expected_uid));
 
-        if let MaildirError::Missing(path_buf) = result {
-            assert_eq!(path_buf, expected);
-        } else {
-            panic!("result should be missing error")
-        }
+        let result_uid = assert_some!(entry.uid());
+        assert_eq!(result_uid, expected_uid);
+        assert!(maildir.cur.join(entry.filename()).exists());
     }
 
     #[rstest]
-    fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir) {
+    fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
-        let mut entry = LocalMailMetadata::new(
-            Some(Uid::try_from(&2).expect("2 should be valid uid")),
-            Flag::empty(),
-            Some("prefix".to_string()),
-        );
-        let expected = maildir.get_path_of(&entry);
+        let (mut entry, content) = local_mail.unpack();
+        assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
 
-        let result = assert_err!(maildir.update_flags(&mut entry, Flag::all()));
+        let expected_flags = Flag::empty();
+        assert_ok!(maildir.update_flags(&mut entry, expected_flags));
 
-        if let MaildirError::Missing(path_buf) = result {
-            assert_eq!(path_buf, expected);
-        } else {
-            panic!("result should be missing error")
-        }
+        assert_eq!(entry.flags(), expected_flags);
+        assert!(maildir.cur.join(entry.filename()).exists());
     }
 }
