@@ -39,3 +39,28 @@ impl Display for ModSeq {
         self.0.fmt(f)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use rstest::*;
+
+    use super::*;
+
+    #[rstest]
+    fn test_from_and_into_i64_are_consistent() {
+        let expected = 8u64;
+        let expected_ref = &8u64;
+        let modseq = assert_ok!(ModSeq::try_from(expected));
+        let modseq_ref = assert_ok!(ModSeq::try_from(expected_ref));
+        assert_eq!(modseq, modseq_ref);
+        assert_eq!(expected, modseq.into());
+        assert_eq!(expected, (&modseq).into());
+    }
+
+    #[rstest]
+    fn test_modseq_serializes_to_string() {
+        let modseq = assert_ok!(ModSeq::try_from(8u64));
+        assert_eq!("8", modseq.to_string());
+    }
+}
