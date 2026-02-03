@@ -193,7 +193,10 @@ impl AuthenticatedClient {
                         earlier,
                         "earlier should always be true during select (see https://datatracker.ietf.org/doc/html/rfc7162#section-3.2.10)"
                     );
-                    deletions = Some(SequenceSet::from(uids));
+                    deletions = Some(
+                        SequenceSet::try_from(uids)
+                            .expect("received ranges should start with valid uid"),
+                    );
                 }
                 _ => {
                     warn!("ignoring unknown response to SELECT");

@@ -124,7 +124,10 @@ impl SelectedClient {
                     imap_proto::Response::Vanished { earlier, uids } => {
                         trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
                         task_tx
-                            .send(Task::Delete(uids.into()))
+                            .send(Task::Delete(
+                                uids.try_into()
+                                    .expect("received uid ranges should start with valid uid"),
+                            ))
                             .await
                             .expect("deletion channel should still be open");
                     }
@@ -181,8 +184,11 @@ impl SelectedClient {
 
             if let Some(code) = response.unsafe_get_tagged_response_code() {
                 if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
-                    let uid_ranges: Vec<SequenceRange> =
-                        uid_set_members.iter().map(SequenceRange::from).collect();
+                    let uid_ranges: Result<Vec<_>, _> = uid_set_members
+                        .iter()
+                        .map(SequenceRange::try_from)
+                        .collect();
+                    let uid_ranges = uid_ranges.expect("received uids should be valid");
 
                     tokio::spawn(async move {
                         futures::future::join_all(
