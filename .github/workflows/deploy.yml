@@ -2,8 +2,11 @@
 name: deploy
 
 on:
-  push:
-    branches: ["main"]
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
 
 env:
   CACHIX_CACHE: schnedo
@@ -11,6 +14,7 @@ env:
 
 jobs:
   build-and-deploy:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
 
     steps:
