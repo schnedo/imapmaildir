@@ -39,3 +39,31 @@ impl From<UidValidity> for u32 {
         value.0.into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use rstest::*;
+
+    use super::*;
+
+    #[fixture]
+    fn uid_validity() -> UidValidity {
+        UidValidity::new(assert_some!(NonZeroU32::new(3)))
+    }
+
+    #[rstest]
+    fn test_uid_validity_displays_correctly(uid_validity: UidValidity) {
+        assert_eq!("3", uid_validity.to_string());
+    }
+
+    #[rstest]
+    fn test_uid_validity_from_and_to_u32_is_consistent(uid_validity: UidValidity) {
+        let num = 3;
+        let validity = assert_ok!(UidValidity::try_from(num));
+        assert_eq!(uid_validity, validity);
+        let validity = assert_ok!(UidValidity::try_from(&num));
+        assert_eq!(uid_validity, validity);
+        assert_eq!(num, validity.into());
+    }
+}
