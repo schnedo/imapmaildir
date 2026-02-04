@@ -40,3 +40,47 @@ impl MailboxMetadataBuilder {
         self.highest_modseq = Some(highest_modseq);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use rstest::*;
+
+    use super::*;
+
+    #[fixture]
+    fn uid_validity() -> UidValidity {
+        assert_ok!(UidValidity::try_from(4))
+    }
+
+    #[fixture]
+    fn highest_modseq() -> ModSeq {
+        assert_ok!(ModSeq::try_from(9))
+    }
+
+    #[rstest]
+    fn test_mailbox_builder_is_correct(uid_validity: UidValidity, highest_modseq: ModSeq) {
+        let mut builder = MailboxMetadataBuilder::default();
+        builder.uid_validity(uid_validity);
+        builder.highest_modseq(highest_modseq);
+
+        let result = assert_ok!(builder.build());
+        assert_eq!(result.uid_validity(), uid_validity);
+        assert_eq!(result.highest_modseq(), highest_modseq);
+    }
+
+    #[rstest]
+    fn test_mailbox_builder_errors_on_missing_field(
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
+    ) {
+        let builder = MailboxMetadataBuilder::default();
+        assert_err!(builder.build());
+        let mut builder = MailboxMetadataBuilder::default();
+        builder.highest_modseq(highest_modseq);
+        assert_err!(builder.build());
+        let mut builder = MailboxMetadataBuilder::default();
+        builder.uid_validity(uid_validity);
+        assert_err!(builder.build());
+    }
+}
