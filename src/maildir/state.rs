@@ -1,6 +1,7 @@
 use std::{
     convert::Into,
     fs::create_dir_all,
+    io,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -8,6 +9,7 @@ use std::{
 use enumflags2::BitFlag;
 use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
+use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
@@ -15,14 +17,58 @@ use crate::{
     repository::{Flag, ModSeq, Uid, UidValidity},
 };
 
-fn get_highest_modseq(db: &Connection) -> ModSeq {
-    db.query_one("select * from pragma_user_version", [], |row| {
+#[derive(Debug, Error)]
+pub enum DbError {
+    #[error("Encountered inconsistent DB state")]
+    Inconsistent,
+}
+
+impl From<<ModSeq as TryFrom<u64>>::Error> for DbError {
+    fn from(_: <ModSeq as TryFrom<u64>>::Error) -> Self {
+        Self::Inconsistent
+    }
+}
+
+impl From<rusqlite::Error> for DbError {
+    fn from(_: rusqlite::Error) -> Self {
+        Self::Inconsistent
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DbInitError {
+    #[error("{0}")]
+    DbError(DbError),
+    #[error("IO Issue when cunstructing DB {0}")]
+    Io(io::Error),
+}
+
+impl From<DbError> for DbInitError {
+    fn from(value: DbError) -> Self {
+        Self::DbError(value)
+    }
+}
+
+impl From<rusqlite::Error> for DbInitError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::DbError(value.into())
+    }
+}
+
+impl From<io::Error> for DbInitError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
+    let result = db.query_one("select * from pragma_user_version", [], |row| {
         let modseq: u64 = row.get(0)?;
-        Ok(modseq
-            .try_into()
-            .expect("cached highest modseq should be valid"))
-    })
-    .expect("getting modseq should succeed")
+        let modseq: Result<ModSeq, DbError> = modseq.try_into().map_err(DbError::from);
+        Ok(modseq)
+    });
+
+    result?
 }
 
 fn set_highest_modseq(db: &Connection, value: ModSeq) {
@@ -40,24 +86,24 @@ fn get_state_version(db: &Connection) -> u32 {
 
 const CURRENT_VERSION: u32 = 1;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct State {
     db: Arc<Mutex<Connection>>,
     cached_highest_modseq: Arc<Mutex<ModSeq>>,
 }
 
 impl State {
-    fn new(db: Connection) -> Self {
-        let cached_highest_modseq = get_highest_modseq(&db);
+    fn try_new(db: Connection) -> Result<Self, DbInitError> {
+        let cached_highest_modseq = get_highest_modseq(&db)?;
 
-        Self {
+        Ok(Self {
             db: Arc::new(Mutex::new(db)),
             cached_highest_modseq: Arc::new(Mutex::new(cached_highest_modseq)),
-        }
+        })
     }
 
-    pub fn load(state_dir: &Path) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir);
+    pub fn load(state_dir: &Path) -> Result<Self, DbInitError> {
+        let state_file = Self::prepare_state_file(state_dir)?;
         debug!(
             "try loading existing state file {}",
             state_file.to_string_lossy()
@@ -73,15 +119,15 @@ impl State {
             todo!("handle state version mismatch")
         }
 
-        Ok(Self::new(db))
+        Self::try_new(db)
     }
 
     pub fn init(
         state_dir: &Path,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
-    ) -> Result<Self, Error> {
-        let state_file = Self::prepare_state_file(state_dir);
+    ) -> Result<Self, DbInitError> {
+        let state_file = Self::prepare_state_file(state_dir)?;
         debug!("creating new state file {}", state_file.to_string_lossy());
         let db = Connection::open(state_file)?;
         db.execute_batch(
@@ -108,13 +154,13 @@ impl State {
         .expect("maildir_info should be settable");
         set_highest_modseq(&db, highest_modseq);
 
-        Ok(Self::new(db))
+        Self::try_new(db)
     }
 
-    fn prepare_state_file(state_dir: &Path) -> PathBuf {
-        create_dir_all(state_dir).expect("creation of state dir should succeed");
+    fn prepare_state_file(state_dir: &Path) -> io::Result<PathBuf> {
+        create_dir_all(state_dir)?;
 
-        state_dir.join("imapmaildir.db")
+        Ok(state_dir.join("imapmaildir.db"))
     }
 
     pub async fn uid_validity(&self) -> UidValidity {
@@ -162,7 +208,7 @@ impl State {
         }
     }
 
-    pub async fn highest_modseq(&self) -> ModSeq {
+    pub async fn highest_modseq(&self) -> Result<ModSeq, DbError> {
         trace!("getting cached highest_modseq");
         let db = self.db.lock().await;
         get_highest_modseq(&db)
@@ -257,5 +303,81 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
         let uid = Uid::try_from(uid).ok();
         let flags = Flag::from_bits_truncate(value.get(1)?);
         Ok(Self::new(uid, flags, value.get(2)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use assertables::*;
+    use rstest::*;
+    use tempfile::{TempDir, tempdir};
+
+    use super::*;
+
+    struct TestState {
+        dir: TempDir,
+        state: State,
+    }
+
+    #[fixture]
+    fn temp_dir() -> TempDir {
+        assert_ok!(tempdir())
+    }
+
+    #[fixture]
+    fn uid_validity() -> UidValidity {
+        assert_ok!(UidValidity::try_from(8))
+    }
+
+    #[fixture]
+    fn highest_modseq() -> ModSeq {
+        assert_ok!(ModSeq::try_from(83))
+    }
+
+    #[fixture]
+    fn state(temp_dir: TempDir, uid_validity: UidValidity, highest_modseq: ModSeq) -> TestState {
+        TestState {
+            state: assert_ok!(State::init(temp_dir.path(), uid_validity, highest_modseq)),
+            dir: temp_dir,
+        }
+    }
+
+    #[rstest]
+    fn test_state_init_initializes_db(state: TestState) {
+        assert!(assert_ok!(fs::exists(
+            state.dir.path().join("imapmaildir.db")
+        )));
+    }
+
+    #[rstest]
+    fn test_state_uses_write_ahead_log(state: TestState) {
+        assert!(assert_ok!(fs::exists(
+            state.dir.path().join("imapmaildir.db-wal")
+        )));
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_state_inits_with_correct_highest_modseq(
+        state: TestState,
+        highest_modseq: ModSeq,
+    ) {
+        let cached_modseq = assert_ok!(state.state.highest_modseq().await);
+        assert_eq!(cached_modseq, highest_modseq);
+        assert_eq!(
+            cached_modseq,
+            *state.state.cached_highest_modseq.lock().await
+        );
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_state_inits_with_correct_uid_validity(
+        state: TestState,
+        uid_validity: UidValidity,
+    ) {
+        assert_eq!(state.state.uid_validity().await, uid_validity);
     }
 }
