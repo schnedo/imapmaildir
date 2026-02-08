@@ -303,7 +303,7 @@ mod tests {
     #[fixture]
     fn new_mail() -> RemoteMail {
         let metadata = RemoteMailMetadata::new(Uid::MAX, Flag::all(), ModSeq::try_from(8).unwrap());
-        let content = RemoteContent::empty();
+        let content = RemoteContent::from_string(String::new());
 
         RemoteMail::new(metadata, content)
     }

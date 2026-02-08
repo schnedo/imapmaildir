@@ -48,8 +48,8 @@ impl RemoteContent {
     }
 
     #[cfg(test)]
-    pub fn empty() -> Self {
-        let raw = Bytes::new();
+    pub fn from_string(value: String) -> Self {
+        let raw: Bytes = value.into();
         let content = unsafe {
             use std::mem::transmute;
             transmute::<&[u8], &[u8]>(raw.as_ref())
@@ -83,5 +83,74 @@ impl Debug for RemoteMail {
         f.debug_struct("RemoteMail")
             .field("metadata", &self.metadata)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use enumflags2::BitFlag;
+    use rstest::*;
+
+    use super::*;
+
+    #[fixture]
+    fn uid() -> Uid {
+        assert_ok!(Uid::try_from(5))
+    }
+
+    #[fixture]
+    fn flags() -> BitFlags<Flag> {
+        Flag::all()
+    }
+
+    #[fixture]
+    fn modseq() -> ModSeq {
+        assert_ok!(ModSeq::try_from(9))
+    }
+
+    #[fixture]
+    fn content() -> RemoteContent {
+        RemoteContent::from_string("dkdkdjaj".to_string())
+    }
+
+    #[fixture]
+    fn metadata(uid: Uid, flags: BitFlags<Flag>, modseq: ModSeq) -> RemoteMailMetadata {
+        RemoteMailMetadata::new(uid, flags, modseq)
+    }
+
+    #[fixture]
+    fn mail(metadata: RemoteMailMetadata, content: RemoteContent) -> RemoteMail {
+        RemoteMail::new(metadata, content)
+    }
+
+    #[rstest]
+    fn test_remote_mail_debug_serialization_skips_content(
+        mail: RemoteMail,
+        content: RemoteContent,
+    ) {
+        assert_not_contains!(&format!("{mail:?}"), &format!("{:?}", content.content()));
+    }
+
+    #[rstest]
+    fn test_metadata_is_consistent(
+        metadata: RemoteMailMetadata,
+        uid: Uid,
+        flags: BitFlags<Flag>,
+        modseq: ModSeq,
+    ) {
+        assert_eq!(metadata.uid(), uid);
+        assert_eq!(metadata.flags(), flags);
+        assert_eq!(metadata.modseq(), modseq);
+    }
+
+    #[rstest]
+    fn test_mail_is_consistent(
+        mail: RemoteMail,
+        content: RemoteContent,
+        metadata: RemoteMailMetadata,
+    ) {
+        assert_eq!(mail.metadata(), &metadata);
+        assert_eq!(mail.content(), content.content());
     }
 }
