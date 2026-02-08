@@ -71,7 +71,10 @@ impl MaildirRepository {
     }
 
     pub async fn highest_modseq(&self) -> ModSeq {
-        self.state.highest_modseq().await
+        self.state
+            .highest_modseq()
+            .await
+            .expect("getting cached highest_modseq should succeed")
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {
