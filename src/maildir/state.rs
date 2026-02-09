@@ -19,19 +19,21 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum DbError {
-    #[error("Encountered inconsistent DB state")]
-    Inconsistent,
+    #[error("Could not parse cached data")]
+    Conversion,
+    #[error("Error with db call: {0}")]
+    Db(rusqlite::Error),
 }
 
 impl From<<ModSeq as TryFrom<u64>>::Error> for DbError {
     fn from(_: <ModSeq as TryFrom<u64>>::Error) -> Self {
-        Self::Inconsistent
+        Self::Conversion
     }
 }
 
 impl From<rusqlite::Error> for DbError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::Inconsistent
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Db(value)
     }
 }
 
@@ -144,14 +146,12 @@ impl State {
                 state_version integer not null
             ) strict;
             pragma optimize;",
-        )
-        .expect("creation of tables should succeed");
+        )?;
         trace!("setting cached uid_validity {uid_validity}");
         db.execute(
             "insert or ignore into maildir_info (state_version, uid_validity) values (?1, ?2)",
             [CURRENT_VERSION, u32::from(uid_validity)],
-        )
-        .expect("maildir_info should be settable");
+        )?;
         set_highest_modseq(&db, highest_modseq);
 
         Self::try_new(db)
@@ -308,7 +308,7 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     use assertables::*;
     use rstest::*;
@@ -379,5 +379,37 @@ mod tests {
         uid_validity: UidValidity,
     ) {
         assert_eq!(state.state.uid_validity().await, uid_validity);
+    }
+
+    #[rstest]
+    fn test_state_init_fails_on_not_creatable_state_dir(
+        temp_dir: TempDir,
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
+    ) {
+        let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
+        permissions.set_mode(0o000);
+        assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
+        let state_dir = temp_dir.path().join("foo");
+
+        let result = assert_err!(State::init(&state_dir, uid_validity, highest_modseq));
+        assert_matches!(result, DbInitError::Io(_));
+    }
+
+    #[rstest]
+    fn test_state_init_fails_on_not_creatable_state_file(
+        temp_dir: TempDir,
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
+    ) {
+        let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
+        permissions.set_mode(0o000);
+        assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
+
+        let result = assert_err!(State::init(temp_dir.path(), uid_validity, highest_modseq));
+        assert_matches!(
+            result,
+            DbInitError::DbError(DbError::Db(rusqlite::Error::SqliteFailure(_, _)))
+        );
     }
 }
