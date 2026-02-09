@@ -94,13 +94,13 @@ pub struct State {
 }
 
 impl State {
-    fn try_new(db: Connection) -> Result<Self, DbInitError> {
-        let cached_highest_modseq = get_highest_modseq(&db)?;
+    fn try_new(db: Connection, highest_modseq: ModSeq) -> Self {
+        let cached_highest_modseq = highest_modseq;
 
-        Ok(Self {
+        Self {
             db: Arc::new(Mutex::new(db)),
             cached_highest_modseq: Arc::new(Mutex::new(cached_highest_modseq)),
-        })
+        }
     }
 
     pub fn load(state_dir: &Path) -> Result<Self, DbInitError> {
@@ -120,7 +120,8 @@ impl State {
             todo!("handle state version mismatch")
         }
 
-        Self::try_new(db)
+        let highest_modseq = get_highest_modseq(&db)?;
+        Ok(Self::try_new(db, highest_modseq))
     }
 
     pub fn init(
@@ -153,7 +154,7 @@ impl State {
         )?;
         set_highest_modseq(&db, highest_modseq)?;
 
-        Self::try_new(db)
+        Ok(Self::try_new(db, highest_modseq))
     }
 
     fn prepare_state_file(state_dir: &Path) -> io::Result<PathBuf> {
@@ -177,6 +178,7 @@ impl State {
             .map_err(std::convert::Into::into)
     }
 
+    // todo: remove cached value and use transaction instead
     pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), DbError> {
         trace!(
             "check for updating highest_modseq {:?} with {value:?}",
