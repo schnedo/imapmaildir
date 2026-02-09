@@ -162,7 +162,7 @@ impl State {
         Ok(state_dir.join("imapmaildir.db"))
     }
 
-    pub async fn uid_validity(&self) -> UidValidity {
+    pub async fn uid_validity(&self) -> Result<UidValidity, DbError> {
         trace!("getting cached uid_validity");
         self.db
             .lock()
@@ -174,7 +174,7 @@ impl State {
                     .expect("cached uid validity should be spec compliant");
                 Ok(validity)
             })
-            .expect("uid_validity should be selectable")
+            .map_err(std::convert::Into::into)
     }
 
     pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), DbError> {
@@ -381,7 +381,7 @@ mod tests {
         state: TestState,
         uid_validity: UidValidity,
     ) {
-        assert_eq!(state.state.uid_validity().await, uid_validity);
+        assert_eq!(assert_ok!(state.state.uid_validity().await), uid_validity);
     }
 
     #[rstest]
