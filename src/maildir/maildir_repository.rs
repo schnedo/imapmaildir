@@ -67,7 +67,10 @@ impl MaildirRepository {
     }
 
     pub async fn uid_validity(&self) -> UidValidity {
-        self.state.uid_validity().await
+        self.state
+            .uid_validity()
+            .await
+            .expect("getting uid_validity should succeed")
     }
 
     pub async fn highest_modseq(&self) -> ModSeq {
