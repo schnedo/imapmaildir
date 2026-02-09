@@ -78,11 +78,10 @@ fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Er
     db.pragma_update(None, "user_version", u64::from(value))
 }
 
-fn get_state_version(db: &Connection) -> u32 {
+fn get_state_version(db: &Connection) -> Result<u32, rusqlite::Error> {
     db.query_one("select state_version from maildir_info", [], |row| {
         row.get(0)
     })
-    .expect("stored state version should be gettable")
 }
 
 const CURRENT_VERSION: u32 = 1;
@@ -116,7 +115,7 @@ impl State {
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        if get_state_version(&db) != CURRENT_VERSION {
+        if get_state_version(&db)? != CURRENT_VERSION {
             todo!("handle state version mismatch")
         }
 
