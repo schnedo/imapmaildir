@@ -78,7 +78,10 @@ impl MaildirRepository {
     }
 
     pub async fn set_highest_modseq(&self, value: ModSeq) {
-        self.state.set_highest_modseq(value).await;
+        self.state
+            .set_highest_modseq(value)
+            .await
+            .expect("setting highest_modseq should succeed");
     }
 
     pub async fn store(&self, mail: &RemoteMail) {
@@ -118,7 +121,8 @@ impl MaildirRepository {
                         self.state
                             // todo: check highest modseq handling consistent with channel?
                             .update_highest_modseq(mail_metadata.modseq())
-                            .await;
+                            .await
+                            .expect("updating highest_modseq should succeed");
                     }
                     Err(MaildirError::Missing(_)) => {
                         self.state.delete_by_id(uid).await;
@@ -244,7 +248,10 @@ impl MaildirRepository {
                     }
                     Task::UpdateModseq(uid, mod_seq) => {
                         debug!("Setting modseq of mail {uid} to {mod_seq}");
-                        self.state.update_highest_modseq(mod_seq).await;
+                        self.state
+                            .update_highest_modseq(mod_seq)
+                            .await
+                            .expect("updating highest_modseq should succeed");
                     }
                 }
             }
