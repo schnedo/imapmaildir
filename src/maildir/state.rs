@@ -416,4 +416,19 @@ mod tests {
             DbInitError::DbError(DbError::Db(rusqlite::Error::SqliteFailure(_, _)))
         );
     }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
+        state: TestState,
+    ) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
+        // todo: do not use user_version for highest_modseq, as modseqs are u63, while user_version
+        // is u32
+        let new_modseq = assert_ok!(ModSeq::try_from(u64::MAX));
+        assert_ne!(new_modseq, initial_modseq);
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
+
+        assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
+    }
 }
