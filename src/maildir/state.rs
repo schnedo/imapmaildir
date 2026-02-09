@@ -73,10 +73,9 @@ fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
     result?
 }
 
-fn set_highest_modseq(db: &Connection, value: ModSeq) {
+fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
     trace!("setting highest_modseq {value}");
     db.pragma_update(None, "user_version", u64::from(value))
-        .expect("setting modseq should succeed");
 }
 
 fn get_state_version(db: &Connection) -> u32 {
@@ -152,7 +151,7 @@ impl State {
             "insert or ignore into maildir_info (state_version, uid_validity) values (?1, ?2)",
             [CURRENT_VERSION, u32::from(uid_validity)],
         )?;
-        set_highest_modseq(&db, highest_modseq);
+        set_highest_modseq(&db, highest_modseq)?;
 
         Self::try_new(db)
     }
@@ -178,34 +177,38 @@ impl State {
             .expect("uid_validity should be selectable")
     }
 
-    pub async fn update_highest_modseq(&self, value: ModSeq) {
+    pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), DbError> {
         trace!(
             "check for updating highest_modseq {:?} with {value:?}",
             self.cached_highest_modseq
         );
         let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
         if value > *cached_highest_modseq {
-            self.set_highest_modseq_uncached(value).await;
+            self.set_highest_modseq_uncached(value).await?;
             *cached_highest_modseq = value;
         }
+
+        Ok(())
     }
 
-    async fn set_highest_modseq_uncached(&self, value: ModSeq) {
+    async fn set_highest_modseq_uncached(&self, value: ModSeq) -> Result<(), DbError> {
         trace!("setting highest_modseq {value}");
         let db = self.db.lock().await;
-        set_highest_modseq(&db, value);
+        set_highest_modseq(&db, value).map_err(std::convert::Into::into)
     }
 
-    pub async fn set_highest_modseq(&self, value: ModSeq) {
+    pub async fn set_highest_modseq(&self, value: ModSeq) -> Result<(), DbError> {
         trace!(
             "check for setting highest_modseq {:?} to {value:?}",
             self.cached_highest_modseq
         );
         let mut cached_highest_modseq = self.cached_highest_modseq.lock().await;
         if *cached_highest_modseq != value {
-            self.set_highest_modseq_uncached(value).await;
+            self.set_highest_modseq_uncached(value).await?;
             *cached_highest_modseq = value;
         }
+
+        Ok(())
     }
 
     pub async fn highest_modseq(&self) -> Result<ModSeq, DbError> {
