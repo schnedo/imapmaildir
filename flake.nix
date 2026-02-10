@@ -143,24 +143,6 @@
             };
           };
 
-          treefmt = {
-            programs = {
-              # keep-sorted start block=yes
-              deadnix.enable = true;
-              nixfmt.enable = true;
-              rustfmt.enable = true;
-              statix.enable = true;
-              taplo.enable = true;
-              # keep-sorted end
-            };
-            settings = {
-              excludes = [
-                "**/secrets.yaml"
-                "git/lazygit/config.yml"
-              ];
-            };
-          };
-
         };
 
       flake = {
@@ -172,6 +154,25 @@
           };
 
         };
+
+        treefmt = {
+          programs = {
+            # keep-sorted start block=yes
+            deadnix.enable = true;
+            nixfmt.enable = true;
+            rustfmt.enable = true;
+            statix.enable = true;
+            taplo.enable = true;
+            # keep-sorted end
+          };
+          settings = {
+            excludes = [
+              "**/secrets.yaml"
+              "git/lazygit/config.yml"
+            ];
+          };
+        };
+
       };
 
     };
