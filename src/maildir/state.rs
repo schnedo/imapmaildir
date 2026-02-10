@@ -10,7 +10,10 @@ use enumflags2::BitFlag;
 use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, error::SendError},
+};
 
 use crate::{
     maildir::LocalMailMetadata,
@@ -21,6 +24,8 @@ use crate::{
 pub enum DbError {
     #[error("Could not parse cached data")]
     Conversion,
+    #[error("Communication channel between database and imap already closed")]
+    ChannelClosed,
     #[error("Error with db call: {0}")]
     Db(rusqlite::Error),
 }
@@ -28,6 +33,12 @@ pub enum DbError {
 impl From<<ModSeq as TryFrom<u64>>::Error> for DbError {
     fn from(_: <ModSeq as TryFrom<u64>>::Error) -> Self {
         Self::Conversion
+    }
+}
+
+impl From<SendError<LocalMailMetadata>> for DbError {
+    fn from(_: SendError<LocalMailMetadata>) -> Self {
+        Self::ChannelClosed
     }
 }
 
@@ -169,12 +180,9 @@ impl State {
             .await
             .query_one("select uid_validity from maildir_info", (), |row| {
                 let validity: u32 = row.get(0)?;
-                let validity = validity
-                    .try_into()
-                    .expect("cached uid validity should be spec compliant");
+                let validity = validity.try_into().map_err(DbError::from);
                 Ok(validity)
-            })
-            .map_err(std::convert::Into::into)
+            })?
     }
 
     // todo: remove cached value and use transaction instead
@@ -218,73 +226,63 @@ impl State {
         get_highest_modseq(&db)
     }
 
-    pub async fn update(&self, data: &LocalMailMetadata) {
+    pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), DbError> {
         trace!("updating mail cache {data:?}");
         let db = self.db.lock().await;
-        let mut stmt = db
-            .prepare_cached("update mail_metadata set flags=?1 where uid=?2")
-            .expect("preparation of cached update mail statement should succeed");
-        stmt.execute((data.flags().bits(), data.uid().map_or(0, Into::into)))
-            .expect("updating metadata should succeed");
+        let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
+        stmt.execute((data.flags().bits(), data.uid().map_or(0, Into::into)))?;
+
+        Ok(())
     }
 
-    pub async fn store(&self, data: &LocalMailMetadata) {
+    pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), DbError> {
         trace!("storing mail cache {data:?}");
-        let uid = data.uid().expect("stored mail should have uid");
+        let uid = data.uid().ok_or(DbError::Conversion)?;
         let db = self.db.lock().await;
         let mut stmt = db
-            .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")
-            .expect("preparation of cached insert mail metadata should succeed");
-        stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))
-            .expect("storing mail should succeed");
+            .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")?;
+        stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))?;
+
+        Ok(())
     }
 
-    pub async fn get_by_id(&self, uid: Uid) -> Option<LocalMailMetadata> {
+    pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, DbError> {
         trace!("get existing metadata with {uid:?}");
         let db = self.db.lock().await;
-        let mut stmt = db
-            .prepare_cached("select * from mail_metadata where uid = ?1")
-            .expect("selection of existing mails should be preparable");
+        let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
 
-        stmt.query_one([u32::from(uid)], |row| {
-            Ok(row.try_into().expect("stateentry should be parsable"))
-        })
-        .optional()
-        .expect("existing matadata should be queryable")
+        stmt.query_one([u32::from(uid)], |row| row.try_into())
+            .optional()
+            .map_err(std::convert::Into::into)
     }
 
-    pub async fn delete_by_id(&self, uid: Uid) {
+    pub async fn delete_by_id(&self, uid: Uid) -> Result<(), DbError> {
         trace!("deleting {uid:?}");
         let db = self.db.lock().await;
-        let mut stmt = db
-            .prepare_cached("delete from mail_metadata where uid = ?1")
-            .expect("deletion of existing mails should be preparable");
-        stmt.execute([u32::from(uid)])
-            .expect("deletion of existing mail should succeed");
+        let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
+        stmt.execute([u32::from(uid)])?;
+
+        Ok(())
     }
 
-    pub async fn get_all(&self, all_entries_tx: mpsc::Sender<LocalMailMetadata>) -> ModSeq {
+    pub async fn get_all(
+        &self,
+        all_entries_tx: mpsc::Sender<LocalMailMetadata>,
+    ) -> Result<ModSeq, DbError> {
         trace!("getting all stored mail metadata");
         let db = self.db.lock().await;
-        let mut stmt = db
-            .prepare_cached("select uid,flags,fileprefix from mail_metadata;")
-            .expect("select all mail_metadata should be preparable");
+        let mut stmt = db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
 
         let current_highest_modseq = *self.cached_highest_modseq.lock().await;
         for entry in stmt
-            .query_map([], |row| LocalMailMetadata::try_from(row))
-            .expect("all metadata should be selectable")
-            .map(|maybe_row| {
-                maybe_row.expect("local mail metadata should be buildable from db row")
-            })
+            .query_map([], |row| LocalMailMetadata::try_from(row))?
+            .map(|maybe_row| maybe_row.map_err(DbError::from))
         {
-            all_entries_tx
-                .send(entry)
-                .await
-                .expect("sending all mail metadata should succeed");
+            let entry = entry?;
+            all_entries_tx.send(entry).await?;
         }
 
-        current_highest_modseq
+        Ok(current_highest_modseq)
     }
 }
 
@@ -293,7 +291,7 @@ impl Drop for State {
         let db = self
             .db
             .try_lock()
-            .expect("db should not be unlocked when dropping State");
+            .expect("db should not be locked when dropping State");
         db.execute("pragma optimize;", [])
             .expect("sqlite should be optimizable");
     }
@@ -351,6 +349,15 @@ mod tests {
     #[fixture]
     fn loadable_state_dir(state: TestState) -> TempDir {
         state.dir
+    }
+
+    #[fixture]
+    fn metadata() -> LocalMailMetadata {
+        LocalMailMetadata::new(
+            Some(assert_ok!(Uid::try_from(3))),
+            Flag::all(),
+            Some("prefix".to_string()),
+        )
     }
 
     #[rstest]
@@ -443,18 +450,31 @@ mod tests {
         );
     }
 
+    // #[rstest]
+    // #[tokio::test]
+    // async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
+    //     state: TestState,
+    // ) {
+    //     let initial_modseq = assert_ok!(state.state.highest_modseq().await);
+    //     todo: do not use user_version for highest_modseq, as modseqs are u63, while user_version
+    //     is u32
+    //     let new_modseq = assert_ok!(ModSeq::try_from(u64::MAX));
+    //     assert_ne!(new_modseq, initial_modseq);
+    //     assert_ok!(state.state.update_highest_modseq(new_modseq).await);
+    //
+    //     assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
+    // }
+
     #[rstest]
     #[tokio::test]
-    async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
-        state: TestState,
-    ) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
-        // todo: do not use user_version for highest_modseq, as modseqs are u63, while user_version
-        // is u32
-        // let new_modseq = assert_ok!(ModSeq::try_from(u64::MAX));
-        // assert_ne!(new_modseq, initial_modseq);
-        // assert_ok!(state.state.update_highest_modseq(new_modseq).await);
-        //
-        // assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
+    async fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
+        assert_none!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+        assert_ok!(state.state.store(&metadata).await);
+        let stored = assert_some!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+        assert_eq!(metadata, stored);
     }
 }

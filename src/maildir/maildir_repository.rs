@@ -99,7 +99,10 @@ impl MaildirRepository {
                 .maildir
                 .store(mail)
                 .expect("storing mail in maildir should succeed");
-            self.state.store(&metadata).await;
+            self.state
+                .store(&metadata)
+                .await
+                .expect("storing data should succeed");
         }
     }
 
@@ -109,7 +112,12 @@ impl MaildirRepository {
     ) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
 
-        if let Some(mut entry) = self.state.get_by_id(uid).await {
+        if let Some(mut entry) = self
+            .state
+            .get_by_id(uid)
+            .await
+            .expect("getting state data by uid should succeed")
+        {
             info!(
                 "update flags of mail {uid}: {} -> {}",
                 entry.flags(),
@@ -120,7 +128,10 @@ impl MaildirRepository {
                 match self.maildir.update_flags(&mut entry, new_flags) {
                     Ok(()) => {
                         // todo: update modseq in same step?
-                        self.state.update(&entry).await;
+                        self.state
+                            .update(&entry)
+                            .await
+                            .expect("updating stored data should succeed");
                         self.state
                             // todo: check highest modseq handling consistent with channel?
                             .update_highest_modseq(mail_metadata.modseq())
@@ -128,7 +139,10 @@ impl MaildirRepository {
                             .expect("updating highest_modseq should succeed");
                     }
                     Err(MaildirError::Missing(_)) => {
-                        self.state.delete_by_id(uid).await;
+                        self.state
+                            .delete_by_id(uid)
+                            .await
+                            .expect("deleting by uid should succeed");
                         return Err(NoExistsError { uid });
                     }
                     Err(e) => {
@@ -148,16 +162,27 @@ impl MaildirRepository {
         self.maildir
             .update_uid(mail_metadata, new_uid)
             .expect("updating maildir with newly synced mail should succeed");
-        self.state.store(mail_metadata).await;
+        self.state
+            .store(mail_metadata)
+            .await
+            .expect("storing data should succeed");
     }
 
     pub async fn delete(&self, uid: Uid) {
         info!("deleting mail {uid}");
-        if let Some(entry) = self.state.get_by_id(uid).await {
+        if let Some(entry) = self
+            .state
+            .get_by_id(uid)
+            .await
+            .expect("getting state data by uid should succeed")
+        {
             self.maildir
                 .delete(&entry)
                 .expect("deleting mail should succeed");
-            self.state.delete_by_id(uid).await;
+            self.state
+                .delete_by_id(uid)
+                .await
+                .expect("deleting stored data by uid should succeed");
         } else {
             trace!("mail {uid:?} already gone");
         }
@@ -209,7 +234,11 @@ impl MaildirRepository {
 
             (updates, deletions, maildir_mails)
         });
-        let highest_modseq = self.state.get_all(all_entries_tx).await;
+        let highest_modseq = self
+            .state
+            .get_all(all_entries_tx)
+            .await
+            .expect("getting all cached entries");
         let (updates, deletions, maildir_mails) = build_updates_handle
             .await
             .expect("building local updates should succeed");
