@@ -96,6 +96,7 @@ fn get_state_version(db: &Connection) -> Result<u32, rusqlite::Error> {
 }
 
 const CURRENT_VERSION: u32 = 1;
+const STATE_FILE_NAME: &str = "imapmaildir.db";
 
 #[derive(Clone, Debug)]
 pub struct State {
@@ -170,7 +171,7 @@ impl State {
     fn prepare_state_file(state_dir: &Path) -> io::Result<PathBuf> {
         create_dir_all(state_dir)?;
 
-        Ok(state_dir.join("imapmaildir.db"))
+        Ok(state_dir.join(STATE_FILE_NAME))
     }
 
     pub async fn uid_validity(&self) -> Result<UidValidity, DbError> {
@@ -363,14 +364,14 @@ mod tests {
     #[rstest]
     fn test_state_init_initializes_db(state: TestState) {
         assert!(assert_ok!(fs::exists(
-            state.dir.path().join("imapmaildir.db")
+            state.dir.path().join(STATE_FILE_NAME)
         )));
     }
 
     #[rstest]
     fn test_state_uses_write_ahead_log(state: TestState) {
         assert!(assert_ok!(fs::exists(
-            state.dir.path().join("imapmaildir.db-wal")
+            state.dir.path().join(STATE_FILE_NAME.to_string() + "-wal")
         )));
     }
 
