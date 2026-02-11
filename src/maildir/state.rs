@@ -478,4 +478,18 @@ mod tests {
         ));
         assert_eq!(metadata, stored);
     }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_updating_metadata_succeeds(state: TestState, mut metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+        let flags = Flag::Seen | Flag::Deleted;
+        assert_ne!(flags, metadata.flags());
+        metadata.set_flags(flags);
+        assert_ok!(state.state.update(&metadata).await);
+        let stored = assert_some!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+        assert_eq!(metadata, stored);
+    }
 }
