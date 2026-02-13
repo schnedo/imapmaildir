@@ -269,6 +269,7 @@ impl State {
         Ok(())
     }
 
+    /// WARNING: Setup receiving in separate task or this may deadlock
     pub async fn get_all(
         &self,
         all_entries_tx: mpsc::Sender<LocalMailMetadata>,
