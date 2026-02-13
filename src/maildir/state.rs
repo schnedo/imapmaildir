@@ -231,7 +231,10 @@ impl State {
         trace!("updating mail cache {data:?}");
         let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
-        stmt.execute((data.flags().bits(), data.uid().map_or(0, Into::into)))?;
+        stmt.execute((
+            data.flags().bits(),
+            u32::from(data.uid().expect("invalid input data")),
+        ))?;
 
         Ok(())
     }
