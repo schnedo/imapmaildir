@@ -314,7 +314,7 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{collections::HashSet, fs, os::unix::fs::PermissionsExt};
 
     use assertables::*;
     use rstest::*;
@@ -494,5 +494,41 @@ mod tests {
             state.state.get_by_id(assert_some!(metadata.uid())).await
         ));
         assert_eq!(metadata, stored);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+        assert_some!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+        assert_ok!(state.state.delete_by_id(assert_some!(metadata.uid())).await);
+        assert_none!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_get_all_gets_all_stored_data(state: TestState, mut metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+        let stored_first = assert_some!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+        metadata.set_uid(assert_ok!(Uid::try_from(9)));
+        assert_ok!(state.state.store(&metadata).await);
+        let stored_second = assert_some!(assert_ok!(
+            state.state.get_by_id(assert_some!(metadata.uid())).await
+        ));
+
+        let (tx, mut rx) = mpsc::channel(32);
+        assert_ok!(state.state.get_all(tx).await);
+        let mut stored = HashSet::new();
+        while let Some(data) = rx.recv().await {
+            stored.insert(data);
+        }
+        assert_contains!(stored, &stored_first);
+        assert_contains!(stored, &stored_second);
     }
 }
