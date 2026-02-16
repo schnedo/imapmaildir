@@ -30,8 +30,8 @@ pub enum DbError {
     Db(rusqlite::Error),
 }
 
-impl From<<ModSeq as TryFrom<u64>>::Error> for DbError {
-    fn from(_: <ModSeq as TryFrom<u64>>::Error) -> Self {
+impl From<<ModSeq as TryFrom<i64>>::Error> for DbError {
+    fn from(_: <ModSeq as TryFrom<i64>>::Error) -> Self {
         Self::Conversion
     }
 }
@@ -76,7 +76,7 @@ impl From<io::Error> for DbInitError {
 
 fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
     let result = db.query_one("select * from pragma_user_version", [], |row| {
-        let modseq: u64 = row.get(0)?;
+        let modseq: i64 = row.get(0)?;
         let modseq: Result<ModSeq, DbError> = modseq.try_into().map_err(DbError::from);
         Ok(modseq)
     });
@@ -86,7 +86,7 @@ fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
 
 fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
     trace!("setting highest_modseq {value}");
-    db.pragma_update(None, "user_version", u64::from(value))
+    db.pragma_update(None, "user_version", i64::from(value))
 }
 
 fn get_state_version(db: &Connection) -> Result<u32, rusqlite::Error> {

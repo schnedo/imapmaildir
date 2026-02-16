@@ -22,7 +22,7 @@ log = { version = "0.4.27", features = [
   "std",
 ] }
 nom = "7"
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.38.0", features = ["bundled"] }
 rustix = { version = "1.0.5", features = [
   "fs",
   "std",
