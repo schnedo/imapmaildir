@@ -1,35 +1,33 @@
-use std::{fmt::Display, num::NonZeroU64};
+use std::{fmt::Display, num::NonZeroI64};
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ModSeq(NonZeroU64);
+pub struct ModSeq(NonZeroI64); // actually needs to be positive u63
 
-impl TryFrom<u64> for ModSeq {
+impl TryFrom<i64> for ModSeq {
     type Error = &'static str;
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
         Ok(Self(
-            NonZeroU64::new(value).ok_or("Cannot convert u64 to nonzero")?,
+            NonZeroI64::try_from(value).map_err(|_| "cannot convert i64 to positive")?,
         ))
     }
 }
 
 impl TryFrom<&u64> for ModSeq {
-    type Error = <Self as TryFrom<u64>>::Error;
+    type Error = <Self as TryFrom<i64>>::Error;
 
     fn try_from(value: &u64) -> Result<Self, Self::Error> {
-        Self::try_from(*value)
+        let value: i64 = (*value)
+            .try_into()
+            .map_err(|_| "cannot convert i64 to positive")?;
+
+        Self::try_from(value)
     }
 }
 
-impl From<ModSeq> for u64 {
+impl From<ModSeq> for i64 {
     fn from(value: ModSeq) -> Self {
-        value.0.into()
-    }
-}
-
-impl From<&ModSeq> for u64 {
-    fn from(value: &ModSeq) -> Self {
         value.0.into()
     }
 }
@@ -49,18 +47,17 @@ mod tests {
 
     #[rstest]
     fn test_from_and_into_i64_are_consistent() {
-        let expected = 8u64;
+        let expected = 8i64;
         let expected_ref = &8u64;
         let modseq = assert_ok!(ModSeq::try_from(expected));
         let modseq_ref = assert_ok!(ModSeq::try_from(expected_ref));
         assert_eq!(modseq, modseq_ref);
         assert_eq!(expected, modseq.into());
-        assert_eq!(expected, (&modseq).into());
     }
 
     #[rstest]
     fn test_modseq_serializes_to_string() {
-        let modseq = assert_ok!(ModSeq::try_from(8u64));
+        let modseq = assert_ok!(ModSeq::try_from(8i64));
         assert_eq!("8", modseq.to_string());
     }
 }

@@ -136,7 +136,7 @@ impl AuthenticatedClient {
                     }
                     imap_proto::ResponseCode::HighestModSeq(modseq) => {
                         new_mailbox.highest_modseq(
-                            (*modseq)
+                            modseq
                                 .try_into()
                                 .expect("Project expects RFC 4551 compatible IMAP server"),
                         );
