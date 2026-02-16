@@ -3,12 +3,14 @@ use std::{
     fs::create_dir_all,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use enumflags2::BitFlag;
+use include_dir::{Dir, include_dir};
 use log::{debug, trace};
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
+use rusqlite_migration::Migrations;
 use thiserror::Error;
 use tokio::sync::{
     Mutex,
@@ -17,7 +19,7 @@ use tokio::sync::{
 
 use crate::{
     maildir::LocalMailMetadata,
-    repository::{Flag, ModSeq, Uid, UidValidity},
+    repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
 };
 
 #[derive(Debug, Error)]
@@ -54,6 +56,14 @@ pub enum DbInitError {
     DbError(DbError),
     #[error("IO Issue when constructing DB {0}")]
     Io(io::Error),
+    #[error("Could not apply migrations {0}")]
+    Migrations(rusqlite_migration::Error),
+}
+
+impl From<rusqlite_migration::Error> for DbInitError {
+    fn from(value: rusqlite_migration::Error) -> Self {
+        Self::Migrations(value)
+    }
 }
 
 impl From<DbError> for DbInitError {
@@ -75,7 +85,7 @@ impl From<io::Error> for DbInitError {
 }
 
 fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
-    let result = db.query_one("select * from pragma_user_version", [], |row| {
+    let result = db.query_one("select highest_modseq from mailbox_metadata", [], |row| {
         let modseq: i64 = row.get(0)?;
         let modseq: Result<ModSeq, DbError> = modseq.try_into().map_err(DbError::from);
         Ok(modseq)
@@ -86,17 +96,25 @@ fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
 
 fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
     trace!("setting highest_modseq {value}");
-    db.pragma_update(None, "user_version", i64::from(value))
+    let mut stmt = db.prepare_cached("update mailbox_metadata set highest_modseq=?1")?;
+    stmt.execute([i64::from(value)])?;
+
+    Ok(())
 }
 
-fn get_state_version(db: &Connection) -> Result<u32, rusqlite::Error> {
-    db.query_one("select state_version from maildir_info", [], |row| {
-        row.get(0)
-    })
-}
-
-const CURRENT_VERSION: u32 = 1;
 const STATE_FILE_NAME: &str = "imapmaildir.db";
+const MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
+    Migrations::from_directory(&MIGRATIONS_DIR).expect("generating migrations should succeed")
+});
+
+fn apply_migrations(db: &mut Connection) -> Result<(), DbInitError> {
+    MIGRATIONS.to_latest(db)?;
+    db.pragma_update(None, "journal_mode", "wal")?;
+    db.pragma_update(None, "synchronous", "normal")?;
+
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub struct State {
@@ -116,49 +134,35 @@ impl State {
             "try loading existing state file {}",
             state_file.to_string_lossy()
         );
-        let db = Connection::open_with_flags(
+        let mut db = Connection::open_with_flags(
             state_file,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_URI,
         )?;
 
-        if get_state_version(&db)? != CURRENT_VERSION {
-            todo!("handle state version mismatch")
-        }
+        apply_migrations(&mut db)?;
 
         Ok(Self::new(db))
     }
 
-    pub fn init(
-        state_dir: &Path,
-        uid_validity: UidValidity,
-        highest_modseq: ModSeq,
-    ) -> Result<Self, DbInitError> {
+    pub fn init(state_dir: &Path, mailbox_metadata: &MailboxMetadata) -> Result<Self, DbInitError> {
         let state_file = Self::prepare_state_file(state_dir)?;
         debug!("creating new state file {}", state_file.to_string_lossy());
-        let db = Connection::open(state_file)?;
-        db.execute_batch(
-            "pragma journal_mode=wal;
-            pragma user_version=1;
-            pragma synchronous=1;
-            create table mail_metadata (
-                uid integer primary key,
-                flags integer not null,
-                fileprefix text not null
-            ) strict;
-            create table maildir_info (
-                uid_validity integer primary key,
-                state_version integer not null
-            ) strict;
-            pragma optimize;",
-        )?;
-        trace!("setting cached uid_validity {uid_validity}");
+        let mut db = Connection::open(state_file)?;
+        apply_migrations(&mut db)?;
+
+        trace!(
+            "setting cached uid_validity {}",
+            mailbox_metadata.uid_validity()
+        );
         db.execute(
-            "insert or ignore into maildir_info (state_version, uid_validity) values (?1, ?2)",
-            [CURRENT_VERSION, u32::from(uid_validity)],
+            "insert or ignore into mailbox_metadata (highest_modseq, uid_validity) values (?1, ?2)",
+            (
+                i64::from(mailbox_metadata.highest_modseq()),
+                u32::from(mailbox_metadata.uid_validity()),
+            ),
         )?;
-        set_highest_modseq(&db, highest_modseq)?;
 
         Ok(Self::new(db))
     }
@@ -174,7 +178,7 @@ impl State {
         self.db
             .lock()
             .await
-            .query_one("select uid_validity from maildir_info", (), |row| {
+            .query_one("select uid_validity from mailbox_metadata", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity.try_into().map_err(DbError::from);
                 Ok(validity)
@@ -300,11 +304,14 @@ mod tests {
     use rstest::*;
     use tempfile::{TempDir, tempdir};
 
+    use crate::repository::MailboxMetadataBuilder;
+
     use super::*;
 
     struct TestState {
-        dir: TempDir,
+        // drop order is relevant to not delete db before optimize
         state: State,
+        dir: TempDir,
     }
 
     #[fixture]
@@ -323,9 +330,18 @@ mod tests {
     }
 
     #[fixture]
-    fn state(temp_dir: TempDir, uid_validity: UidValidity, highest_modseq: ModSeq) -> TestState {
+    fn mailbox_metadata(uid_validity: UidValidity, highest_modseq: ModSeq) -> MailboxMetadata {
+        let mut metadata = MailboxMetadataBuilder::default();
+        metadata.uid_validity(uid_validity);
+        metadata.highest_modseq(highest_modseq);
+
+        assert_ok!(metadata.build())
+    }
+
+    #[fixture]
+    fn state(temp_dir: TempDir, mailbox_metadata: MailboxMetadata) -> TestState {
         TestState {
-            state: assert_ok!(State::init(temp_dir.path(), uid_validity, highest_modseq)),
+            state: assert_ok!(State::init(temp_dir.path(), &mailbox_metadata)),
             dir: temp_dir,
         }
     }
@@ -373,29 +389,27 @@ mod tests {
     #[rstest]
     fn test_state_init_fails_on_not_creatable_state_dir(
         temp_dir: TempDir,
-        uid_validity: UidValidity,
-        highest_modseq: ModSeq,
+        mailbox_metadata: MailboxMetadata,
     ) {
         let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
         let state_dir = temp_dir.path().join("foo");
 
-        let result = assert_err!(State::init(&state_dir, uid_validity, highest_modseq));
+        let result = assert_err!(State::init(&state_dir, &mailbox_metadata));
         assert_matches!(result, DbInitError::Io(_));
     }
 
     #[rstest]
     fn test_state_init_fails_on_not_creatable_state_file(
         temp_dir: TempDir,
-        uid_validity: UidValidity,
-        highest_modseq: ModSeq,
+        mailbox_metadata: MailboxMetadata,
     ) {
         let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
 
-        let result = assert_err!(State::init(temp_dir.path(), uid_validity, highest_modseq));
+        let result = assert_err!(State::init(temp_dir.path(), &mailbox_metadata));
         assert_matches!(
             result,
             DbInitError::DbError(DbError::Db(rusqlite::Error::SqliteFailure(_, _)))
@@ -427,20 +441,18 @@ mod tests {
         );
     }
 
-    // #[rstest]
-    // #[tokio::test]
-    // async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
-    //     state: TestState,
-    // ) {
-    //     let initial_modseq = assert_ok!(state.state.highest_modseq().await);
-    //     todo: do not use user_version for highest_modseq, as modseqs are u63, while user_version
-    //     is u32
-    //     let new_modseq = assert_ok!(ModSeq::try_from(u64::MAX));
-    //     assert_ne!(new_modseq, initial_modseq);
-    //     assert_ok!(state.state.update_highest_modseq(new_modseq).await);
-    //
-    //     assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
-    // }
+    #[rstest]
+    #[tokio::test]
+    async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
+        state: TestState,
+    ) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
+        let new_modseq = assert_ok!(ModSeq::try_from(i64::MAX));
+        assert_ne!(new_modseq, initial_modseq);
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
+
+        assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
+    }
 
     #[rstest]
     #[tokio::test]

@@ -170,13 +170,7 @@ impl Syncer {
     ) {
         let mut selection = client.select(task_tx.clone(), mailbox).await;
 
-        MaildirRepository::init(
-            selection.mailbox_data.uid_validity(),
-            selection.mailbox_data.highest_modseq(),
-            mail_dir,
-            state_dir,
-            task_rx,
-        );
+        MaildirRepository::init(&selection.mailbox_data, mail_dir, state_dir, task_rx);
         selection.client.fetch_all().await;
         task_tx
             .send(Task::Shutdown())
