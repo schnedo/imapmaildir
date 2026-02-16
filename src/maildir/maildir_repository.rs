@@ -10,7 +10,7 @@ use crate::{
         LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata, maildir::MaildirError,
         state::State,
     },
-    repository::{ModSeq, Uid, UidValidity},
+    repository::{MailboxMetadata, ModSeq, Uid, UidValidity},
     sync::Task,
 };
 
@@ -34,15 +34,14 @@ impl MaildirRepository {
     }
 
     pub fn init(
-        uid_validity: UidValidity,
-        highest_modseq: ModSeq,
+        mailbox_metadata: &MailboxMetadata,
         mail_dir: &Path,
         state_dir: &Path,
         task_rx: mpsc::Receiver<Task>,
     ) {
         let mail = Maildir::try_new(mail_dir).expect("creating maildir should succeed");
-        let state = State::init(state_dir, uid_validity, highest_modseq)
-            .expect("initializing state should work");
+        let state =
+            State::init(state_dir, mailbox_metadata).expect("initializing state should work");
 
         let repository = Self::new(mail, state);
         repository.setup_task_processing(task_rx);
