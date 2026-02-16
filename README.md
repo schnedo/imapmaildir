@@ -13,7 +13,7 @@ or [aerc](https://git.sr.ht/~rjarry/aerc).
 
 > [!CAUTION]
 > The project is still in early development and not ready for
-> production use. Expect bugs and crashes.
+> production use. There will be breaking changes without further notice.
 
 ## Usage
 
