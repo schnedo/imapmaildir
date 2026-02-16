@@ -233,7 +233,7 @@ impl State {
         let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
         stmt.execute((
             data.flags().bits(),
-            u32::from(data.uid().expect("invalid input data")),
+            u32::from(data.uid().ok_or(DbError::Conversion)?),
         ))?;
 
         Ok(())
