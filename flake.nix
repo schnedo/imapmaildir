@@ -74,8 +74,8 @@
               text = ''
                 export LLVM_COV=${lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov"}
                 export LLVM_PROFDATA=${lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata"}
-                cargo llvm-cov nextest --html --open "$@"
-                fd -e rs | entr -ccp cargo llvm-cov nextest --html "$@"
+                cargo llvm-cov nextest --no-tests warn --html --open "$@"
+                fd -e rs | entr -ccp cargo llvm-cov nextest --no-tests warn --html "$@"
               '';
             };
 
