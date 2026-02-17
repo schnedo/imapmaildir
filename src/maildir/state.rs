@@ -9,7 +9,7 @@ use std::{
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
 use log::{debug, trace};
-use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, Result, Row};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
 use rusqlite_migration::Migrations;
 use thiserror::Error;
 use tokio::sync::{
@@ -21,86 +21,6 @@ use crate::{
     maildir::LocalMailMetadata,
     repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
 };
-
-#[derive(Debug, Error)]
-pub enum DbError {
-    #[error("Could not parse cached data")]
-    Conversion,
-    #[error("Communication channel between database and imap already closed")]
-    ChannelClosed,
-    #[error("Error with db call: {0}")]
-    Db(rusqlite::Error),
-}
-
-impl From<<ModSeq as TryFrom<i64>>::Error> for DbError {
-    fn from(_: <ModSeq as TryFrom<i64>>::Error) -> Self {
-        Self::Conversion
-    }
-}
-
-impl From<SendError<LocalMailMetadata>> for DbError {
-    fn from(_: SendError<LocalMailMetadata>) -> Self {
-        Self::ChannelClosed
-    }
-}
-
-impl From<rusqlite::Error> for DbError {
-    fn from(value: rusqlite::Error) -> Self {
-        Self::Db(value)
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum DbInitError {
-    #[error("{0}")]
-    DbError(DbError),
-    #[error("IO Issue when constructing DB {0}")]
-    Io(io::Error),
-    #[error("Could not apply migrations {0}")]
-    Migrations(rusqlite_migration::Error),
-}
-
-impl From<rusqlite_migration::Error> for DbInitError {
-    fn from(value: rusqlite_migration::Error) -> Self {
-        Self::Migrations(value)
-    }
-}
-
-impl From<DbError> for DbInitError {
-    fn from(value: DbError) -> Self {
-        Self::DbError(value)
-    }
-}
-
-impl From<rusqlite::Error> for DbInitError {
-    fn from(value: rusqlite::Error) -> Self {
-        Self::DbError(value.into())
-    }
-}
-
-impl From<io::Error> for DbInitError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
-    let result = db.query_one("select highest_modseq from mailbox_metadata", [], |row| {
-        let modseq: i64 = row.get(0)?;
-        let modseq: Result<ModSeq, DbError> = modseq.try_into().map_err(DbError::from);
-        Ok(modseq)
-    });
-
-    result?
-}
-
-fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
-    trace!("setting highest_modseq {value}");
-    let mut stmt = db.prepare_cached("update mailbox_metadata set highest_modseq=?1")?;
-    stmt.execute([i64::from(value)])?;
-
-    Ok(())
-}
 
 const STATE_FILE_NAME: &str = "imapmaildir.db";
 const MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
@@ -286,7 +206,7 @@ impl Drop for State {
 }
 
 impl TryFrom<&Row<'_>> for LocalMailMetadata {
-    type Error = Error;
+    type Error = rusqlite::Error;
 
     fn try_from(value: &Row) -> Result<Self, Self::Error> {
         let uid: u32 = value.get(0)?;
@@ -294,6 +214,86 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
         let flags = Flag::from_bits_truncate(value.get(1)?);
         Ok(Self::new(uid, flags, value.get(2)?))
     }
+}
+
+#[derive(Debug, Error)]
+pub enum DbError {
+    #[error("Could not parse cached data")]
+    Conversion,
+    #[error("Communication channel between database and imap already closed")]
+    ChannelClosed,
+    #[error("Error with db call: {0}")]
+    Db(rusqlite::Error),
+}
+
+impl From<<ModSeq as TryFrom<i64>>::Error> for DbError {
+    fn from(_: <ModSeq as TryFrom<i64>>::Error) -> Self {
+        Self::Conversion
+    }
+}
+
+impl From<SendError<LocalMailMetadata>> for DbError {
+    fn from(_: SendError<LocalMailMetadata>) -> Self {
+        Self::ChannelClosed
+    }
+}
+
+impl From<rusqlite::Error> for DbError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::Db(value)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DbInitError {
+    #[error("{0}")]
+    DbError(DbError),
+    #[error("IO Issue when constructing DB {0}")]
+    Io(io::Error),
+    #[error("Could not apply migrations {0}")]
+    Migrations(rusqlite_migration::Error),
+}
+
+impl From<rusqlite_migration::Error> for DbInitError {
+    fn from(value: rusqlite_migration::Error) -> Self {
+        Self::Migrations(value)
+    }
+}
+
+impl From<DbError> for DbInitError {
+    fn from(value: DbError) -> Self {
+        Self::DbError(value)
+    }
+}
+
+impl From<rusqlite::Error> for DbInitError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::DbError(value.into())
+    }
+}
+
+impl From<io::Error> for DbInitError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
+    let result = db.query_one("select highest_modseq from mailbox_metadata", [], |row| {
+        let modseq: i64 = row.get(0)?;
+        let modseq: Result<ModSeq, DbError> = modseq.try_into().map_err(DbError::from);
+        Ok(modseq)
+    });
+
+    result?
+}
+
+fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
+    trace!("setting highest_modseq {value}");
+    let mut stmt = db.prepare_cached("update mailbox_metadata set highest_modseq=?1")?;
+    stmt.execute([i64::from(value)])?;
+
+    Ok(())
 }
 
 #[cfg(test)]
