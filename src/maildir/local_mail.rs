@@ -14,6 +14,7 @@ use crate::{
     repository::{Flag, Uid},
 };
 
+#[derive(PartialEq, Clone)]
 pub struct LocalMail {
     metadata: LocalMailMetadata,
     // todo: consider streaming this
