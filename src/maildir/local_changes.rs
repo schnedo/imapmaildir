@@ -14,6 +14,7 @@ pub struct LocalFlagChanges {
 }
 
 impl LocalFlagChanges {
+    // todo: use single unpack function and return owned SequenceSets?
     pub fn additional_flags(&self) -> impl Iterator<Item = (Flag, &SequenceSet)> {
         self.additional_flags.iter().map(|(flag, set)| (*flag, set))
     }
@@ -23,7 +24,7 @@ impl LocalFlagChanges {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct LocalFlagChangesBuilder {
     additional_flags: HashMap<Flag, SequenceSetBuilder>,
     removed_flags: HashMap<Flag, SequenceSetBuilder>,
@@ -77,7 +78,7 @@ impl LocalFlagChangesBuilder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct LocalChanges {
     pub highest_modseq: ModSeq,
     pub updates: LocalFlagChangesBuilder,
@@ -98,5 +99,114 @@ impl LocalChanges {
             deletions,
             news,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use assertables::*;
+    use enumflags2::BitFlags;
+    use rstest::*;
+
+    use crate::maildir::LocalMailMetadata;
+
+    use super::*;
+
+    #[fixture]
+    fn builder() -> LocalFlagChangesBuilder {
+        LocalFlagChangesBuilder::default()
+    }
+
+    #[fixture]
+    fn uid() -> Uid {
+        Uid::MAX
+    }
+
+    #[fixture]
+    fn set(uid: Uid) -> SequenceSet {
+        let mut builder = SequenceSetBuilder::default();
+        builder.add(uid);
+        assert_ok!(builder.build())
+    }
+
+    #[fixture]
+    fn flag() -> Flag {
+        Flag::Seen
+    }
+
+    #[rstest]
+    fn test_builder_builds_empty_changes(builder: LocalFlagChangesBuilder) {
+        let changes = builder.build();
+        assert_is_empty!(changes.additional_flags().collect::<HashMap<_, _>>());
+        assert_is_empty!(changes.removed_flags().collect::<HashMap<_, _>>());
+    }
+
+    #[rstest]
+    fn test_insert_additional_inserts_additional(
+        mut builder: LocalFlagChangesBuilder,
+        flag: Flag,
+        uid: Uid,
+        set: SequenceSet,
+    ) {
+        builder.insert_additional(flag, uid);
+        let changes = builder.build();
+        assert_eq!(
+            HashMap::from([(flag, &set)]),
+            changes.additional_flags().collect()
+        );
+        assert_is_empty!(changes.removed_flags().collect::<HashMap<_, _>>());
+    }
+
+    #[rstest]
+    fn test_insert_removed_inserts_removed(
+        mut builder: LocalFlagChangesBuilder,
+        flag: Flag,
+        uid: Uid,
+        set: SequenceSet,
+    ) {
+        builder.insert_removed(flag, uid);
+        let changes = builder.build();
+        assert_is_empty!(changes.additional_flags().collect::<HashMap<_, _>>());
+        assert_eq!(
+            HashMap::from([(flag, &set)]),
+            changes.removed_flags().collect()
+        );
+    }
+
+    #[rstest]
+    fn test_remove_removes_from_both_collections(
+        mut builder: LocalFlagChangesBuilder,
+        flag: Flag,
+        uid: Uid,
+    ) {
+        builder.insert_additional(flag, uid);
+        builder.insert_additional(flag, uid);
+        builder.remove(uid);
+        let changes = builder.build();
+        assert_is_empty!(changes.additional_flags().collect::<HashMap<_, _>>());
+        assert_is_empty!(changes.removed_flags().collect::<HashMap<_, _>>());
+    }
+
+    #[rstest]
+    fn test_local_changes_constructs_correctly(builder: LocalFlagChangesBuilder) {
+        let highest_modseq = assert_ok!(ModSeq::try_from(9));
+        let deletions = vec![Uid::MAX];
+        let flags = BitFlags::all();
+        let metadata =
+            LocalMailMetadata::new(Uid::try_from(&3).ok(), flags, Some("prefix".to_string()));
+        let mail = LocalMail::new(Vec::new(), metadata);
+        let news = vec![mail];
+
+        let changes = LocalChanges::new(
+            highest_modseq,
+            deletions.clone(),
+            news.clone(),
+            builder.clone(),
+        );
+        assert_eq!(changes.highest_modseq, highest_modseq);
+        assert_eq!(changes.deletions, deletions);
+        assert_eq!(changes.news, news);
+        assert_eq!(changes.updates, builder);
     }
 }

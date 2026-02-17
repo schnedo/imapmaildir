@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::repository::{Uid, uid::UidRangeInclusiveIterator};
 
 // todo: does this need to be pub?
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct SequenceRange {
     start: Uid,
     end: Option<Uid>,
@@ -88,7 +88,7 @@ impl TryFrom<&imap_proto::UidSetMember> for SequenceRange {
 #[error("No numbers in sequence set")]
 pub struct EmptySetError {}
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub struct SequenceSetBuilder {
     nums: HashSet<Uid>,
 }
@@ -129,7 +129,7 @@ impl SequenceSetBuilder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct SequenceSet {
     // todo: use nonempty-collections
     ranges: Vec<SequenceRange>,
