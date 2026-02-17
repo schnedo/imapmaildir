@@ -448,8 +448,33 @@ mod tests {
     ) {
         let initial_modseq = assert_ok!(state.state.highest_modseq().await);
         let new_modseq = assert_ok!(ModSeq::try_from(i64::MAX));
-        assert_ne!(new_modseq, initial_modseq);
+        assert_gt!(new_modseq, initial_modseq);
         assert_ok!(state.state.update_highest_modseq(new_modseq).await);
+
+        assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
+        let new_modseq = assert_ok!(ModSeq::try_from(1));
+        assert_le!(new_modseq, initial_modseq);
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
+
+        assert_eq!(
+            assert_ok!(state.state.highest_modseq().await),
+            initial_modseq
+        );
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_set_highest_modseq_always_updates(state: TestState) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
+        let new_modseq = assert_ok!(ModSeq::try_from(1));
+        assert_lt!(new_modseq, initial_modseq);
+        assert_ok!(state.state.set_highest_modseq(new_modseq).await);
 
         assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
     }
@@ -515,5 +540,36 @@ mod tests {
         }
         assert_contains!(stored, &stored_first);
         assert_contains!(stored, &stored_second);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_get_all_errors_on_closed_receiver(state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+
+        let (tx, mut rx) = mpsc::channel(32);
+        rx.close();
+        let result = assert_err!(state.state.get_all(tx).await);
+        assert_matches!(result, DbError::ChannelClosed);
+    }
+
+    #[rstest]
+    fn test_dbiniterror_conversions() {
+        let migration_error = rusqlite_migration::Error::InvalidUserVersion;
+        let dbinit_error: DbInitError = migration_error.into();
+        assert_matches!(
+            dbinit_error,
+            DbInitError::Migrations(rusqlite_migration::Error::InvalidUserVersion)
+        );
+        let db_error = DbError::ChannelClosed;
+        let dbinit_error: DbInitError = db_error.into();
+        assert_matches!(dbinit_error, DbInitError::DbError(DbError::ChannelClosed));
+    }
+
+    #[rstest]
+    fn test_dberror_conversions() {
+        let modseq_error = assert_err!(ModSeq::try_from(0));
+        let db_error: DbError = modseq_error.into();
+        assert_matches!(db_error, DbError::Conversion);
     }
 }
