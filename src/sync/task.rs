@@ -8,5 +8,5 @@ pub enum Task {
     Delete(SequenceSet),
     HighestModSeq(ModSeq),
     UpdateModseq(Uid, ModSeq),
-    Shutdown(),
+    Shutdown,
 }
