@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::Path};
 use thiserror::Error;
 
-use log::{debug, info, trace};
+use log::{info, trace};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -11,7 +11,6 @@ use crate::{
         state::State,
     },
     repository::{MailboxMetadata, ModSeq, Uid, UidValidity},
-    sync::Task,
 };
 
 use super::Maildir;
@@ -29,39 +28,28 @@ pub struct MaildirRepository {
 }
 
 impl MaildirRepository {
-    pub fn new(maildir: Maildir, state: State) -> Self {
+    fn new(maildir: Maildir, state: State) -> Self {
         Self { maildir, state }
     }
 
-    pub fn init(
-        mailbox_metadata: &MailboxMetadata,
-        mail_dir: &Path,
-        state_dir: &Path,
-        task_rx: mpsc::Receiver<Task>,
-    ) {
+    pub fn init(mailbox_metadata: &MailboxMetadata, mail_dir: &Path, state_dir: &Path) -> Self {
         let mail = Maildir::try_new(mail_dir).expect("creating maildir should succeed");
         let state =
             State::init(state_dir, mailbox_metadata).expect("initializing state should work");
 
-        let repository = Self::new(mail, state);
-        repository.setup_task_processing(task_rx);
+        Self::new(mail, state)
     }
 
-    pub fn load(
-        mail_dir: &Path,
-        state_dir: &Path,
-        task_rx: mpsc::Receiver<Task>,
-    ) -> Result<Self, mpsc::Receiver<Task>> {
+    pub fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, ()> {
         match (State::load(state_dir), Maildir::load(mail_dir)) {
             (Ok(state), Ok(mail)) => {
                 let repo = Self::new(mail, state);
-                repo.clone().setup_task_processing(task_rx);
 
                 Ok(repo)
             }
             (Ok(_), Err(_)) => todo!("missing maildir for existing state"),
             (Err(_), Ok(_)) => todo!("missing state for existing maildir"),
-            (Err(_), Err(_)) => Err(task_rx),
+            (Err(_), Err(_)) => Err(()),
         }
     }
 
@@ -82,6 +70,13 @@ impl MaildirRepository {
     pub async fn set_highest_modseq(&self, value: ModSeq) {
         self.state
             .set_highest_modseq(value)
+            .await
+            .expect("setting highest_modseq should succeed");
+    }
+
+    pub async fn update_highest_modseq(&self, value: ModSeq) {
+        self.state
+            .update_highest_modseq(value)
             .await
             .expect("setting highest_modseq should succeed");
     }
@@ -253,39 +248,5 @@ impl MaildirRepository {
         let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
         trace!("{changes:?}");
         changes
-    }
-
-    fn setup_task_processing(
-        self,
-        mut task_rx: mpsc::Receiver<Task>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            debug!("Listening to incoming mail...");
-            while let Some(task) = task_rx.recv().await {
-                match task {
-                    Task::NewMail(remote_mail) => {
-                        self.store(&remote_mail).await;
-                    }
-                    Task::Delete(sequence_set) => {
-                        for uid in sequence_set.iter() {
-                            self.delete(uid).await;
-                        }
-                    }
-                    Task::HighestModSeq(mod_seq) => {
-                        self.set_highest_modseq(mod_seq).await;
-                    }
-                    Task::Shutdown() => {
-                        task_rx.close();
-                    }
-                    Task::UpdateModseq(uid, mod_seq) => {
-                        debug!("Setting modseq of mail {uid} to {mod_seq}");
-                        self.state
-                            .update_highest_modseq(mod_seq)
-                            .await
-                            .expect("updating highest_modseq should succeed");
-                    }
-                }
-            }
-        })
     }
 }

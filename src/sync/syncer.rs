@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path};
 
-use log::info;
+use log::{debug, info};
 use tokio::sync::mpsc;
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
@@ -22,24 +22,13 @@ impl Syncer {
     ) {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
-        let (task_tx, task_rx) = mpsc::channel(32);
 
-        match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir, task_rx) {
-            Ok(maildir_repository) => {
-                Self::sync_existing(&maildir_repository, client, mailbox, task_tx).await;
-            }
-            Err(task_rx) => {
-                info!("no existing maildir found. Running inital sync");
-                Self::sync_new(
-                    client,
-                    &mailbox_maildir,
-                    &mailbox_statedir,
-                    mailbox,
-                    task_rx,
-                    task_tx,
-                )
-                .await;
-            }
+        if let Ok(maildir_repository) = MaildirRepository::load(&mailbox_maildir, &mailbox_statedir)
+        {
+            Self::sync_existing(&maildir_repository, client, mailbox).await;
+        } else {
+            info!("no existing maildir found. Running inital sync");
+            Self::sync_new(client, &mailbox_maildir, &mailbox_statedir, mailbox).await;
         }
     }
 
@@ -47,10 +36,12 @@ impl Syncer {
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
-        task_tx: mpsc::Sender<Task>,
     ) {
         let uid_validity = maildir_repository.uid_validity().await;
         let highest_modseq = maildir_repository.highest_modseq().await;
+        let mut local_changes = maildir_repository.detect_changes().await;
+        let (task_tx, task_rx) = mpsc::channel(32);
+        Self::setup_task_processing(maildir_repository.clone(), task_rx);
 
         let Selection {
             mut client,
@@ -66,18 +57,17 @@ impl Syncer {
             "remote uid validity should be the same as local"
         );
 
-        let mut local_changes = maildir_repository.detect_changes().await;
         Self::handle_conflicts(&remote_changes, &mut local_changes);
         Self::handle_remote_changes(
             &mut client,
             maildir_repository,
-            &remote_changes,
+            remote_changes,
             &mailbox_data,
         )
         .await;
         Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
         task_tx
-            .send(Task::Shutdown())
+            .send(Task::Shutdown)
             .await
             .expect("sending shutdown task should succeed");
     }
@@ -115,10 +105,10 @@ impl Syncer {
     async fn handle_remote_changes(
         client: &mut SelectedClient,
         maildir_repository: &MaildirRepository,
-        remote_changes: &RemoteChanges,
+        remote_changes: RemoteChanges,
         mailbox_data: &MailboxMetadata,
     ) {
-        if let Some(set) = &remote_changes.deletions {
+        if let Some(set) = remote_changes.deletions {
             for uid in set.iter() {
                 maildir_repository.delete(uid).await;
             }
@@ -165,16 +155,48 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         mailbox: &str,
-        task_rx: mpsc::Receiver<Task>,
-        task_tx: mpsc::Sender<Task>,
     ) {
+        let (task_tx, task_rx) = mpsc::channel(32);
         let mut selection = client.select(task_tx.clone(), mailbox).await;
 
-        MaildirRepository::init(&selection.mailbox_data, mail_dir, state_dir, task_rx);
+        let maildir_repository =
+            MaildirRepository::init(&selection.mailbox_data, mail_dir, state_dir);
+        Self::setup_task_processing(maildir_repository, task_rx);
         selection.client.fetch_all().await;
         task_tx
-            .send(Task::Shutdown())
+            .send(Task::Shutdown)
             .await
             .expect("sending shutdown task should succeed");
+    }
+
+    fn setup_task_processing(
+        maildir_repository: MaildirRepository,
+        mut task_rx: mpsc::Receiver<Task>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            debug!("Listening to incoming mail...");
+            while let Some(task) = task_rx.recv().await {
+                match task {
+                    Task::NewMail(remote_mail) => {
+                        maildir_repository.store(&remote_mail).await;
+                    }
+                    Task::Delete(sequence_set) => {
+                        for uid in sequence_set.iter() {
+                            maildir_repository.delete(uid).await;
+                        }
+                    }
+                    Task::HighestModSeq(mod_seq) => {
+                        maildir_repository.set_highest_modseq(mod_seq).await;
+                    }
+                    Task::Shutdown => {
+                        task_rx.close();
+                    }
+                    Task::UpdateModseq(uid, mod_seq) => {
+                        debug!("Setting modseq of mail {uid} to {mod_seq}");
+                        maildir_repository.update_highest_modseq(mod_seq).await;
+                    }
+                }
+            }
+        })
     }
 }
