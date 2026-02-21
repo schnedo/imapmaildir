@@ -33,7 +33,7 @@ impl MaildirRepository {
     }
 
     pub fn init(mailbox_metadata: &MailboxMetadata, mail_dir: &Path, state_dir: &Path) -> Self {
-        let mail = Maildir::try_new(mail_dir).expect("creating maildir should succeed");
+        let mail = Maildir::try_init(mail_dir).expect("creating maildir should succeed");
         let state =
             State::init(state_dir, mailbox_metadata).expect("initializing state should work");
 

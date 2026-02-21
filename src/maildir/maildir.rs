@@ -25,12 +25,10 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn try_new(mail_dir: &Path) -> Result<Self, MaildirCreationError<'_>> {
+    pub fn try_init(mail_dir: &Path) -> Result<Self, InitError<'_>> {
         match Self::load(mail_dir) {
-            Ok(_) | Err(MaildirLoadError::Partial(_)) => {
-                Err(MaildirCreationError::Exists(mail_dir))
-            }
-            Err(MaildirLoadError::Io(path, kind)) => Err(MaildirCreationError::Io(path, kind)),
+            Ok(_) | Err(LoadError::Partial(_)) => Err(InitError::Exists(mail_dir)),
+            Err(LoadError::Io(path, kind)) => Err(InitError::Io(path, kind)),
             Err(_) => {
                 info!("creating maildir in {:#}", mail_dir.display());
                 let mut builder = DirBuilder::new();
@@ -46,9 +44,9 @@ impl Maildir {
                     builder.create(cur.as_path()),
                 ) {
                     (Ok(()), Ok(()), Ok(())) => Ok(Self { new, cur, tmp }),
-                    (Err(e), _, _) => Err(MaildirCreationError::Io(tmp, e.kind())),
-                    (_, Err(e), _) => Err(MaildirCreationError::Io(new, e.kind())),
-                    (_, _, Err(e)) => Err(MaildirCreationError::Io(cur, e.kind())),
+                    (Err(e), _, _) => Err(InitError::Io(tmp, e.kind())),
+                    (_, Err(e), _) => Err(InitError::Io(new, e.kind())),
+                    (_, _, Err(e)) => Err(InitError::Io(cur, e.kind())),
                 }
             }
         }
@@ -61,7 +59,7 @@ impl Maildir {
         Self { new, cur, tmp }
     }
 
-    pub fn load(mail_dir: &Path) -> Result<Self, MaildirLoadError<'_>> {
+    pub fn load(mail_dir: &Path) -> Result<Self, LoadError<'_>> {
         let mail = Self::unchecked(mail_dir);
         trace!("loading maildir {mail:?}");
         match (
@@ -70,11 +68,11 @@ impl Maildir {
             mail.tmp.try_exists(),
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
-            (Ok(false), Ok(false), Ok(false)) => Err(MaildirLoadError::Missing(mail_dir)),
-            (Ok(_), Ok(_), Ok(_)) => Err(MaildirLoadError::Partial(mail_dir)),
-            (Err(e), _, _) => Err(MaildirLoadError::Io(mail.new, e.kind())),
-            (_, Err(e), _) => Err(MaildirLoadError::Io(mail.cur, e.kind())),
-            (_, _, Err(e)) => Err(MaildirLoadError::Io(mail.tmp, e.kind())),
+            (Ok(false), Ok(false), Ok(false)) => Err(LoadError::Missing(mail_dir)),
+            (Ok(_), Ok(_), Ok(_)) => Err(LoadError::Partial(mail_dir)),
+            (Err(e), _, _) => Err(LoadError::Io(mail.new, e.kind())),
+            (_, Err(e), _) => Err(LoadError::Io(mail.cur, e.kind())),
+            (_, _, Err(e)) => Err(LoadError::Io(mail.tmp, e.kind())),
         }
     }
 
@@ -219,7 +217,7 @@ impl Maildir {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum MaildirLoadError<'a> {
+pub enum LoadError<'a> {
     #[error("Found partially existing maildir at {0}")]
     Partial(&'a Path),
     #[error("No maildir found at {0}")]
@@ -229,7 +227,7 @@ pub enum MaildirLoadError<'a> {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum MaildirCreationError<'a> {
+pub enum InitError<'a> {
     #[error("Found preexisting cur, tmp and/or new directories at {0}")]
     Exists(&'a Path),
     #[error("IO error during creation of maildir directory at {0}: {1}")]
@@ -295,7 +293,7 @@ mod tests {
     #[fixture]
     fn maildir(temp_dir: TempDir) -> TestMaildir {
         TestMaildir {
-            maildir: assert_ok!(Maildir::try_new(temp_dir.path())),
+            maildir: assert_ok!(Maildir::try_init(temp_dir.path())),
             dir: temp_dir,
         }
     }
@@ -319,7 +317,7 @@ mod tests {
     #[rstest]
     fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        assert_ok!(Maildir::try_new(maildir_path));
+        assert_ok!(Maildir::try_init(maildir_path));
 
         assert!(maildir_path.join("cur").exists());
         assert!(maildir_path.join("new").exists());
@@ -335,9 +333,9 @@ mod tests {
         let cur = maildir_path.join(dir);
         assert_ok!(fs::create_dir(cur));
 
-        let maybe_maildir = Maildir::try_new(maildir_path);
+        let maybe_maildir = Maildir::try_init(maildir_path);
 
-        assert_matches!(maybe_maildir, Err(MaildirCreationError::Exists(_)));
+        assert_matches!(maybe_maildir, Err(InitError::Exists(_)));
     }
 
     #[rstest]
@@ -347,9 +345,9 @@ mod tests {
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(maildir_path, permissions));
 
-        let result = Maildir::try_new(maildir_path);
+        let result = Maildir::try_init(maildir_path);
         let result = assert_err!(result);
-        assert_matches!(result, MaildirCreationError::Io(_, _));
+        assert_matches!(result, InitError::Io(_, _));
     }
 
     #[rstest]
@@ -365,10 +363,7 @@ mod tests {
     #[rstest]
     fn test_load_errors_on_missing_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        assert_matches!(
-            Maildir::load(maildir_path),
-            Err(MaildirLoadError::Missing(_))
-        );
+        assert_matches!(Maildir::load(maildir_path), Err(LoadError::Missing(_)));
     }
 
     #[rstest]
@@ -379,10 +374,7 @@ mod tests {
         let maildir_path = temp_dir.path();
         assert_ok!(fs::create_dir(maildir_path.join(dir)));
 
-        assert_matches!(
-            Maildir::load(maildir_path),
-            Err(MaildirLoadError::Partial(_))
-        );
+        assert_matches!(Maildir::load(maildir_path), Err(LoadError::Partial(_)));
     }
 
     #[rstest]
@@ -394,7 +386,7 @@ mod tests {
 
         let result = Maildir::load(maildir_path);
         let result = assert_err!(result);
-        assert_matches!(result, MaildirLoadError::Io(_, _));
+        assert_matches!(result, LoadError::Io(_, _));
     }
 
     #[rstest]

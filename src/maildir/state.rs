@@ -28,7 +28,7 @@ static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
     Migrations::from_directory(&MIGRATIONS_DIR).expect("generating migrations should succeed")
 });
 
-fn apply_migrations(db: &mut Connection) -> Result<(), DbInitError> {
+fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     MIGRATIONS.to_latest(db)?;
     db.pragma_update(None, "journal_mode", "wal")?;
     db.pragma_update(None, "synchronous", "normal")?;
@@ -48,7 +48,7 @@ impl State {
         }
     }
 
-    pub fn load(state_dir: &Path) -> Result<Self, DbInitError> {
+    pub fn load(state_dir: &Path) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir)?;
         debug!(
             "try loading existing state file {}",
@@ -66,7 +66,7 @@ impl State {
         Ok(Self::new(db))
     }
 
-    pub fn init(state_dir: &Path, mailbox_metadata: &MailboxMetadata) -> Result<Self, DbInitError> {
+    pub fn init(state_dir: &Path, mailbox_metadata: &MailboxMetadata) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir)?;
         debug!("creating new state file {}", state_file.to_string_lossy());
         let mut db = Connection::open(state_file)?;
@@ -93,19 +93,19 @@ impl State {
         Ok(state_dir.join(STATE_FILE_NAME))
     }
 
-    pub async fn uid_validity(&self) -> Result<UidValidity, DbError> {
+    pub async fn uid_validity(&self) -> Result<UidValidity, Error> {
         trace!("getting cached uid_validity");
         self.db
             .lock()
             .await
             .query_one("select uid_validity from mailbox_metadata", (), |row| {
                 let validity: u32 = row.get(0)?;
-                let validity = validity.try_into().map_err(DbError::from);
+                let validity = validity.try_into().map_err(Error::from);
                 Ok(validity)
             })?
     }
 
-    pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), DbError> {
+    pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         trace!("check for updating highest_modseq with {value:?}");
         let mut db = self.db.lock().await;
         let transaction = db.transaction()?;
@@ -118,33 +118,33 @@ impl State {
         Ok(())
     }
 
-    pub async fn set_highest_modseq(&self, value: ModSeq) -> Result<(), DbError> {
+    pub async fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         trace!("setting highest_modseq {value}");
         let db = self.db.lock().await;
         set_highest_modseq(&db, value).map_err(std::convert::Into::into)
     }
 
-    pub async fn highest_modseq(&self) -> Result<ModSeq, DbError> {
+    pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {
         trace!("getting cached highest_modseq");
         let db = self.db.lock().await;
         get_highest_modseq(&db)
     }
 
-    pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), DbError> {
+    pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("updating mail cache {data:?}");
         let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
         stmt.execute((
             data.flags().bits(),
-            u32::from(data.uid().ok_or(DbError::Conversion)?),
+            u32::from(data.uid().ok_or(Error::Conversion)?),
         ))?;
 
         Ok(())
     }
 
-    pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), DbError> {
+    pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("storing mail cache {data:?}");
-        let uid = data.uid().ok_or(DbError::Conversion)?;
+        let uid = data.uid().ok_or(Error::Conversion)?;
         let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")?;
@@ -153,7 +153,7 @@ impl State {
         Ok(())
     }
 
-    pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, DbError> {
+    pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         trace!("get existing metadata with {uid:?}");
         let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
@@ -163,7 +163,7 @@ impl State {
             .map_err(std::convert::Into::into)
     }
 
-    pub async fn delete_by_id(&self, uid: Uid) -> Result<(), DbError> {
+    pub async fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         trace!("deleting {uid:?}");
         let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
@@ -176,7 +176,7 @@ impl State {
     pub async fn get_all(
         &self,
         all_entries_tx: mpsc::Sender<LocalMailMetadata>,
-    ) -> Result<ModSeq, DbError> {
+    ) -> Result<ModSeq, Error> {
         trace!("getting all stored mail metadata");
         let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
@@ -184,7 +184,7 @@ impl State {
         let current_highest_modseq = get_highest_modseq(&db)?;
         for entry in stmt
             .query_map([], |row| LocalMailMetadata::try_from(row))?
-            .map(|maybe_row| maybe_row.map_err(DbError::from))
+            .map(|maybe_row| maybe_row.map_err(Error::from))
         {
             let entry = entry?;
             all_entries_tx.send(entry).await?;
@@ -217,7 +217,7 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
 }
 
 #[derive(Debug, Error)]
-pub enum DbError {
+pub enum Error {
     #[error("Could not parse cached data")]
     Conversion,
     #[error("Communication channel between database and imap already closed")]
@@ -226,62 +226,62 @@ pub enum DbError {
     Db(rusqlite::Error),
 }
 
-impl From<<ModSeq as TryFrom<i64>>::Error> for DbError {
+impl From<<ModSeq as TryFrom<i64>>::Error> for Error {
     fn from(_: <ModSeq as TryFrom<i64>>::Error) -> Self {
         Self::Conversion
     }
 }
 
-impl From<SendError<LocalMailMetadata>> for DbError {
+impl From<SendError<LocalMailMetadata>> for Error {
     fn from(_: SendError<LocalMailMetadata>) -> Self {
         Self::ChannelClosed
     }
 }
 
-impl From<rusqlite::Error> for DbError {
+impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
         Self::Db(value)
     }
 }
 
 #[derive(Debug, Error)]
-pub enum DbInitError {
+pub enum InitError {
     #[error("{0}")]
-    DbError(DbError),
+    DbError(Error),
     #[error("IO Issue when constructing DB {0}")]
     Io(io::Error),
     #[error("Could not apply migrations {0}")]
     Migrations(rusqlite_migration::Error),
 }
 
-impl From<rusqlite_migration::Error> for DbInitError {
+impl From<rusqlite_migration::Error> for InitError {
     fn from(value: rusqlite_migration::Error) -> Self {
         Self::Migrations(value)
     }
 }
 
-impl From<DbError> for DbInitError {
-    fn from(value: DbError) -> Self {
+impl From<Error> for InitError {
+    fn from(value: Error) -> Self {
         Self::DbError(value)
     }
 }
 
-impl From<rusqlite::Error> for DbInitError {
+impl From<rusqlite::Error> for InitError {
     fn from(value: rusqlite::Error) -> Self {
         Self::DbError(value.into())
     }
 }
 
-impl From<io::Error> for DbInitError {
+impl From<io::Error> for InitError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
     }
 }
 
-fn get_highest_modseq(db: &Connection) -> Result<ModSeq, DbError> {
+fn get_highest_modseq(db: &Connection) -> Result<ModSeq, Error> {
     let result = db.query_one("select highest_modseq from mailbox_metadata", [], |row| {
         let modseq: i64 = row.get(0)?;
-        let modseq: Result<ModSeq, DbError> = modseq.try_into().map_err(DbError::from);
+        let modseq: Result<ModSeq, Error> = modseq.try_into().map_err(Error::from);
         Ok(modseq)
     });
 
@@ -397,7 +397,7 @@ mod tests {
         let state_dir = temp_dir.path().join("foo");
 
         let result = assert_err!(State::init(&state_dir, &mailbox_metadata));
-        assert_matches!(result, DbInitError::Io(_));
+        assert_matches!(result, InitError::Io(_));
     }
 
     #[rstest]
@@ -412,7 +412,7 @@ mod tests {
         let result = assert_err!(State::init(temp_dir.path(), &mailbox_metadata));
         assert_matches!(
             result,
-            DbInitError::DbError(DbError::Db(rusqlite::Error::SqliteFailure(_, _)))
+            InitError::DbError(Error::Db(rusqlite::Error::SqliteFailure(_, _)))
         );
     }
 
@@ -437,7 +437,7 @@ mod tests {
         let result = assert_err!(State::load(loadable_state_dir.path()));
         assert_matches!(
             result,
-            DbInitError::DbError(DbError::Db(rusqlite::Error::SqliteFailure(_, _)))
+            InitError::DbError(Error::Db(rusqlite::Error::SqliteFailure(_, _)))
         );
     }
 
@@ -550,26 +550,26 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(32);
         rx.close();
         let result = assert_err!(state.state.get_all(tx).await);
-        assert_matches!(result, DbError::ChannelClosed);
+        assert_matches!(result, Error::ChannelClosed);
     }
 
     #[rstest]
     fn test_dbiniterror_conversions() {
         let migration_error = rusqlite_migration::Error::InvalidUserVersion;
-        let dbinit_error: DbInitError = migration_error.into();
+        let dbinit_error: InitError = migration_error.into();
         assert_matches!(
             dbinit_error,
-            DbInitError::Migrations(rusqlite_migration::Error::InvalidUserVersion)
+            InitError::Migrations(rusqlite_migration::Error::InvalidUserVersion)
         );
-        let db_error = DbError::ChannelClosed;
-        let dbinit_error: DbInitError = db_error.into();
-        assert_matches!(dbinit_error, DbInitError::DbError(DbError::ChannelClosed));
+        let db_error = Error::ChannelClosed;
+        let dbinit_error: InitError = db_error.into();
+        assert_matches!(dbinit_error, InitError::DbError(Error::ChannelClosed));
     }
 
     #[rstest]
     fn test_dberror_conversions() {
         let modseq_error = assert_err!(ModSeq::try_from(0));
-        let db_error: DbError = modseq_error.into();
-        assert_matches!(db_error, DbError::Conversion);
+        let db_error: Error = modseq_error.into();
+        assert_matches!(db_error, Error::Conversion);
     }
 }
