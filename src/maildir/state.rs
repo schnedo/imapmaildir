@@ -1,6 +1,6 @@
 use std::{
     convert::Into,
-    fs::create_dir_all,
+    fs::{self, create_dir_all},
     io,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
@@ -8,7 +8,7 @@ use std::{
 
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
-use log::{debug, trace};
+use log::{debug, error, trace};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
 use rusqlite_migration::Migrations;
 use thiserror::Error;
@@ -85,6 +85,25 @@ impl State {
         )?;
 
         Ok(Self::new(db))
+    }
+
+    pub fn remove_from(state_dir: &Path) -> io::Result<()> {
+        if state_dir.try_exists()? {
+            let state_file = state_dir.join(STATE_FILE_NAME);
+            if state_file.try_exists()? {
+                fs::remove_file(&state_file)?;
+            }
+            if let Err(e) = fs::remove_dir(state_dir)
+                && e.kind() != io::ErrorKind::DirectoryNotEmpty
+            {
+                error!(
+                    "Could not remove empty state directory {}: {e}",
+                    state_dir.display()
+                );
+            }
+        }
+
+        Ok(())
     }
 
     fn prepare_state_file(state_dir: &Path) -> io::Result<PathBuf> {
@@ -571,5 +590,25 @@ mod tests {
         let modseq_error = assert_err!(ModSeq::try_from(0));
         let db_error: Error = modseq_error.into();
         assert_matches!(db_error, Error::Conversion);
+    }
+
+    #[rstest]
+    fn test_delete_from_deletes_state_file(loadable_state_dir: TempDir) {
+        assert_ok!(State::remove_from(loadable_state_dir.path()));
+        let state_file = loadable_state_dir.path().join(STATE_FILE_NAME);
+        assert!(!assert_ok!(state_file.try_exists()));
+    }
+
+    #[rstest]
+    fn test_delete_from_deletes_state_dir_if_empty(loadable_state_dir: TempDir) {
+        assert_ok!(State::remove_from(loadable_state_dir.path()));
+        assert!(!assert_ok!(loadable_state_dir.path().try_exists()));
+    }
+
+    #[rstest]
+    fn test_delete_from_keeps_state_dir_if_not_empty(loadable_state_dir: TempDir) {
+        assert_ok!(fs::write(loadable_state_dir.path().join("afasdfas"), ""));
+        assert_ok!(State::remove_from(loadable_state_dir.path()));
+        assert!(assert_ok!(loadable_state_dir.path().try_exists()));
     }
 }
