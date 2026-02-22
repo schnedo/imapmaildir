@@ -328,7 +328,6 @@ mod tests {
     use super::*;
 
     struct TestState {
-        // drop order is relevant to not delete db before optimize
         state: State,
         dir: TempDir,
     }
@@ -634,5 +633,12 @@ mod tests {
         let result = assert_err!(State::remove_from(&state_dir));
 
         assert_matches!(result, io::Error { .. });
+    }
+
+    #[rstest]
+    fn test_drop_does_not_panic_if_database_file_already_deleted(state: TestState) {
+        let TestState { state, dir } = state;
+        drop(dir);
+        drop(state);
     }
 }
