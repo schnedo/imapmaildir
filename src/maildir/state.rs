@@ -54,16 +54,21 @@ impl State {
             "try loading existing state file {}",
             state_file.to_string_lossy()
         );
-        let mut db = Connection::open_with_flags(
-            state_file,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_URI,
-        )?;
+        if state_file.try_exists()? {
+            let res = Connection::open_with_flags(
+                state_file,
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_URI,
+            );
 
-        apply_migrations(&mut db)?;
+            let mut db = res?;
+            apply_migrations(&mut db)?;
 
-        Ok(Self::new(db))
+            Ok(Self::new(db))
+        } else {
+            Err(InitError::Missing(state_file))
+        }
     }
 
     pub fn init(state_dir: &Path, mailbox_metadata: &MailboxMetadata) -> Result<Self, InitError> {
@@ -267,6 +272,8 @@ impl From<rusqlite::Error> for Error {
 pub enum InitError {
     #[error("{0}")]
     DbError(Error),
+    #[error("No state found at {0}")]
+    Missing(PathBuf),
     #[error("IO Issue when constructing DB {0}")]
     Io(io::Error),
     #[error("Could not apply migrations {0}")]
@@ -453,10 +460,13 @@ mod tests {
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(loadable_state_dir.path(), permissions));
         let result = assert_err!(State::load(loadable_state_dir.path()));
-        assert_matches!(
-            result,
-            InitError::DbError(Error::Db(rusqlite::Error::SqliteFailure(_, _)))
-        );
+        assert_matches!(result, InitError::Io(_));
+    }
+
+    #[rstest]
+    fn test_load_errors_on_missing_state_file(temp_dir: TempDir) {
+        let result = assert_err!(State::load(temp_dir.path()));
+        assert_matches!(result, InitError::Missing(_));
     }
 
     #[rstest]
