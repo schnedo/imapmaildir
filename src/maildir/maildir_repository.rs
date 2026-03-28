@@ -1,7 +1,7 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, io, path::Path};
 use thiserror::Error;
 
-use log::{info, trace};
+use log::{info, trace, warn};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -44,16 +44,28 @@ impl MaildirRepository {
         Ok(Self::new(mail, state))
     }
 
-    pub fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, ()> {
+    pub fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, LoadError> {
         match (State::load(state_dir), Maildir::load(mail_dir)) {
             (Ok(state), Ok(mail)) => {
                 let repo = Self::new(mail, state);
 
                 Ok(repo)
             }
-            (Ok(_), Err(_)) => todo!("missing maildir for existing state"),
-            (Err(_), Ok(_)) => todo!("missing state for existing maildir"),
-            (Err(_), Err(_)) => Err(()),
+            (Err(state::InitError::Missing(_)), Err(maildir::LoadError::Missing(_))) => {
+                Err(LoadError::Uninitialized)
+            }
+            (Ok(_), Err(maildir_error)) => match maildir_error {
+                maildir::LoadError::Missing(_) => {
+                    warn!(
+                        "encountered missing maildir for existing state. Reinitilizing state and maildir..."
+                    );
+                    State::remove_from(state_dir)?;
+
+                    Err(LoadError::Uninitialized)
+                }
+                e => Err(LoadError::Maildir(e)),
+            },
+            (Err(e), _) => Err(LoadError::State(e)),
         }
     }
 
@@ -275,6 +287,24 @@ impl From<state::InitError> for InitError {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum LoadError {
+    #[error("No maildir repository present")]
+    Uninitialized,
+    #[error("IO error during loading of maildir repository")]
+    Io(io::Error),
+    #[error("{0}")]
+    Maildir(maildir::LoadError),
+    #[error("{0}")]
+    State(state::InitError),
+}
+
+impl From<io::Error> for LoadError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -314,6 +344,29 @@ mod tests {
         builder.highest_modseq(highest_modseq);
 
         assert_ok!(builder.build())
+    }
+
+    struct TestMaildirRepository {
+        repo: MaildirRepository,
+        mail_dir: TempDir,
+        state_dir: TempDir,
+    }
+
+    #[fixture]
+    fn repo(
+        mailbox_metadata: MailboxMetadata,
+        mail_dir: TempDir,
+        state_dir: TempDir,
+    ) -> TestMaildirRepository {
+        TestMaildirRepository {
+            repo: assert_ok!(MaildirRepository::try_init(
+                &mailbox_metadata,
+                mail_dir.path(),
+                state_dir.path()
+            )),
+            mail_dir,
+            state_dir,
+        }
     }
 
     #[rstest]
@@ -363,5 +416,13 @@ mod tests {
             MaildirRepository::try_init(&mailbox_metadata, mail_dir.path(), state_dir.path());
         let result = assert_err!(result);
         assert_matches!(result, InitError::State(_));
+    }
+
+    #[rstest]
+    fn test_load_works_correct_on_existing_repository(repo: TestMaildirRepository) {
+        assert_ok!(MaildirRepository::load(
+            repo.mail_dir.path(),
+            repo.state_dir.path()
+        ));
     }
 }
