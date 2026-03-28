@@ -61,11 +61,25 @@ impl Maildir {
         let mail = Self::unchecked(mail_dir);
         trace!("loading maildir {mail:?}");
         match (
+            // todo: this should check for directories (.metadata().is_dir), not just existence
             mail.new.try_exists(),
             mail.cur.try_exists(),
             mail.tmp.try_exists(),
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
+            (Ok(new_exists), Ok(true), Ok(tmp_exists)) => {
+                warn!(
+                    "Found partially existing maildir with intact \"cur\" directory. Recreating \"tmp\" and \"new\"..."
+                );
+                if !new_exists && let Err(e) = fs::create_dir(&mail.new) {
+                    return Err(LoadError::Io(mail_dir.to_path_buf(), e.kind()));
+                }
+                if !tmp_exists && let Err(e) = fs::create_dir(&mail.tmp) {
+                    return Err(LoadError::Io(mail_dir.to_path_buf(), e.kind()));
+                }
+
+                Ok(mail)
+            }
             (Ok(false), Ok(false), Ok(false)) => Err(LoadError::Missing(mail_dir)),
             (Ok(_), Ok(_), Ok(_)) => Err(LoadError::Partial(mail_dir)),
             (Err(e), _, _) => Err(LoadError::Io(mail.new, e.kind())),
@@ -367,12 +381,20 @@ mod tests {
     #[rstest]
     fn test_load_errors_on_partial_existing_dir(
         temp_dir: TempDir,
-        #[values("cur", "tmp", "new")] dir: &str,
+        #[values("tmp", "new")] dir: &str,
     ) {
         let maildir_path = temp_dir.path();
         assert_ok!(fs::create_dir(maildir_path.join(dir)));
 
         assert_matches!(Maildir::load(maildir_path), Err(LoadError::Partial(_)));
+    }
+
+    #[rstest]
+    fn test_load_recreates_tmp_and_cur_if_missing(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        assert_ok!(fs::create_dir(maildir_path.join("cur")));
+
+        assert_ok!(Maildir::load(maildir_path));
     }
 
     #[rstest]
