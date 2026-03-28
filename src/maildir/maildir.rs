@@ -25,9 +25,9 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn try_init(mail_dir: &Path) -> Result<Self, InitError<'_>> {
+    pub fn try_init(mail_dir: &Path) -> Result<Self, InitError> {
         match Self::load(mail_dir) {
-            Ok(_) | Err(LoadError::Partial(_)) => Err(InitError::Exists(mail_dir)),
+            Ok(_) | Err(LoadError::Partial(_)) => Err(InitError::Exists(mail_dir.to_path_buf())),
             Err(LoadError::Io(path, kind)) => Err(InitError::Io(path, kind)),
             Err(_) => {
                 info!("creating maildir in {:#}", mail_dir.display());
@@ -227,9 +227,9 @@ pub enum LoadError<'a> {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum InitError<'a> {
+pub enum InitError {
     #[error("Found preexisting cur, tmp and/or new directories at {0}")]
-    Exists(&'a Path),
+    Exists(PathBuf),
     #[error("IO error during creation of maildir directory at {0}: {1}")]
     Io(PathBuf, io::ErrorKind),
 }
