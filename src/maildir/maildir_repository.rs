@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_load_works_correct_on_existing_repository(repo: TestMaildirRepository) {
+    fn test_load_loads_repo_on_existing_repository(repo: TestMaildirRepository) {
         assert_ok!(MaildirRepository::load(
             repo.mail_dir.path(),
             repo.state_dir.path()
