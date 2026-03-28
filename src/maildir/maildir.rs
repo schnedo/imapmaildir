@@ -34,19 +34,17 @@ impl Maildir {
                 let mut builder = DirBuilder::new();
                 builder.recursive(true).mode(0o700);
 
-                let tmp = mail_dir.join("tmp");
-                let new = mail_dir.join("new");
-                let cur = mail_dir.join("cur");
+                let unchecked = Self::unchecked(mail_dir);
 
                 match (
-                    builder.create(tmp.as_path()),
-                    builder.create(new.as_path()),
-                    builder.create(cur.as_path()),
+                    builder.create(unchecked.tmp.as_path()),
+                    builder.create(unchecked.new.as_path()),
+                    builder.create(unchecked.cur.as_path()),
                 ) {
-                    (Ok(()), Ok(()), Ok(())) => Ok(Self { new, cur, tmp }),
-                    (Err(e), _, _) => Err(InitError::Io(tmp, e.kind())),
-                    (_, Err(e), _) => Err(InitError::Io(new, e.kind())),
-                    (_, _, Err(e)) => Err(InitError::Io(cur, e.kind())),
+                    (Ok(()), Ok(()), Ok(())) => Ok(unchecked),
+                    (Err(e), _, _) => Err(InitError::Io(unchecked.tmp, e.kind())),
+                    (_, Err(e), _) => Err(InitError::Io(unchecked.new, e.kind())),
+                    (_, _, Err(e)) => Err(InitError::Io(unchecked.cur, e.kind())),
                 }
             }
         }
