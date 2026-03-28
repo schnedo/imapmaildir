@@ -160,7 +160,8 @@ impl Syncer {
         let mut selection = client.select(task_tx.clone(), mailbox).await;
 
         let maildir_repository =
-            MaildirRepository::init(&selection.mailbox_data, mail_dir, state_dir);
+            MaildirRepository::try_init(&selection.mailbox_data, mail_dir, state_dir)
+                .expect("initializing maildir repository should succeed");
         Self::setup_task_processing(maildir_repository, task_rx);
         selection.client.fetch_all().await;
         task_tx
