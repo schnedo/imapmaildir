@@ -347,6 +347,7 @@ mod tests {
     }
 
     struct TestMaildirRepository {
+        #[expect(unused)]
         repo: MaildirRepository,
         mail_dir: TempDir,
         state_dir: TempDir,
