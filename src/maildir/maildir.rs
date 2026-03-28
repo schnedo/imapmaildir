@@ -57,7 +57,7 @@ impl Maildir {
         Self { new, cur, tmp }
     }
 
-    pub fn load(mail_dir: &Path) -> Result<Self, LoadError<'_>> {
+    pub fn load(mail_dir: &Path) -> Result<Self, LoadError> {
         let mail = Self::unchecked(mail_dir);
         trace!("loading maildir {mail:?}");
         match (
@@ -80,8 +80,9 @@ impl Maildir {
 
                 Ok(mail)
             }
-            (Ok(false), Ok(false), Ok(false)) => Err(LoadError::Missing(mail_dir)),
-            (Ok(_), Ok(_), Ok(_)) => Err(LoadError::Partial(mail_dir)),
+            (Ok(false), Ok(false), Ok(false)) => Err(LoadError::Missing(mail_dir.to_path_buf())),
+            // todo: could probably repair this if new and tmp are empty dirs/files
+            (Ok(_), Ok(_), Ok(_)) => Err(LoadError::Partial(mail_dir.to_path_buf())),
             (Err(e), _, _) => Err(LoadError::Io(mail.new, e.kind())),
             (_, Err(e), _) => Err(LoadError::Io(mail.cur, e.kind())),
             (_, _, Err(e)) => Err(LoadError::Io(mail.tmp, e.kind())),
@@ -229,11 +230,11 @@ impl Maildir {
 }
 
 #[derive(Debug, Error, PartialEq)]
-pub enum LoadError<'a> {
+pub enum LoadError {
     #[error("Found partially existing maildir at {0}")]
-    Partial(&'a Path),
+    Partial(PathBuf),
     #[error("No maildir found at {0}")]
-    Missing(&'a Path),
+    Missing(PathBuf),
     #[error("IO error during loading of maildir directory at {0}: {1}")]
     Io(PathBuf, io::ErrorKind),
 }
