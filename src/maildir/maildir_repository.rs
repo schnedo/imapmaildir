@@ -307,7 +307,7 @@ impl From<io::Error> for LoadError {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     use assertables::*;
     use rstest::*;
@@ -425,5 +425,26 @@ mod tests {
             repo.mail_dir.path(),
             repo.state_dir.path()
         ));
+    }
+
+    #[rstest]
+    fn test_load_errors_with_uninitialized_on_empty_dirs(mail_dir: TempDir, state_dir: TempDir) {
+        let result = assert_err!(MaildirRepository::load(mail_dir.path(), state_dir.path()));
+
+        assert_matches!(result, LoadError::Uninitialized);
+    }
+
+    #[rstest]
+    fn test_load_propagates_maildir_error(repo: TestMaildirRepository) {
+        let mut permissions = assert_ok!(repo.mail_dir.path().metadata()).permissions();
+        permissions.set_mode(0o200);
+        assert_ok!(fs::set_permissions(repo.mail_dir.path(), permissions));
+
+        let result = assert_err!(MaildirRepository::load(
+            repo.mail_dir.path(),
+            repo.state_dir.path()
+        ));
+
+        assert_matches!(result, LoadError::Maildir(_));
     }
 }
