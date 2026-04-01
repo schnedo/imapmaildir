@@ -62,7 +62,7 @@ impl Connection {
                             imap_proto::Response::Done { tag, status, code, information } => {
                                 trace!("{tag:?} {status:?} {code:?}");
                                 if let Some(information) = information {
-                                    debug!("Bad response information: {information}");
+                                    debug!("Done response information: {information}");
                                 }
                                 match status {
                                     imap_proto::Status::Ok => {
