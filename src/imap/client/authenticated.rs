@@ -51,7 +51,6 @@ impl AuthenticatedClient {
         self.do_select(task_tx, &command, None).await
     }
 
-    // todo: add optional qresync parameters
     pub async fn qresync_select(
         mut self,
         task_tx: mpsc::Sender<Task>,
