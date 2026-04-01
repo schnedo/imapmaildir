@@ -98,6 +98,7 @@ impl Client {
                 debug!("LOGIN <user> <password>");
                 let response = self
                     .connection
+                    // todo: this will block if server sends untagged response
                     .send(
                         format!(
                             "LOGIN {} {}",
