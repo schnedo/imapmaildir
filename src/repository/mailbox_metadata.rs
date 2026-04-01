@@ -1,3 +1,7 @@
+use std::fmt::Display;
+
+use thiserror::Error;
+
 use crate::repository::{ModSeq, UidValidity};
 
 #[derive(Debug)]
@@ -23,13 +27,23 @@ pub struct MailboxMetadataBuilder {
 }
 
 impl MailboxMetadataBuilder {
-    pub fn build(self) -> Result<MailboxMetadata, &'static str> {
+    pub fn build(self) -> Result<MailboxMetadata, MailboxMetadataBuilderError> {
         match (self.uid_validity, self.highest_modseq) {
             (Some(uid_validity), Some(highest_modseq)) => Ok(MailboxMetadata {
                 uid_validity,
                 highest_modseq,
             }),
-            _ => Err("not all required fields present"),
+            (uid_validity_opt, highest_modseq_opt) => {
+                let mut missing_fields = Vec::new();
+                if uid_validity_opt.is_none() {
+                    missing_fields.push("uid_validity".into());
+                }
+                if highest_modseq_opt.is_none() {
+                    missing_fields.push("highest_modseq".into());
+                }
+
+                Err(MailboxMetadataBuilderError { missing_fields })
+            }
         }
     }
     pub fn uid_validity(&mut self, uid_validity: UidValidity) {
@@ -38,6 +52,22 @@ impl MailboxMetadataBuilder {
 
     pub fn highest_modseq(&mut self, highest_modseq: ModSeq) {
         self.highest_modseq = Some(highest_modseq);
+    }
+}
+
+#[derive(Debug, Error)]
+pub struct MailboxMetadataBuilderError {
+    missing_fields: Vec<String>,
+}
+
+impl Display for MailboxMetadataBuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        "Missing fields: ".fmt(f)?;
+        for field in &self.missing_fields {
+            field.fmt(f)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -75,12 +105,16 @@ mod tests {
         highest_modseq: ModSeq,
     ) {
         let builder = MailboxMetadataBuilder::default();
-        assert_err!(builder.build());
+        let err = assert_err!(builder.build());
+        assert_in!("uid_validity".into(), err.missing_fields);
+        assert_in!("highest_modseq".into(), err.missing_fields);
         let mut builder = MailboxMetadataBuilder::default();
         builder.highest_modseq(highest_modseq);
-        assert_err!(builder.build());
+        let err = assert_err!(builder.build());
+        assert_in!("uid_validity".into(), err.missing_fields);
         let mut builder = MailboxMetadataBuilder::default();
         builder.uid_validity(uid_validity);
-        assert_err!(builder.build());
+        let err = assert_err!(builder.build());
+        assert_in!("highest_modseq".into(), err.missing_fields);
     }
 }
