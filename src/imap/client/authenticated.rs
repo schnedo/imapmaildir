@@ -78,18 +78,16 @@ impl AuthenticatedClient {
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {
         debug!("{command}");
-        self.connection
-            .send(command.into())
-            .await
-            .expect("selecting a mailbox should succeed");
 
-        let mut new_mailbox = MailboxMetadataBuilder::default();
+        let (send_done_tx, mut send_done_rx) = mpsc::channel::<()>(1);
+        let receive_handle = tokio::spawn(async move {
+            trace!("running receive task for select response");
+            let mut new_mailbox = MailboxMetadataBuilder::default();
 
-        let mut updates: Vec<RemoteMailMetadata> = Vec::new();
-        let mut deletions = None;
+            let mut updates: Vec<RemoteMailMetadata> = Vec::new();
+            let mut deletions = None;
 
-        while let Ok(response) = self.untagged_response_receiver.try_recv() {
-            match response.parsed() {
+            let mut handle_response = |response: ResponseData| match response.parsed() {
                 imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
                     imap_proto::MailboxDatum::Exists(exists) => {
                         trace!("not handling MailboxData response Exists {exists:?}");
@@ -202,19 +200,53 @@ impl AuthenticatedClient {
                     warn!("ignoring unknown response to SELECT");
                     trace!("{:?}", response.parsed());
                 }
+            };
+            loop {
+                tokio::select! {
+                    None = send_done_rx.recv() => {
+                        break;
+                    }
+                    Some(response) = self.untagged_response_receiver.recv() => {
+                        handle_response(response);
+                    }
+                }
             }
-        }
+            while !self.untagged_response_receiver.is_empty()
+                && let Some(response) = self.untagged_response_receiver.recv().await
+            {
+                handle_response(response);
+            }
 
-        let mailbox_data = new_mailbox
-            .build()
-            .expect("mailbox data should be all available at this point");
-        trace!("selected_mailbox = {mailbox_data:?}");
-        trace!("mail updates = {updates:?}");
-        trace!("mail deletions = {deletions:?}");
+            let mailbox_data = new_mailbox
+                .build()
+                .expect("mailbox data should be all available at this point");
+            trace!("selected_mailbox = {mailbox_data:?}");
+            trace!("mail updates = {updates:?}");
+            trace!("mail deletions = {deletions:?}");
+
+            (
+                updates,
+                deletions,
+                mailbox_data,
+                self.capabilities,
+                self.untagged_response_receiver,
+            )
+        });
+
+        self.connection
+            .send(command.into())
+            .await
+            .expect("selecting a mailbox should succeed");
+        drop(send_done_tx);
+        let (updates, deletions, mailbox_data, capabilities, untagged_response_receiver) =
+            receive_handle
+                .await
+                .expect("waiting for receive task should succeed");
+
         let client = SelectedClient::new(
             self.connection,
-            &self.capabilities,
-            self.untagged_response_receiver,
+            &capabilities,
+            untagged_response_receiver,
             task_tx,
         );
 
