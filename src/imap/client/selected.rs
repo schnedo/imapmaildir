@@ -10,25 +10,10 @@ use crate::{
         client::capability::{Capabilities, Capability},
         transport::{Connection, ResponseData},
     },
-    maildir::{LocalMail, LocalMailMetadata},
+    maildir::{LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
     sync::Task,
 };
-
-pub struct StoredMailInfo {
-    metadata: LocalMailMetadata,
-    uid: Uid,
-}
-
-impl StoredMailInfo {
-    pub fn new(metadata: LocalMailMetadata, uid: Uid) -> Self {
-        Self { metadata, uid }
-    }
-
-    pub fn unpack(self) -> (LocalMailMetadata, Uid) {
-        (self.metadata, self.uid)
-    }
-}
 
 #[derive(Debug)]
 pub struct SelectedClient {
@@ -161,7 +146,7 @@ impl SelectedClient {
         &mut self,
         mailbox: &str,
         mut mails: impl Iterator<Item = LocalMail>,
-    ) -> mpsc::Receiver<StoredMailInfo> {
+    ) -> mpsc::Receiver<(Uid, NewLocalMailMetadata)> {
         let (info_tx, mut info_rx) = mpsc::channel(32);
         if let Some(mail) = mails.next() {
             let command = format!("APPEND {mailbox}");
@@ -196,7 +181,6 @@ impl SelectedClient {
                                 .into_iter()
                                 .flat_map(SequenceRange::into_iter)
                                 .zip(metadatas.into_iter())
-                                .map(|(uid, metadata)| StoredMailInfo::new(metadata, uid))
                                 .map(|info| info_tx.send(info)),
                         )
                         .await
@@ -262,7 +246,7 @@ impl SelectedClient {
 }
 
 impl LocalMail {
-    fn append_to(self, command: &mut Vec<u8>) -> LocalMailMetadata {
+    fn append_to(self, command: &mut Vec<u8>) -> NewLocalMailMetadata {
         if let Some(flags) = Flag::format(self.metadata().flags()) {
             write!(command, " ({flags})")
                 .expect("appending formatted flags to APPEND command should succeed");

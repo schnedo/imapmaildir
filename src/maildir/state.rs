@@ -18,7 +18,7 @@ use tokio::sync::{
 };
 
 use crate::{
-    maildir::LocalMailMetadata,
+    maildir::{LocalMailMetadata, MaildirFile as _},
     repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
 };
 
@@ -158,17 +158,14 @@ impl State {
         trace!("updating mail cache {data:?}");
         let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
-        stmt.execute((
-            data.flags().bits(),
-            u32::from(data.uid().ok_or(Error::Conversion)?),
-        ))?;
+        stmt.execute((data.flags().bits(), u32::from(data.uid())))?;
 
         Ok(())
     }
 
     pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("storing mail cache {data:?}");
-        let uid = data.uid().ok_or(Error::Conversion)?;
+        let uid = data.uid();
         let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")?;
@@ -233,8 +230,15 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
     type Error = rusqlite::Error;
 
     fn try_from(value: &Row) -> Result<Self, Self::Error> {
-        let uid: u32 = value.get(0)?;
-        let uid = Uid::try_from(uid).ok();
+        let uid_column = 0;
+        let uid: u32 = value.get(uid_column)?;
+        let uid = Uid::try_from(uid).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                uid_column,
+                rusqlite::types::Type::Integer,
+                Box::new(e),
+            )
+        })?;
         let flags = Flag::from_bits_truncate(value.get(1)?);
         Ok(Self::new(uid, flags, value.get(2)?))
     }
@@ -379,7 +383,7 @@ mod tests {
     #[fixture]
     fn metadata() -> LocalMailMetadata {
         LocalMailMetadata::new(
-            Some(assert_ok!(Uid::try_from(3))),
+            assert_ok!(Uid::try_from(3)),
             Flag::all(),
             Some("prefix".to_string()),
         )
@@ -510,13 +514,9 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
-        assert_none!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_ok!(state.state.store(&metadata).await);
-        let stored = assert_some!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
 
@@ -528,9 +528,7 @@ mod tests {
         assert_ne!(flags, metadata.flags());
         metadata.set_flags(flags);
         assert_ok!(state.state.update(&metadata).await);
-        let stored = assert_some!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
 
@@ -538,27 +536,19 @@ mod tests {
     #[tokio::test]
     async fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata).await);
-        assert_some!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
-        assert_ok!(state.state.delete_by_id(assert_some!(metadata.uid())).await);
-        assert_none!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
+        assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_ok!(state.state.delete_by_id(metadata.uid()).await);
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
     }
 
     #[rstest]
     #[tokio::test]
-    async fn test_get_all_gets_all_stored_data(state: TestState, mut metadata: LocalMailMetadata) {
+    async fn test_get_all_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata).await);
-        let stored_first = assert_some!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
-        metadata.set_uid(assert_ok!(Uid::try_from(9)));
+        let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        let metadata = metadata.set_uid(assert_ok!(Uid::try_from(9)));
         assert_ok!(state.state.store(&metadata).await);
-        let stored_second = assert_some!(assert_ok!(
-            state.state.get_by_id(assert_some!(metadata.uid())).await
-        ));
+        let stored_second = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
 
         let (tx, mut rx) = mpsc::channel(32);
         assert_ok!(state.state.get_all(tx).await);

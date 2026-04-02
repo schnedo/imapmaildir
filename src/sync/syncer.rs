@@ -86,9 +86,8 @@ impl Syncer {
         } = local_changes;
         let mut mailinfos = client.store(mailbox, news.into_iter()).await;
         // todo: parallelize these
-        while let Some(info) = mailinfos.recv().await {
-            let (mut metadata, uid) = info.unpack();
-            maildir_repository.add_synced(&mut metadata, uid).await;
+        while let Some((uid, metadata)) = mailinfos.recv().await {
+            maildir_repository.add_synced(metadata, uid).await;
         }
         let updates = updates.build();
         for (flag, sequence_set) in updates.removed_flags() {

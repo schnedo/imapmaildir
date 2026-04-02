@@ -8,6 +8,7 @@ pub use local_changes::LocalChanges;
 pub use local_changes::LocalFlagChangesBuilder;
 pub use local_mail::LocalMail;
 pub use local_mail::LocalMailMetadata;
+pub use local_mail::NewLocalMailMetadata;
 pub use maildir::Maildir;
+pub use maildir::MaildirFile;
 pub use maildir_repository::MaildirRepository;
-

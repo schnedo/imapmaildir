@@ -4,6 +4,7 @@ use std::{
     io::{self, Write},
     os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use enumflags2::BitFlags;
@@ -12,9 +13,20 @@ use thiserror::Error;
 
 use crate::{
     imap::RemoteMail,
-    maildir::{LocalMail, LocalMailMetadata, local_mail::ParseLocalMailMetadataError},
+    maildir::{
+        LocalMailMetadata,
+        local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
+    },
     repository::{Flag, Uid},
 };
+
+pub trait MaildirFile {
+    fn filename(&self) -> String;
+    fn set_uid(self, uid: Uid) -> LocalMailMetadata;
+    fn uid(&self) -> Uid;
+    fn flags(&self) -> BitFlags<Flag>;
+    fn set_flags(&mut self, flags: BitFlags<Flag>);
+}
 
 // todo: check if Arc covers clone use case
 #[derive(Debug, Clone)]
@@ -113,9 +125,8 @@ impl Maildir {
 
     pub fn list_cur(
         &self,
-    ) -> io::Result<
-        impl Iterator<Item = Result<LocalMailMetadata, MaildirListError>> + Debug + 'static,
-    > {
+    ) -> io::Result<impl Iterator<Item = Result<MaildirEntry, MaildirListError>> + Debug + 'static>
+    {
         let dir_contents = read_dir(self.cur.as_path())?;
         Ok(dir_contents.map(|entry| {
             let entry = entry.map_err(|e| MaildirListError::Io(e.kind()))?;
@@ -131,14 +142,11 @@ impl Maildir {
         }))
     }
 
-    pub fn read(&self, metadata: LocalMailMetadata) -> io::Result<LocalMail> {
-        Ok(LocalMail::new(
-            fs::read(self.get_path_of(&metadata))?,
-            metadata,
-        ))
+    pub fn read_content(&self, metadata: &impl MaildirFile) -> io::Result<Vec<u8>> {
+        fs::read(self.get_path_of(metadata))
     }
 
-    fn get_path_of(&self, mail: &LocalMailMetadata) -> PathBuf {
+    fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
         self.cur.join(mail.filename())
     }
 
@@ -187,24 +195,25 @@ impl Maildir {
 
     pub fn update_uid(
         &self,
-        entry: &mut LocalMailMetadata,
+        entry: impl MaildirFile,
         new_uid: Uid,
-    ) -> Result<(), MaildirError> {
-        let current_mail = self.get_path_of(entry);
-        entry.set_uid(new_uid);
-        let new_mail = self.get_path_of(entry);
+    ) -> Result<LocalMailMetadata, MaildirError> {
+        let current_mail = self.get_path_of(&entry);
+        let entry = entry.set_uid(new_uid);
+        let new_mail = self.get_path_of(&entry);
+        Self::rename(current_mail, new_mail)?;
 
-        Self::rename(current_mail, new_mail)
+        Ok(entry)
     }
 
     pub fn update_flags(
         &self,
-        entry: &mut LocalMailMetadata,
+        entry: &mut impl MaildirFile,
         new_flags: BitFlags<Flag>,
     ) -> Result<(), MaildirError> {
         debug!(
             "updating mail {} flags: {} -> {}",
-            entry.uid().map_or(String::new(), |uid| uid.to_string()),
+            entry.uid(),
             entry.flags(),
             new_flags
         );
@@ -215,8 +224,8 @@ impl Maildir {
         Self::rename(current_mail, new_mail)
     }
 
-    pub fn delete(&self, entry: &LocalMailMetadata) -> io::Result<()> {
-        let file_path = self.cur.join(entry.filename());
+    pub fn delete(&self, entry: &impl MaildirFile) -> io::Result<()> {
+        let file_path = self.get_path_of(entry);
         trace!("deleting {}", file_path.display());
         remove_file(&file_path).or_else(|e| {
             if let std::io::ErrorKind::NotFound = e.kind() {
@@ -273,6 +282,36 @@ impl From<io::Error> for MaildirError {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub enum MaildirEntry {
+    New(NewLocalMailMetadata),
+    MaybeTracked(LocalMailMetadata),
+}
+
+// impl MaildirFile for MaildirEntry {
+//     fn filename(&self) -> String {
+//         match self {
+//             MaildirEntry::New(new_local_mail_metadata) => new_local_mail_metadata.filename(),
+//             MaildirEntry::MaybeTracked(local_mail_metadata) => local_mail_metadata.filename(),
+//         }
+//     }
+// }
+
+impl FromStr for MaildirEntry {
+    type Err = ParseLocalMailMetadataError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match (
+            LocalMailMetadata::from_str(s),
+            NewLocalMailMetadata::from_str(s),
+        ) {
+            (Ok(metadata), _) => Ok(Self::MaybeTracked(metadata)),
+            (_, Ok(metadata)) => Ok(Self::New(metadata)),
+            (Err(_), Err(_)) => unreachable!(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -288,6 +327,7 @@ mod tests {
 
     use crate::{
         imap::{RemoteContent, RemoteMailMetadata},
+        maildir::LocalMail,
         repository::ModSeq,
     };
 
@@ -323,7 +363,7 @@ mod tests {
     fn local_mail() -> LocalMail {
         LocalMail::new(
             "foo".into(),
-            LocalMailMetadata::new(Some(Uid::MAX), Flag::all(), Some("prefix".to_string())),
+            NewLocalMailMetadata::new(Flag::all(), "prefix".to_string()),
         )
     }
 
@@ -416,7 +456,7 @@ mod tests {
 
         let result = assert_ok!(maildir.store(&new_mail));
         let expected = LocalMailMetadata::new(
-            Some(new_mail.metadata().uid()),
+            new_mail.metadata().uid(),
             new_mail.metadata().flags(),
             Some(result.fileprefix().to_string()),
         );
@@ -443,16 +483,25 @@ mod tests {
     #[rstest]
     fn test_list_cur_lists_all_mails(maildir: TestMaildir) {
         let maildir = maildir.maildir;
-        let mail1 =
-            LocalMailMetadata::new(Uid::try_from(&1).ok(), Flag::all(), Some("1".to_string()));
+        let mail1 = LocalMailMetadata::new(
+            assert_ok!(Uid::try_from(&1)),
+            Flag::all(),
+            Some("1".to_string()),
+        );
         let mail1_path = maildir.cur.join(mail1.filename());
         assert_ok!(fs::write(mail1_path, "1"));
-        let mail2 =
-            LocalMailMetadata::new(Uid::try_from(&2).ok(), Flag::all(), Some("2".to_string()));
+        let mail2 = LocalMailMetadata::new(
+            assert_ok!(Uid::try_from(&2)),
+            Flag::all(),
+            Some("2".to_string()),
+        );
         let mail2_path = maildir.cur.join(mail2.filename());
         assert_ok!(fs::write(mail2_path, "2"));
 
-        let expected = HashSet::from([mail1, mail2]);
+        let expected = HashSet::from([
+            MaildirEntry::MaybeTracked(mail1),
+            MaildirEntry::MaybeTracked(mail2),
+        ]);
         let result: Result<HashSet<_>, _> = assert_ok!(maildir.list_cur()).collect();
         let result = assert_ok!(result);
 
@@ -471,13 +520,15 @@ mod tests {
     }
 
     #[rstest]
-    fn test_list_cur_errors_on_unparsable_filename(maildir: TestMaildir) {
+    fn test_list_cur_handles_unstructured_filename(maildir: TestMaildir) {
         let maildir = maildir.maildir;
-        assert_ok!(fs::write(maildir.cur.join("asfdasdofj"), ""));
+        let filename = "asfdasdofj";
+        assert_ok!(fs::write(maildir.cur.join(filename), ""));
 
-        let expected: Vec<Result<LocalMailMetadata, _>> = vec![Err(
-            MaildirListError::ParseFilename("filename should contain :2,".to_string()),
-        )];
+        let expected: Vec<Result<_, _>> = vec![Ok(MaildirEntry::New(NewLocalMailMetadata::new(
+            Flag::Seen.into(),
+            filename.into(),
+        )))];
         let result: Vec<_> = assert_ok!(maildir.list_cur()).collect();
 
         assert_eq!(result, expected);
@@ -503,12 +554,9 @@ mod tests {
             maildir.cur.join(metadata.filename()),
             &expected_content
         ));
-        let expected_metadata = metadata.clone();
 
-        let result = assert_ok!(maildir.read(metadata));
-        let (metadata, content) = result.unpack();
-        assert_eq!(metadata, expected_metadata);
-        assert_eq!(content, expected_content);
+        let result = assert_ok!(maildir.read_content(&metadata));
+        assert_eq!(result, expected_content);
     }
 
     #[rstest]
@@ -516,7 +564,7 @@ mod tests {
         let maildir = maildir.maildir;
         let (metadata, _) = local_mail.unpack();
 
-        let result = assert_err!(maildir.read(metadata));
+        let result = assert_err!(maildir.read_content(&metadata));
         assert_matches!(result, io::Error { .. });
     }
 
@@ -626,13 +674,13 @@ mod tests {
     #[rstest]
     fn test_update_uid_updates_uid(maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
-        let (mut entry, content) = local_mail.unpack();
+        let (entry, content) = local_mail.unpack();
         assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
 
         let expected_uid = assert_ok!(Uid::try_from(&3));
-        assert_ok!(maildir.update_uid(&mut entry, expected_uid));
+        let entry = assert_ok!(maildir.update_uid(entry, expected_uid));
 
-        let result_uid = assert_some!(entry.uid());
+        let result_uid = entry.uid();
         assert_eq!(result_uid, expected_uid);
         assert!(maildir.cur.join(entry.filename()).exists());
     }
