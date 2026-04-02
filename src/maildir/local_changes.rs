@@ -109,7 +109,7 @@ mod tests {
     use enumflags2::BitFlags;
     use rstest::*;
 
-    use crate::maildir::LocalMailMetadata;
+    use crate::maildir::NewLocalMailMetadata;
 
     use super::*;
 
@@ -193,8 +193,7 @@ mod tests {
         let highest_modseq = assert_ok!(ModSeq::try_from(9));
         let deletions = vec![Uid::MAX];
         let flags = BitFlags::all();
-        let metadata =
-            LocalMailMetadata::new(Uid::try_from(&3).ok(), flags, Some("prefix".to_string()));
+        let metadata = NewLocalMailMetadata::new(flags, "prefix".to_string());
         let mail = LocalMail::new(Vec::new(), metadata);
         let news = vec![mail];
 

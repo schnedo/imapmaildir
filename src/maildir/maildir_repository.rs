@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
-        LocalChanges, LocalFlagChangesBuilder, LocalMailMetadata,
-        maildir::{self, MaildirError},
+        LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata, NewLocalMailMetadata,
+        maildir::{self, MaildirError, MaildirFile},
         state::{self, State},
     },
     repository::{MailboxMetadata, ModSeq, Uid, UidValidity},
@@ -167,13 +167,18 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn add_synced(&self, mail_metadata: &mut LocalMailMetadata, new_uid: Uid) {
-        info!("adding {new_uid} to newly synced mail");
-        self.maildir
-            .update_uid(mail_metadata, new_uid)
+    pub async fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) {
+        info!(
+            "adding {} to newly synced mail {}",
+            mail_metadata.uid(),
+            mail_metadata.filename()
+        );
+        let mail_metadata = self
+            .maildir
+            .update_uid(mail_metadata, uid)
             .expect("updating maildir with newly synced mail should succeed");
         self.state
-            .store(mail_metadata)
+            .store(&mail_metadata)
             .await
             .expect("storing data should succeed");
     }
@@ -199,7 +204,7 @@ impl MaildirRepository {
     }
 
     pub async fn detect_changes(&self) -> LocalChanges {
-        let mut news = Vec::new();
+        let mut news: Vec<LocalMail> = Vec::new();
         let maildir_metadata = self
             .maildir
             .list_cur()
@@ -209,14 +214,17 @@ impl MaildirRepository {
 
         for metadata in maildir_metadata {
             let metadata = metadata.expect("file in cur should be readable");
-            if let Some(uid) = metadata.uid() {
-                maildir_mails.insert(uid, metadata);
-            } else {
-                news.push(
-                    self.maildir
-                        .read(metadata)
-                        .expect("mail contents should be readable"),
-                );
+            match metadata {
+                maildir::MaildirEntry::New(new_local_mail_metadata) => {
+                    let content = self
+                        .maildir
+                        .read_content(&new_local_mail_metadata)
+                        .expect("reading mail content should succeed");
+                    news.push(LocalMail::new(content, new_local_mail_metadata));
+                }
+                maildir::MaildirEntry::MaybeTracked(local_mail_metadata) => {
+                    maildir_mails.insert(local_mail_metadata.uid(), local_mail_metadata);
+                }
             }
         }
 
@@ -225,7 +233,7 @@ impl MaildirRepository {
             let mut updates = LocalFlagChangesBuilder::default();
             let mut deletions = Vec::new();
             while let Some(entry) = all_entries_rx.recv().await {
-                let uid = entry.uid().expect("all mails in state should have a uid");
+                let uid = entry.uid();
                 if let Some(data) = maildir_mails.remove(&uid) {
                     let mut additional_flags = data.flags();
                     additional_flags.remove(entry.flags());
@@ -238,7 +246,7 @@ impl MaildirRepository {
                         updates.insert_removed(flag, uid);
                     }
                 } else {
-                    deletions.push(entry.uid().expect("uid should exist here"));
+                    deletions.push(entry.uid());
                 }
             }
 
@@ -254,11 +262,11 @@ impl MaildirRepository {
             .expect("building local updates should succeed");
         for maildata in maildir_mails.into_values() {
             // todo: return Iterator and chain here
-            news.push(
-                self.maildir
-                    .read(maildata)
-                    .expect("mail contents should be readable"),
-            );
+            let content = self
+                .maildir
+                .read_content(&maildata)
+                .expect("mail contents should be readable");
+            news.push(LocalMail::new(content, maildata.into()));
         }
 
         let changes = LocalChanges::new(highest_modseq, deletions, news, updates);

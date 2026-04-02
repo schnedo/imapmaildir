@@ -11,26 +11,27 @@ use thiserror::Error;
 
 use crate::{
     imap::RemoteMailMetadata,
+    maildir::maildir::MaildirFile,
     repository::{Flag, Uid},
 };
 
 #[derive(PartialEq, Clone)]
 pub struct LocalMail {
-    metadata: LocalMailMetadata,
+    metadata: NewLocalMailMetadata,
     // todo: consider streaming this
     content: Vec<u8>,
 }
 
 impl LocalMail {
-    pub fn new(content: Vec<u8>, metadata: LocalMailMetadata) -> Self {
+    pub fn new(content: Vec<u8>, metadata: NewLocalMailMetadata) -> Self {
         Self { metadata, content }
     }
 
-    pub fn metadata(&self) -> &LocalMailMetadata {
+    pub fn metadata(&self) -> &NewLocalMailMetadata {
         &self.metadata
     }
 
-    pub fn unpack(self) -> (LocalMailMetadata, Vec<u8>) {
+    pub fn unpack(self) -> (NewLocalMailMetadata, Vec<u8>) {
         (self.metadata, self.content)
     }
 }
@@ -44,9 +45,92 @@ impl Debug for LocalMail {
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct NewLocalMailMetadata {
+    // todo: add modseq to handle highest_modseq transactional
+    flags: BitFlags<Flag>,
+    // todo: Cow?
+    fileprefix: String,
+}
+
+impl NewLocalMailMetadata {
+    #[cfg(test)]
+    pub fn new(flags: BitFlags<Flag>, fileprefix: String) -> Self {
+        Self { flags, fileprefix }
+    }
+    fn string_flags(&self) -> String {
+        self.flags.iter().map(char::from).collect()
+    }
+}
+
+impl From<LocalMailMetadata> for NewLocalMailMetadata {
+    fn from(value: LocalMailMetadata) -> Self {
+        Self {
+            flags: value.flags,
+            fileprefix: value.fileprefix,
+        }
+    }
+}
+
+impl MaildirFile for NewLocalMailMetadata {
+    fn filename(&self) -> String {
+        self.to_string()
+    }
+
+    fn set_uid(self, uid: Uid) -> LocalMailMetadata {
+        LocalMailMetadata {
+            uid,
+            flags: self.flags,
+            fileprefix: self.fileprefix,
+        }
+    }
+
+    fn uid(&self) -> Uid {
+        todo!()
+    }
+
+    fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        self.flags = flags;
+    }
+}
+
+impl Display for NewLocalMailMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let string_flags = self.string_flags();
+        write!(f, "{}:2,{string_flags}", self.fileprefix)
+    }
+}
+
+impl FromStr for NewLocalMailMetadata {
+    type Err = ParseLocalMailMetadataError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((head, flags)) = s.rsplit_once(":2,")
+            && let Ok(flags) = flags
+                .chars()
+                .map(Flag::try_from)
+                .collect::<Result<BitFlags<Flag>, _>>()
+        {
+            Ok(Self {
+                flags,
+                fileprefix: head.into(),
+            })
+        } else {
+            Ok(Self {
+                flags: Flag::Seen.into(),
+                fileprefix: s.into(),
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
     // todo: different struct for new local mail that has no uid yet
-    uid: Option<Uid>,
+    uid: Uid,
     // todo: add modseq to handle highest_modseq transactional
     flags: BitFlags<Flag>,
     // todo: Cow?
@@ -54,7 +138,7 @@ pub struct LocalMailMetadata {
 }
 
 impl LocalMailMetadata {
-    pub fn new(uid: Option<Uid>, flags: BitFlags<Flag>, fileprefix: Option<String>) -> Self {
+    pub fn new(uid: Uid, flags: BitFlags<Flag>, fileprefix: Option<String>) -> Self {
         let fileprefix = fileprefix.unwrap_or_else(Self::generate_file_prefix);
 
         Self {
@@ -64,29 +148,8 @@ impl LocalMailMetadata {
         }
     }
 
-    // todo: consider allowing custom prefix/name for user provided mails in maildir
     pub fn fileprefix(&self) -> &str {
         &self.fileprefix
-    }
-
-    pub fn filename(&self) -> String {
-        self.to_string()
-    }
-
-    pub fn uid(&self) -> Option<Uid> {
-        self.uid
-    }
-
-    pub fn set_uid(&mut self, uid: Uid) {
-        self.uid = Some(uid);
-    }
-
-    pub fn flags(&self) -> BitFlags<Flag> {
-        self.flags
-    }
-
-    pub fn set_flags(&mut self, flags: BitFlags<Flag>) {
-        self.flags = flags;
     }
 
     fn generate_file_prefix() -> String {
@@ -106,14 +169,34 @@ impl LocalMailMetadata {
     }
 }
 
+impl MaildirFile for LocalMailMetadata {
+    fn filename(&self) -> String {
+        self.to_string()
+    }
+
+    fn set_uid(mut self, uid: Uid) -> LocalMailMetadata {
+        self.uid = uid;
+
+        self
+    }
+
+    fn uid(&self) -> Uid {
+        self.uid
+    }
+
+    fn flags(&self) -> BitFlags<Flag> {
+        self.flags
+    }
+
+    fn set_flags(&mut self, flags: BitFlags<Flag>) {
+        self.flags = flags;
+    }
+}
+
 impl Display for LocalMailMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let string_flags = self.string_flags();
-        if let Some(uid) = self.uid {
-            write!(f, "{},U={uid}:2,{string_flags}", self.fileprefix)
-        } else {
-            write!(f, "{}:2,{string_flags}", self.fileprefix)
-        }
+        write!(f, "{},U={}:2,{string_flags}", self.fileprefix, self.uid)
     }
 }
 
@@ -145,24 +228,18 @@ impl FromStr for LocalMailMetadata {
             })
             .collect();
         let flags = flags?;
-        if let Some((fileprefix, uid)) = head.rsplit_once(",U=") {
-            let uid = uid
-                .parse::<u32>()
-                .map_err(|_| ParseLocalMailMetadataError {
-                    message: "uid field should be u32",
-                })?
-                .try_into()
-                .ok();
+        if let Some((fileprefix, uid)) = head.rsplit_once(",U=")
+            && let Ok(uid) = u32::from_str(uid)
+            && let Ok(uid) = uid.try_into()
+        {
             Ok(Self {
                 uid,
                 flags,
                 fileprefix: fileprefix.to_string(),
             })
         } else {
-            Ok(Self {
-                uid: None,
-                flags,
-                fileprefix: head.to_string(),
+            Err(ParseLocalMailMetadataError {
+                message: "uid should be defined",
             })
         }
     }
@@ -170,7 +247,7 @@ impl FromStr for LocalMailMetadata {
 
 impl From<&RemoteMailMetadata> for LocalMailMetadata {
     fn from(value: &RemoteMailMetadata) -> Self {
-        Self::new(Some(value.uid()), value.flags(), None)
+        Self::new(value.uid(), value.flags(), None)
     }
 }
 
@@ -192,7 +269,16 @@ mod tests {
     #[fixture]
     fn metadata(prefix: String) -> LocalMailMetadata {
         let flags = BitFlags::all();
-        LocalMailMetadata::new(Uid::try_from(&3).ok(), flags, Some(prefix))
+        LocalMailMetadata::new(assert_ok!(Uid::try_from(&3)), flags, Some(prefix))
+    }
+
+    #[fixture]
+    fn new_metadata(prefix: String) -> NewLocalMailMetadata {
+        let flags = BitFlags::all();
+        NewLocalMailMetadata {
+            flags,
+            fileprefix: prefix,
+        }
     }
 
     #[fixture]
@@ -201,8 +287,8 @@ mod tests {
     }
 
     #[fixture]
-    fn mail(metadata: LocalMailMetadata, content: Vec<u8>) -> LocalMail {
-        LocalMail::new(content, metadata)
+    fn mail(new_metadata: NewLocalMailMetadata, content: Vec<u8>) -> LocalMail {
+        LocalMail::new(content, new_metadata)
     }
 
     #[rstest]
@@ -218,11 +304,10 @@ mod tests {
     }
 
     #[rstest]
-    fn test_metadata_filename_without_uid_is_correct(mut metadata: LocalMailMetadata) {
-        metadata.uid = None;
-        let filename = metadata.filename();
+    fn test_metadata_filename_without_uid_is_correct(new_metadata: NewLocalMailMetadata) {
+        let filename = new_metadata.filename();
         assert_eq!("prefix:2,DFRST", filename);
-        assert_eq!(metadata, assert_ok!(filename.parse()));
+        assert_eq!(new_metadata, assert_ok!(filename.parse()));
     }
 
     #[rstest]
@@ -246,17 +331,17 @@ mod tests {
         let remote =
             RemoteMailMetadata::new(Uid::MAX, Flag::all(), assert_ok!(ModSeq::try_from(3)));
         let result = LocalMailMetadata::from(&remote);
-        assert_eq!(remote.uid(), assert_some!(result.uid()));
+        assert_eq!(remote.uid(), result.uid());
         assert_eq!(remote.flags(), result.flags());
     }
 
     #[rstest]
-    fn test_local_mail_unpacks(metadata: LocalMailMetadata) {
+    fn test_local_mail_unpacks(new_metadata: NewLocalMailMetadata) {
         let content: Vec<u8> = "foo".into();
         let expected_content = content.clone();
-        let expected_metadata = metadata.clone();
+        let expected_metadata = new_metadata.clone();
 
-        let mail = LocalMail::new(content, metadata);
+        let mail = LocalMail::new(content, new_metadata);
         assert_eq!(&expected_metadata, mail.metadata());
         let (metadata, content) = mail.unpack();
         assert_eq!(expected_metadata, metadata);
@@ -274,11 +359,11 @@ mod tests {
     }
 
     #[rstest]
-    fn test_metadata_set_uid_is_ok(mut metadata: LocalMailMetadata) {
+    fn test_metadata_set_uid_is_ok(metadata: LocalMailMetadata) {
         let expected = assert_ok!(Uid::try_from(4));
-        assert_ne!(Some(expected), metadata.uid());
-        metadata.set_uid(expected);
-        assert_eq!(Some(expected), metadata.uid());
+        assert_ne!(expected, metadata.uid());
+        let metadata = metadata.set_uid(expected);
+        assert_eq!(expected, metadata.uid());
     }
 
     #[rstest]

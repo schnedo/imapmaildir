@@ -4,6 +4,8 @@ use std::{
     ops::{Add, AddAssign},
 };
 
+use thiserror::Error;
+
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Uid(NonZeroU32);
@@ -44,12 +46,18 @@ impl Display for Uid {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("Cannot convert {value} to Uid")]
+pub struct UidConversionError {
+    value: u32,
+}
+
 impl TryFrom<u32> for Uid {
-    type Error = &'static str;
+    type Error = UidConversionError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         Ok(Self(
-            NonZeroU32::new(value).ok_or("Cannot convert u32 to nonzero")?,
+            NonZeroU32::new(value).ok_or(UidConversionError { value })?,
         ))
     }
 }
