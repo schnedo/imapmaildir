@@ -165,6 +165,10 @@ impl LocalMailMetadata {
     fn string_flags(&self) -> String {
         self.flags().iter().map(char::from).collect()
     }
+
+    pub fn has_flag(&self, flag: Flag) -> bool {
+        self.flags.contains(flag)
+    }
 }
 
 impl MaildirFile for LocalMailMetadata {
