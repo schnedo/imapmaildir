@@ -92,9 +92,21 @@ impl Syncer {
         let updates = updates.build();
         for (flag, sequence_set) in updates.removed_flags() {
             client.remove_flag(highest_modseq, flag, sequence_set).await;
+            for uid in sequence_set.iter() {
+                maildir_repository
+                    .remove_flag(uid, flag)
+                    .await
+                    .expect("removing flag from maildir_repository should succeed");
+            }
         }
         for (flag, sequence_set) in updates.additional_flags() {
             client.add_flag(highest_modseq, flag, sequence_set).await;
+            for uid in sequence_set.iter() {
+                maildir_repository
+                    .add_flag(uid, flag)
+                    .await
+                    .expect("adding flag to maildir_repository should succeed");
+            }
         }
         if let Ok(set) = SequenceSet::try_from(&deletions) {
             client.delete(highest_modseq, &set).await;

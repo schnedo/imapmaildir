@@ -1,3 +1,4 @@
+use enumflags2::BitFlags;
 use std::{collections::HashMap, io, path::Path};
 use thiserror::Error;
 
@@ -11,7 +12,7 @@ use crate::{
         maildir::{self, MaildirError, MaildirFile},
         state::{self, State},
     },
-    repository::{MailboxMetadata, ModSeq, Uid, UidValidity},
+    repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
 };
 
 use super::Maildir;
@@ -135,35 +136,91 @@ impl MaildirRepository {
             );
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                match self.maildir.update_flags(&mut entry, new_flags) {
-                    Ok(()) => {
-                        // todo: update modseq in same step?
-                        self.state
-                            .update(&entry)
-                            .await
-                            .expect("updating stored data should succeed");
-                        self.state
-                            // todo: check highest modseq handling consistent with channel?
-                            .update_highest_modseq(mail_metadata.modseq())
-                            .await
-                            .expect("updating highest_modseq should succeed");
-                    }
-                    Err(MaildirError::Missing(_)) => {
-                        self.state
-                            .delete_by_id(uid)
-                            .await
-                            .expect("deleting by uid should succeed");
-                        return Err(NoExistsError { uid });
-                    }
-                    Err(e) => {
-                        todo!("handle error {e:?}")
-                    }
-                }
+                self.handle_flags(&mut entry, new_flags)
+                    .await
+                    .expect("updating flags should succeed");
+                self.state
+                    // todo: check highest modseq handling consistent with channel?
+                    .update_highest_modseq(mail_metadata.modseq())
+                    .await
+                    .expect("updating highest_modseq should succeed");
             }
 
             Ok(())
         } else {
             Err(NoExistsError { uid })
+        }
+    }
+
+    pub async fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
+        if let Some(mut entry) = self
+            .state
+            .get_by_id(uid)
+            .await
+            .expect("getting state data by uid should succeed")
+        {
+            if !entry.has_flag(flag) {
+                info!("adding flag {flag} to mail {uid}");
+                let mut new_flags = entry.flags();
+                new_flags.insert(flag);
+                self.handle_flags(&mut entry, new_flags)
+                    .await
+                    .expect("updating flags should succeed");
+            }
+
+            Ok(())
+        } else {
+            Err(NoExistsError { uid })
+        }
+    }
+
+    pub async fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
+        if let Some(mut entry) = self
+            .state
+            .get_by_id(uid)
+            .await
+            .expect("getting state data by uid should succeed")
+        {
+            if entry.has_flag(flag) {
+                info!("removing flag {flag} of mail {uid}");
+                let mut new_flags = entry.flags();
+                new_flags.remove(flag);
+                self.handle_flags(&mut entry, new_flags)
+                    .await
+                    .expect("updating flags should succeed");
+            }
+
+            Ok(())
+        } else {
+            Err(NoExistsError { uid })
+        }
+    }
+
+    async fn handle_flags(
+        &self,
+        entry: &mut LocalMailMetadata,
+        new_flags: BitFlags<Flag>,
+    ) -> Result<(), NoExistsError> {
+        match self.maildir.update_flags(entry, new_flags) {
+            Ok(()) => {
+                self.state
+                    .update(entry)
+                    .await
+                    .expect("updating stored data should succeed");
+
+                Ok(())
+            }
+            Err(MaildirError::Missing(_)) => {
+                self.state
+                    .delete_by_id(entry.uid())
+                    .await
+                    .expect("deleting by uid should succeed");
+
+                Err(NoExistsError { uid: entry.uid() })
+            }
+            Err(e) => {
+                todo!("handle error {e:?}")
+            }
         }
     }
 
