@@ -74,6 +74,7 @@ impl Maildir {
         trace!("loading maildir {mail:?}");
         match (
             // todo: this should check for directories (.metadata().is_dir), not just existence
+            // todo: check for read/write mode
             mail.new.try_exists(),
             mail.cur.try_exists(),
             mail.tmp.try_exists(),
@@ -368,7 +369,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_new_creates_maildir_dirs(temp_dir: TempDir) {
+    fn test_init_creates_maildir_dirs(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
         assert_ok!(Maildir::try_init(maildir_path));
 
@@ -378,7 +379,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_new_errors_on_existing_dir(
+    fn test_init_errors_on_existing_dir(
         temp_dir: TempDir,
         #[values("cur", "tmp", "new")] dir: &str,
     ) {
