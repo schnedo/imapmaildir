@@ -284,15 +284,6 @@ pub enum MaildirEntry {
     MaybeTracked(LocalMailMetadata),
 }
 
-// impl MaildirFile for MaildirEntry {
-//     fn filename(&self) -> String {
-//         match self {
-//             MaildirEntry::New(new_local_mail_metadata) => new_local_mail_metadata.filename(),
-//             MaildirEntry::MaybeTracked(local_mail_metadata) => local_mail_metadata.filename(),
-//         }
-//     }
-// }
-
 impl FromStr for MaildirEntry {
     type Err = ();
 
