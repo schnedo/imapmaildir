@@ -165,6 +165,7 @@ impl SelectedClient {
                 .connection
                 .send(command)
                 .await
+                // todo: check reason and move failing mails out of cur
                 .expect("storing new mail should succeed");
 
             if let Some(code) = response.unsafe_get_tagged_response_code() {

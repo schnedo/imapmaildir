@@ -169,8 +169,7 @@ impl MaildirRepository {
 
     pub async fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) {
         info!(
-            "adding {} to newly synced mail {}",
-            mail_metadata.uid(),
+            "adding {uid} to newly synced mail {}",
             mail_metadata.filename()
         );
         let mail_metadata = self
@@ -210,6 +209,7 @@ impl MaildirRepository {
             .list_cur()
             .expect("cur directory should be readable");
 
+        // todo: use Set instead of Map
         let mut maildir_mails = HashMap::new();
 
         for metadata in maildir_metadata {
@@ -261,12 +261,16 @@ impl MaildirRepository {
             .await
             .expect("building local updates should succeed");
         for maildata in maildir_mails.into_values() {
+            let maildata = self
+                .maildir
+                .remove_uid(maildata)
+                .expect("removing uid of new mail should succeed");
             // todo: return Iterator and chain here
             let content = self
                 .maildir
                 .read_content(&maildata)
                 .expect("mail contents should be readable");
-            news.push(LocalMail::new(content, maildata.into()));
+            news.push(LocalMail::new(content, maildata));
         }
 
         let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
