@@ -193,6 +193,7 @@ impl State {
         Ok(())
     }
 
+    // todo: fix this by setting up send task (probably major state rework towards dedicated state thread)
     /// WARNING: Setup receiving in separate task or this may deadlock
     pub async fn get_all(
         &self,
