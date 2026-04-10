@@ -13,10 +13,7 @@ use thiserror::Error;
 
 use crate::{
     imap::RemoteMail,
-    maildir::{
-        LocalMailMetadata,
-        local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
-    },
+    maildir::{LocalMailMetadata, local_mail::NewLocalMailMetadata},
     repository::{Flag, Uid},
 };
 
@@ -137,9 +134,9 @@ impl Maildir {
                     os_filename.display()
                 ))
             })?;
-            filename.parse().map_err(|e: ParseLocalMailMetadataError| {
-                MaildirListError::ParseFilename(e.message().to_string())
-            })
+            filename
+                .parse()
+                .map_err(|()| unreachable!("parsing filename of MaildirEntry cannot fail"))
         }))
     }
 
@@ -261,8 +258,6 @@ pub enum InitError {
 pub enum MaildirListError {
     #[error("Non utf-8 filename {0}")]
     InvalidFilename(String),
-    #[error("Incorrect format of mail: {0}")]
-    ParseFilename(String),
     #[error("IO error trying to list maildir file")]
     Io(io::ErrorKind),
 }
@@ -299,7 +294,7 @@ pub enum MaildirEntry {
 // }
 
 impl FromStr for MaildirEntry {
-    type Err = ParseLocalMailMetadataError;
+    type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match (
@@ -308,7 +303,7 @@ impl FromStr for MaildirEntry {
         ) {
             (Ok(metadata), _) => Ok(Self::MaybeTracked(metadata)),
             (_, Ok(metadata)) => Ok(Self::New(metadata)),
-            (Err(_), Err(_)) => unreachable!(),
+            (Err(_), Err(())) => unreachable!(),
         }
     }
 }
