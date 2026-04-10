@@ -105,7 +105,7 @@ impl Display for NewLocalMailMetadata {
 }
 
 impl FromStr for NewLocalMailMetadata {
-    type Err = ParseLocalMailMetadataError;
+    type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((head, flags)) = s.rsplit_once(":2,")
@@ -204,12 +204,6 @@ impl Display for LocalMailMetadata {
 #[error("Missing mail {message}")]
 pub struct ParseLocalMailMetadataError {
     message: &'static str,
-}
-
-impl ParseLocalMailMetadataError {
-    pub fn message(&self) -> &'static str {
-        self.message
-    }
 }
 
 impl FromStr for LocalMailMetadata {
@@ -372,13 +366,5 @@ mod tests {
         assert_ne!(expected, metadata.flags());
         metadata.set_flags(expected);
         assert_eq!(expected, metadata.flags());
-    }
-
-    #[rstest]
-    fn test_parse_local_mail_metadata_error_returns_message() {
-        let message = "aaosdfojsa";
-        let e = ParseLocalMailMetadataError { message };
-
-        assert_eq!(message, e.message());
     }
 }
