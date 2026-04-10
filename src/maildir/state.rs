@@ -543,6 +543,20 @@ mod tests {
 
     #[rstest]
     #[tokio::test]
+    async fn test_getting_all_fails_with_invalid_uid_in_state(
+        state: TestState,
+    ) -> Result<(), Error> {
+        let db = state.state.db.lock().await;
+        db.execute_batch("insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")")?;
+        drop(db);
+        let (all_entries_tx, mut _rx) = mpsc::channel(1);
+        assert_err!(state.state.get_all(all_entries_tx).await);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[tokio::test]
     async fn test_get_all_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata).await);
         let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
