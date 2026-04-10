@@ -117,4 +117,13 @@ mod tests {
         let err = assert_err!(builder.build());
         assert_in!("highest_modseq".into(), err.missing_fields);
     }
+
+    #[rstest]
+    fn test_builder_error_shows_missing_fields() {
+        let builder = MailboxMetadataBuilder::default();
+        let error = assert_err!(builder.build());
+        let stringified = error.to_string();
+        assert_contains!(stringified, "uid_validity");
+        assert_contains!(stringified, "highest_modseq");
+    }
 }
