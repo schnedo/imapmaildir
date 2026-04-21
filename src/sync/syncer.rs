@@ -37,9 +37,9 @@ impl Syncer {
         client: AuthenticatedClient,
         mailbox: &str,
     ) {
-        let uid_validity = maildir_repository.uid_validity().await;
-        let highest_modseq = maildir_repository.highest_modseq().await;
-        let mut local_changes = maildir_repository.detect_changes().await;
+        let uid_validity = maildir_repository.uid_validity();
+        let highest_modseq = maildir_repository.highest_modseq();
+        let mut local_changes = maildir_repository.detect_changes();
         let (task_tx, task_rx) = mpsc::channel(32);
         Self::setup_task_processing(maildir_repository.clone(), task_rx);
 
@@ -87,7 +87,7 @@ impl Syncer {
         let mut mailinfos = client.store(mailbox, news.into_iter()).await;
         // todo: parallelize these
         while let Some((uid, metadata)) = mailinfos.recv().await {
-            maildir_repository.add_synced(metadata, uid).await;
+            maildir_repository.add_synced(metadata, uid);
         }
         let updates = updates.build();
         for (flag, sequence_set) in updates.removed_flags() {
@@ -95,7 +95,6 @@ impl Syncer {
             for uid in sequence_set.iter() {
                 maildir_repository
                     .remove_flag(uid, flag)
-                    .await
                     .expect("removing flag from maildir_repository should succeed");
             }
         }
@@ -104,7 +103,6 @@ impl Syncer {
             for uid in sequence_set.iter() {
                 maildir_repository
                     .add_flag(uid, flag)
-                    .await
                     .expect("adding flag to maildir_repository should succeed");
             }
         }
@@ -121,22 +119,20 @@ impl Syncer {
     ) {
         if let Some(set) = remote_changes.deletions {
             for uid in set.iter() {
-                maildir_repository.delete(uid).await;
+                maildir_repository.delete(uid);
             }
         }
 
         let mut refetch_mails = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
-            if maildir_repository.update_flags(update).await.is_err() {
+            if maildir_repository.update_flags(update).is_err() {
                 refetch_mails.add(update.uid());
             }
         }
         if let Ok(sequence_set) = refetch_mails.build() {
             client.fetch_mail(&sequence_set).await;
         }
-        maildir_repository
-            .set_highest_modseq(mailbox_data.highest_modseq())
-            .await;
+        maildir_repository.set_highest_modseq(mailbox_data.highest_modseq());
     }
 
     fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
@@ -190,22 +186,22 @@ impl Syncer {
             while let Some(task) = task_rx.recv().await {
                 match task {
                     Task::NewMail(remote_mail) => {
-                        maildir_repository.store(&remote_mail).await;
+                        maildir_repository.store(&remote_mail);
                     }
                     Task::Delete(sequence_set) => {
                         for uid in sequence_set.iter() {
-                            maildir_repository.delete(uid).await;
+                            maildir_repository.delete(uid);
                         }
                     }
                     Task::HighestModSeq(mod_seq) => {
-                        maildir_repository.set_highest_modseq(mod_seq).await;
+                        maildir_repository.set_highest_modseq(mod_seq);
                     }
                     Task::Shutdown => {
                         task_rx.close();
                     }
                     Task::UpdateModseq(uid, mod_seq) => {
                         debug!("Setting modseq of mail {uid} to {mod_seq}");
-                        maildir_repository.update_highest_modseq(mod_seq).await;
+                        maildir_repository.update_highest_modseq(mod_seq);
                     }
                 }
             }
