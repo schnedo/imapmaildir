@@ -181,7 +181,7 @@ impl SelectedClient {
                             uid_ranges
                                 .into_iter()
                                 .flat_map(SequenceRange::into_iter)
-                                .zip(metadatas.into_iter())
+                                .zip(metadatas)
                                 .map(|info| info_tx.send(info)),
                         )
                         .await
