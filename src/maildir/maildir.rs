@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     fs::{self, DirBuilder, OpenOptions, read_dir, remove_file},
     io::{self, Write},
-    os::unix::fs::DirBuilderExt as _,
+    os::unix::fs::{DirBuilderExt as _, OpenOptionsExt},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -111,6 +111,7 @@ impl Maildir {
 
         trace!("writing to {}", file_path.display());
         let mut file = OpenOptions::new()
+            .mode(0o400)
             .write(true)
             .create_new(true)
             .open(&file_path)?;
