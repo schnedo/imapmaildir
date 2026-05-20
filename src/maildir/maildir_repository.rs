@@ -3,7 +3,6 @@ use std::{collections::HashMap, io, path::Path};
 use thiserror::Error;
 
 use log::{info, trace, warn};
-use tokio::sync::mpsc;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
@@ -70,63 +69,54 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn uid_validity(&self) -> UidValidity {
+    pub fn uid_validity(&self) -> UidValidity {
         self.state
             .uid_validity()
-            .await
             .expect("getting uid_validity should succeed")
     }
 
-    pub async fn highest_modseq(&self) -> ModSeq {
+    pub fn highest_modseq(&self) -> ModSeq {
         self.state
             .highest_modseq()
-            .await
             .expect("getting cached highest_modseq should succeed")
     }
 
-    pub async fn set_highest_modseq(&self, value: ModSeq) {
+    pub fn set_highest_modseq(&self, value: ModSeq) {
         self.state
             .set_highest_modseq(value)
-            .await
             .expect("setting highest_modseq should succeed");
     }
 
-    pub async fn update_highest_modseq(&self, value: ModSeq) {
+    pub fn update_highest_modseq(&self, value: ModSeq) {
         self.state
             .update_highest_modseq(value)
-            .await
             .expect("setting highest_modseq should succeed");
     }
 
-    pub async fn store(&self, mail: &RemoteMail) {
+    pub fn store(&self, mail: &RemoteMail) {
         info!(
             "storing mail {} with flags {}",
             mail.metadata().uid(),
             mail.metadata().flags()
         );
         // todo: check if update is necessary
-        if self.update_flags(mail.metadata()).await.is_err() {
+        if self.update_flags(mail.metadata()).is_err() {
             let metadata = self
                 .maildir
                 .store(mail)
                 .expect("storing mail in maildir should succeed");
             self.state
                 .store(&metadata)
-                .await
                 .expect("storing data should succeed");
         }
     }
 
-    pub async fn update_flags(
-        &self,
-        mail_metadata: &RemoteMailMetadata,
-    ) -> Result<(), NoExistsError> {
+    pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
 
         if let Some(mut entry) = self
             .state
             .get_by_id(uid)
-            .await
             .expect("getting state data by uid should succeed")
         {
             info!(
@@ -137,12 +127,10 @@ impl MaildirRepository {
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
                 self.handle_flags(&mut entry, new_flags)
-                    .await
                     .expect("updating flags should succeed");
                 self.state
                     // todo: check highest modseq handling consistent with channel?
                     .update_highest_modseq(mail_metadata.modseq())
-                    .await
                     .expect("updating highest_modseq should succeed");
             }
 
@@ -152,11 +140,10 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
+    pub fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
         if let Some(mut entry) = self
             .state
             .get_by_id(uid)
-            .await
             .expect("getting state data by uid should succeed")
         {
             if !entry.has_flag(flag) {
@@ -164,7 +151,6 @@ impl MaildirRepository {
                 let mut new_flags = entry.flags();
                 new_flags.insert(flag);
                 self.handle_flags(&mut entry, new_flags)
-                    .await
                     .expect("updating flags should succeed");
             }
 
@@ -174,11 +160,10 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
+    pub fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
         if let Some(mut entry) = self
             .state
             .get_by_id(uid)
-            .await
             .expect("getting state data by uid should succeed")
         {
             if entry.has_flag(flag) {
@@ -186,7 +171,6 @@ impl MaildirRepository {
                 let mut new_flags = entry.flags();
                 new_flags.remove(flag);
                 self.handle_flags(&mut entry, new_flags)
-                    .await
                     .expect("updating flags should succeed");
             }
 
@@ -196,7 +180,7 @@ impl MaildirRepository {
         }
     }
 
-    async fn handle_flags(
+    fn handle_flags(
         &self,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
@@ -205,7 +189,6 @@ impl MaildirRepository {
             Ok(()) => {
                 self.state
                     .update(entry)
-                    .await
                     .expect("updating stored data should succeed");
 
                 Ok(())
@@ -213,7 +196,6 @@ impl MaildirRepository {
             Err(MaildirError::Missing(_)) => {
                 self.state
                     .delete_by_id(entry.uid())
-                    .await
                     .expect("deleting by uid should succeed");
 
                 Err(NoExistsError { uid: entry.uid() })
@@ -224,7 +206,7 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) {
+    pub fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) {
         info!(
             "adding {uid} to newly synced mail {}",
             mail_metadata.filename()
@@ -235,16 +217,14 @@ impl MaildirRepository {
             .expect("updating maildir with newly synced mail should succeed");
         self.state
             .store(&mail_metadata)
-            .await
             .expect("storing data should succeed");
     }
 
-    pub async fn delete(&self, uid: Uid) {
+    pub fn delete(&self, uid: Uid) {
         info!("deleting mail {uid}");
         if let Some(entry) = self
             .state
             .get_by_id(uid)
-            .await
             .expect("getting state data by uid should succeed")
         {
             self.maildir
@@ -252,14 +232,13 @@ impl MaildirRepository {
                 .expect("deleting mail should succeed");
             self.state
                 .delete_by_id(uid)
-                .await
                 .expect("deleting stored data by uid should succeed");
         } else {
             trace!("mail {uid:?} already gone");
         }
     }
 
-    pub async fn detect_changes(&self) -> LocalChanges {
+    pub fn detect_changes(&self) -> LocalChanges {
         let mut news: Vec<LocalMail> = Vec::new();
         let maildir_metadata = self
             .maildir
@@ -284,12 +263,12 @@ impl MaildirRepository {
                 }
             }
         }
+        let mut updates = LocalFlagChangesBuilder::default();
+        let mut deletions = Vec::new();
 
-        let (all_entries_tx, mut all_entries_rx) = mpsc::channel::<LocalMailMetadata>(32);
-        let build_updates_handle = tokio::spawn(async move {
-            let mut updates = LocalFlagChangesBuilder::default();
-            let mut deletions = Vec::new();
-            while let Some(entry) = all_entries_rx.recv().await {
+        let highest_modseq = self
+            .state
+            .fore_each(|entry| {
                 let uid = entry.uid();
                 if let Some(data) = maildir_mails.remove(&uid) {
                     let mut additional_flags = data.flags();
@@ -305,18 +284,8 @@ impl MaildirRepository {
                 } else {
                     deletions.push(entry.uid());
                 }
-            }
-
-            (updates, deletions, maildir_mails)
-        });
-        let highest_modseq = self
-            .state
-            .get_all(all_entries_tx)
-            .await
-            .expect("getting all cached entries");
-        let (updates, deletions, maildir_mails) = build_updates_handle
-            .await
-            .expect("building local updates should succeed");
+            })
+            .expect("getting all cached entries should succeed");
         for maildata in maildir_mails.into_values() {
             let maildata = self
                 .maildir
