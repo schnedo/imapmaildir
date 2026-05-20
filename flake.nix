@@ -114,6 +114,7 @@
           pre-commit = {
             check.enable = true;
             settings = {
+              package = pkgs.prek;
               enabledPackages = with pkgs; [
                 gitleaks
               ];
