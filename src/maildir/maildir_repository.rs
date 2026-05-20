@@ -1,5 +1,10 @@
 use enumflags2::BitFlags;
-use std::{collections::HashMap, io, path::Path};
+use std::{
+    collections::HashMap,
+    io,
+    path::Path,
+    sync::{Arc, Mutex, MutexGuard},
+};
 use thiserror::Error;
 
 use log::{info, trace, warn};
@@ -22,15 +27,19 @@ pub struct NoExistsError {
     uid: Uid,
 }
 
+// todo: remove Clone and rework untagged response handling
 #[derive(Clone, Debug)]
 pub struct MaildirRepository {
     maildir: Maildir,
-    state: State,
+    state: Arc<Mutex<State>>,
 }
 
 impl MaildirRepository {
     fn new(maildir: Maildir, state: State) -> Self {
-        Self { maildir, state }
+        Self {
+            maildir,
+            state: Arc::new(Mutex::new(state)),
+        }
     }
 
     pub fn try_init(
@@ -69,26 +78,41 @@ impl MaildirRepository {
         }
     }
 
+    fn lock(&self) -> MutexGuard<'_, State> {
+        match self.state.lock() {
+            Ok(db) => db,
+            Err(err) => {
+                warn!("Encountered poisened mutex to db connection");
+
+                err.into_inner()
+            }
+        }
+    }
+
     pub fn uid_validity(&self) -> UidValidity {
-        self.state
+        let state = self.lock();
+        state
             .uid_validity()
             .expect("getting uid_validity should succeed")
     }
 
     pub fn highest_modseq(&self) -> ModSeq {
-        self.state
+        let state = self.lock();
+        state
             .highest_modseq()
             .expect("getting cached highest_modseq should succeed")
     }
 
     pub fn set_highest_modseq(&self, value: ModSeq) {
-        self.state
+        let state = self.lock();
+        state
             .set_highest_modseq(value)
             .expect("setting highest_modseq should succeed");
     }
 
     pub fn update_highest_modseq(&self, value: ModSeq) {
-        self.state
+        let mut state = self.lock();
+        state
             .update_highest_modseq(value)
             .expect("setting highest_modseq should succeed");
     }
@@ -105,17 +129,16 @@ impl MaildirRepository {
                 .maildir
                 .store(mail)
                 .expect("storing mail in maildir should succeed");
-            self.state
-                .store(&metadata)
-                .expect("storing data should succeed");
+            let state = self.lock();
+            state.store(&metadata).expect("storing data should succeed");
         }
     }
 
     pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
         let uid = mail_metadata.uid();
+        let mut state = self.lock();
 
-        if let Some(mut entry) = self
-            .state
+        if let Some(mut entry) = state
             .get_by_id(uid)
             .expect("getting state data by uid should succeed")
         {
@@ -128,7 +151,7 @@ impl MaildirRepository {
                 let new_flags = mail_metadata.flags();
                 self.handle_flags(&mut entry, new_flags)
                     .expect("updating flags should succeed");
-                self.state
+                state
                     // todo: check highest modseq handling consistent with channel?
                     .update_highest_modseq(mail_metadata.modseq())
                     .expect("updating highest_modseq should succeed");
@@ -141,8 +164,8 @@ impl MaildirRepository {
     }
 
     pub fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
-        if let Some(mut entry) = self
-            .state
+        let state = self.lock();
+        if let Some(mut entry) = state
             .get_by_id(uid)
             .expect("getting state data by uid should succeed")
         {
@@ -161,8 +184,8 @@ impl MaildirRepository {
     }
 
     pub fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
-        if let Some(mut entry) = self
-            .state
+        let state = self.lock();
+        if let Some(mut entry) = state
             .get_by_id(uid)
             .expect("getting state data by uid should succeed")
         {
@@ -187,14 +210,16 @@ impl MaildirRepository {
     ) -> Result<(), NoExistsError> {
         match self.maildir.update_flags(entry, new_flags) {
             Ok(()) => {
-                self.state
+                let state = self.lock();
+                state
                     .update(entry)
                     .expect("updating stored data should succeed");
 
                 Ok(())
             }
             Err(MaildirError::Missing(_)) => {
-                self.state
+                let state = self.lock();
+                state
                     .delete_by_id(entry.uid())
                     .expect("deleting by uid should succeed");
 
@@ -215,22 +240,23 @@ impl MaildirRepository {
             .maildir
             .update_uid(mail_metadata, uid)
             .expect("updating maildir with newly synced mail should succeed");
-        self.state
+        let state = self.lock();
+        state
             .store(&mail_metadata)
             .expect("storing data should succeed");
     }
 
     pub fn delete(&self, uid: Uid) {
         info!("deleting mail {uid}");
-        if let Some(entry) = self
-            .state
+        let state = self.lock();
+        if let Some(entry) = state
             .get_by_id(uid)
             .expect("getting state data by uid should succeed")
         {
             self.maildir
                 .delete(&entry)
                 .expect("deleting mail should succeed");
-            self.state
+            state
                 .delete_by_id(uid)
                 .expect("deleting stored data by uid should succeed");
         } else {
@@ -266,8 +292,8 @@ impl MaildirRepository {
         let mut updates = LocalFlagChangesBuilder::default();
         let mut deletions = Vec::new();
 
-        let highest_modseq = self
-            .state
+        let mut state = self.lock();
+        let highest_modseq = state
             .fore_each(|entry| {
                 let uid = entry.uid();
                 if let Some(data) = maildir_mails.remove(&uid) {
