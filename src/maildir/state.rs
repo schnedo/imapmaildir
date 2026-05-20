@@ -3,7 +3,7 @@ use std::{
     fs::{self, create_dir_all},
     io,
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
 };
 
 use enumflags2::BitFlag;
@@ -32,14 +32,16 @@ fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct State {
-    db: Connection,
+    db: Arc<Mutex<Connection>>,
 }
 
 impl State {
     fn new(db: Connection) -> Self {
-        Self { db }
+        Self {
+            db: Arc::new(Mutex::new(db)),
+        }
     }
 
     pub fn load(state_dir: &Path) -> Result<Self, InitError> {
@@ -111,9 +113,20 @@ impl State {
         Ok(state_dir.join(STATE_FILE_NAME))
     }
 
+    fn lock(&self) -> MutexGuard<'_, rusqlite::Connection> {
+        match self.db.lock() {
+            Ok(db) => db,
+            Err(err) => {
+                warn!("Encountered poisened mutex to db connection");
+
+                err.into_inner()
+            }
+        }
+    }
+
     pub fn uid_validity(&self) -> Result<UidValidity, Error> {
         trace!("getting cached uid_validity");
-        self.db
+        self.lock()
             .query_one("select uid_validity from mailbox_metadata", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity.try_into().map_err(Error::from);
@@ -121,9 +134,10 @@ impl State {
             })?
     }
 
-    pub fn update_highest_modseq(&mut self, value: ModSeq) -> Result<(), Error> {
+    pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         trace!("check for updating highest_modseq with {value:?}");
-        let transaction = self.db.transaction()?;
+        let mut db = self.lock();
+        let transaction = db.transaction()?;
         let highest_modseq = get_highest_modseq(&transaction)?;
         if value > highest_modseq {
             set_highest_modseq(&transaction, value)?;
@@ -135,19 +149,20 @@ impl State {
 
     pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         trace!("setting highest_modseq {value}");
-        set_highest_modseq(&self.db, value).map_err(std::convert::Into::into)
+        let db = self.lock();
+        set_highest_modseq(&db, value).map_err(std::convert::Into::into)
     }
 
     pub fn highest_modseq(&self) -> Result<ModSeq, Error> {
         trace!("getting cached highest_modseq");
-        get_highest_modseq(&self.db)
+        let db = self.lock();
+        get_highest_modseq(&db)
     }
 
     pub fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("updating mail cache {data:?}");
-        let mut stmt = self
-            .db
-            .prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
+        let db = self.lock();
+        let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
         stmt.execute((data.flags().bits(), u32::from(data.uid())))?;
 
         Ok(())
@@ -156,8 +171,8 @@ impl State {
     pub fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("storing mail cache {data:?}");
         let uid = data.uid();
-        let mut stmt = self
-            .db
+        let db = self.lock();
+        let mut stmt = db
             .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")?;
         stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))?;
 
@@ -166,9 +181,8 @@ impl State {
 
     pub fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         trace!("get existing metadata with {uid:?}");
-        let mut stmt = self
-            .db
-            .prepare_cached("select * from mail_metadata where uid = ?1")?;
+        let db = self.lock();
+        let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
 
         stmt.query_one([u32::from(uid)], |row| row.try_into())
             .optional()
@@ -177,17 +191,17 @@ impl State {
 
     pub fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         trace!("deleting {uid:?}");
-        let mut stmt = self
-            .db
-            .prepare_cached("delete from mail_metadata where uid = ?1")?;
+        let db = self.lock();
+        let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
         stmt.execute([u32::from(uid)])?;
 
         Ok(())
     }
 
-    pub fn fore_each(&mut self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
+    pub fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
         trace!("getting all stored mail metadata");
-        let db = self.db.transaction()?;
+        let mut db = self.lock();
+        let db = db.transaction()?;
         let mut stmt = db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
         for row in stmt.query_map([], |row| LocalMailMetadata::try_from(row))? {
             cb(row?);
@@ -200,8 +214,11 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        self.db
-            .execute("pragma optimize;", [])
+        let db = self
+            .db
+            .try_lock()
+            .expect("db should not be locked when dropping State");
+        db.execute("pragma optimize;", [])
             .expect("sqlite should be optimizable");
     }
 }
@@ -443,7 +460,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(mut state: TestState) {
+    fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(state: TestState) {
         let initial_modseq = assert_ok!(state.state.highest_modseq());
         let new_modseq = assert_ok!(ModSeq::try_from(i64::MAX));
         assert_gt!(new_modseq, initial_modseq);
@@ -453,7 +470,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_highest_modseq_does_not_update_if_value_is_lower(mut state: TestState) {
+    fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
         let initial_modseq = assert_ok!(state.state.highest_modseq());
         let new_modseq = assert_ok!(ModSeq::try_from(1));
         assert_le!(new_modseq, initial_modseq);
@@ -500,15 +517,17 @@ mod tests {
     }
 
     #[rstest]
-    fn test_foreach_fails_with_invalid_uid_in_state(mut state: TestState) {
-        assert_ok!(state.state.db.execute_batch(
+    fn test_foreach_fails_with_invalid_uid_in_state(state: TestState) {
+        let db = assert_ok!(state.state.db.lock());
+        assert_ok!(db.execute_batch(
             "insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")"
         ));
+        drop(db);
         assert_err!(state.state.fore_each(|_| {}));
     }
 
     #[rstest]
-    fn test_foreach_gets_all_stored_data(mut state: TestState, metadata: LocalMailMetadata) {
+    fn test_foreach_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata));
         let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
         let metadata = metadata.set_uid(assert_ok!(Uid::try_from(9)));
