@@ -3,7 +3,7 @@ use std::{
     fs::{self, create_dir_all},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{Arc, LazyLock},
 };
 
 use enumflags2::BitFlag;
@@ -12,6 +12,10 @@ use log::{debug, trace, warn};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
 use rusqlite_migration::Migrations;
 use thiserror::Error;
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, error::SendError},
+};
 
 use crate::{
     maildir::{LocalMailMetadata, MaildirFile as _},
@@ -113,20 +117,11 @@ impl State {
         Ok(state_dir.join(STATE_FILE_NAME))
     }
 
-    fn lock(&self) -> MutexGuard<'_, rusqlite::Connection> {
-        match self.db.lock() {
-            Ok(db) => db,
-            Err(err) => {
-                warn!("Encountered poisened mutex to db connection");
-
-                err.into_inner()
-            }
-        }
-    }
-
-    pub fn uid_validity(&self) -> Result<UidValidity, Error> {
+    pub async fn uid_validity(&self) -> Result<UidValidity, Error> {
         trace!("getting cached uid_validity");
-        self.lock()
+        self.db
+            .lock()
+            .await
             .query_one("select uid_validity from mailbox_metadata", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity.try_into().map_err(Error::from);
@@ -134,9 +129,9 @@ impl State {
             })?
     }
 
-    pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
+    pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         trace!("check for updating highest_modseq with {value:?}");
-        let mut db = self.lock();
+        let mut db = self.db.lock().await;
         let transaction = db.transaction()?;
         let highest_modseq = get_highest_modseq(&transaction)?;
         if value > highest_modseq {
@@ -147,31 +142,31 @@ impl State {
         Ok(())
     }
 
-    pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
+    pub async fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         trace!("setting highest_modseq {value}");
-        let db = self.lock();
+        let db = self.db.lock().await;
         set_highest_modseq(&db, value).map_err(std::convert::Into::into)
     }
 
-    pub fn highest_modseq(&self) -> Result<ModSeq, Error> {
+    pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {
         trace!("getting cached highest_modseq");
-        let db = self.lock();
+        let db = self.db.lock().await;
         get_highest_modseq(&db)
     }
 
-    pub fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
+    pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("updating mail cache {data:?}");
-        let db = self.lock();
+        let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
         stmt.execute((data.flags().bits(), u32::from(data.uid())))?;
 
         Ok(())
     }
 
-    pub fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
+    pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         trace!("storing mail cache {data:?}");
         let uid = data.uid();
-        let db = self.lock();
+        let db = self.db.lock().await;
         let mut stmt = db
             .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")?;
         stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))?;
@@ -179,9 +174,9 @@ impl State {
         Ok(())
     }
 
-    pub fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
+    pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         trace!("get existing metadata with {uid:?}");
-        let db = self.lock();
+        let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
 
         stmt.query_one([u32::from(uid)], |row| row.try_into())
@@ -189,24 +184,33 @@ impl State {
             .map_err(std::convert::Into::into)
     }
 
-    pub fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
+    pub async fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         trace!("deleting {uid:?}");
-        let db = self.lock();
+        let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
         stmt.execute([u32::from(uid)])?;
 
         Ok(())
     }
 
-    pub fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
+    // todo: fix this by setting up send task (probably major state rework towards dedicated state thread)
+    /// WARNING: Setup receiving in separate task or this may deadlock
+    pub async fn get_all(
+        &self,
+        all_entries_tx: mpsc::Sender<LocalMailMetadata>,
+    ) -> Result<ModSeq, Error> {
         trace!("getting all stored mail metadata");
-        let mut db = self.lock();
-        let db = db.transaction()?;
+        let db = self.db.lock().await;
         let mut stmt = db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
-        for row in stmt.query_map([], |row| LocalMailMetadata::try_from(row))? {
-            cb(row?);
-        }
+
         let current_highest_modseq = get_highest_modseq(&db)?;
+        for entry in stmt
+            .query_map([], |row| LocalMailMetadata::try_from(row))?
+            .map(|maybe_row| maybe_row.map_err(Error::from))
+        {
+            let entry = entry?;
+            all_entries_tx.send(entry).await?;
+        }
 
         Ok(current_highest_modseq)
     }
@@ -245,6 +249,8 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
 pub enum Error {
     #[error("Could not parse cached data")]
     Conversion,
+    #[error("Communication channel between database and imap already closed")]
+    ChannelClosed,
     #[error("Error with db call: {0}")]
     Db(rusqlite::Error),
 }
@@ -252,6 +258,12 @@ pub enum Error {
 impl From<<ModSeq as TryFrom<i64>>::Error> for Error {
     fn from(_: <ModSeq as TryFrom<i64>>::Error) -> Self {
         Self::Conversion
+    }
+}
+
+impl From<SendError<LocalMailMetadata>> for Error {
+    fn from(_: SendError<LocalMailMetadata>) -> Self {
+        Self::ChannelClosed
     }
 }
 
@@ -393,14 +405,15 @@ mod tests {
     }
 
     #[rstest]
-    fn test_state_inits_correctly(
+    #[tokio::test]
+    async fn test_state_inits_correctly(
         state: TestState,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
     ) {
-        let cached_modseq = assert_ok!(state.state.highest_modseq());
+        let cached_modseq = assert_ok!(state.state.highest_modseq().await);
         assert_eq!(cached_modseq, highest_modseq);
-        assert_eq!(assert_ok!(state.state.uid_validity()), uid_validity);
+        assert_eq!(assert_ok!(state.state.uid_validity().await), uid_validity);
     }
 
     #[rstest]
@@ -434,18 +447,20 @@ mod tests {
     }
 
     #[rstest]
-    fn test_load_loads_correct(
+    #[tokio::test]
+    async fn test_load_loads_correct(
         loadable_state_dir: TempDir,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
     ) {
         let result = assert_ok!(State::load(loadable_state_dir.path()));
-        assert_eq!(assert_ok!(result.highest_modseq()), highest_modseq);
-        assert_eq!(assert_ok!(result.uid_validity()), uid_validity);
+        assert_eq!(assert_ok!(result.highest_modseq().await), highest_modseq);
+        assert_eq!(assert_ok!(result.uid_validity().await), uid_validity);
     }
 
     #[rstest]
-    fn test_load_errors_on_unreadable_state_file(loadable_state_dir: TempDir) {
+    #[tokio::test]
+    async fn test_load_errors_on_unreadable_state_file(loadable_state_dir: TempDir) {
         let mut permissions = assert_ok!(fs::metadata(loadable_state_dir.path())).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(loadable_state_dir.path(), permissions));
@@ -460,99 +475,128 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
+    #[tokio::test]
+    async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
+        state: TestState,
+    ) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
         let new_modseq = assert_ok!(ModSeq::try_from(i64::MAX));
         assert_gt!(new_modseq, initial_modseq);
-        assert_ok!(state.state.update_highest_modseq(new_modseq));
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
 
-        assert_eq!(assert_ok!(state.state.highest_modseq()), new_modseq);
+        assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
     }
 
     #[rstest]
-    fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
+    #[tokio::test]
+    async fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
         let new_modseq = assert_ok!(ModSeq::try_from(1));
         assert_le!(new_modseq, initial_modseq);
-        assert_ok!(state.state.update_highest_modseq(new_modseq));
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
 
-        assert_eq!(assert_ok!(state.state.highest_modseq()), initial_modseq);
+        assert_eq!(
+            assert_ok!(state.state.highest_modseq().await),
+            initial_modseq
+        );
     }
 
     #[rstest]
-    fn test_set_highest_modseq_always_updates(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
+    #[tokio::test]
+    async fn test_set_highest_modseq_always_updates(state: TestState) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
         let new_modseq = assert_ok!(ModSeq::try_from(1));
         assert_lt!(new_modseq, initial_modseq);
-        assert_ok!(state.state.set_highest_modseq(new_modseq));
+        assert_ok!(state.state.set_highest_modseq(new_modseq).await);
 
-        assert_eq!(assert_ok!(state.state.highest_modseq()), new_modseq);
+        assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
     }
 
     #[rstest]
-    fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
-        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid())));
-        assert_ok!(state.state.store(&metadata));
-        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+    #[tokio::test]
+    async fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_ok!(state.state.store(&metadata).await);
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
 
     #[rstest]
-    fn test_updating_metadata_succeeds(state: TestState, mut metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
+    #[tokio::test]
+    async fn test_updating_metadata_succeeds(state: TestState, mut metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
         let flags = Flag::Seen | Flag::Deleted;
         assert_ne!(flags, metadata.flags());
         metadata.set_flags(flags);
-        assert_ok!(state.state.update(&metadata));
-        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+        assert_ok!(state.state.update(&metadata).await);
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
 
     #[rstest]
-    fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
-        assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
-        assert_ok!(state.state.delete_by_id(metadata.uid()));
-        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid())));
+    #[tokio::test]
+    async fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+        assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_ok!(state.state.delete_by_id(metadata.uid()).await);
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
     }
 
     #[rstest]
-    fn test_foreach_fails_with_invalid_uid_in_state(state: TestState) {
-        let db = assert_ok!(state.state.db.lock());
-        assert_ok!(db.execute_batch(
-            "insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")"
-        ));
+    #[tokio::test]
+    async fn test_getting_all_fails_with_invalid_uid_in_state(
+        state: TestState,
+    ) -> Result<(), Error> {
+        let db = state.state.db.lock().await;
+        db.execute_batch("insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")")?;
         drop(db);
-        assert_err!(state.state.fore_each(|_| {}));
+        let (all_entries_tx, mut _rx) = mpsc::channel(1);
+        assert_err!(state.state.get_all(all_entries_tx).await);
+
+        Ok(())
     }
 
     #[rstest]
-    fn test_foreach_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
-        let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+    #[tokio::test]
+    async fn test_get_all_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+        let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         let metadata = metadata.set_uid(assert_ok!(Uid::try_from(9)));
-        assert_ok!(state.state.store(&metadata));
-        let stored_second = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+        assert_ok!(state.state.store(&metadata).await);
+        let stored_second = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
 
+        let (tx, mut rx) = mpsc::channel(32);
+        assert_ok!(state.state.get_all(tx).await);
         let mut stored = HashSet::new();
-        assert_ok!(state.state.fore_each(|data| {
+        while let Some(data) = rx.recv().await {
             stored.insert(data);
-        }));
+        }
         assert_contains!(stored, &stored_first);
         assert_contains!(stored, &stored_second);
     }
 
     #[rstest]
+    #[tokio::test]
+    async fn test_get_all_errors_on_closed_receiver(state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+
+        let (tx, mut rx) = mpsc::channel(32);
+        rx.close();
+        let result = assert_err!(state.state.get_all(tx).await);
+        assert_matches!(result, Error::ChannelClosed);
+    }
+
+    #[rstest]
     fn test_dbiniterror_conversions() {
-        let error = rusqlite_migration::Error::InvalidUserVersion;
-        let dbinit_error: InitError = error.into();
+        let migration_error = rusqlite_migration::Error::InvalidUserVersion;
+        let dbinit_error: InitError = migration_error.into();
         assert_matches!(
             dbinit_error,
             InitError::Migrations(rusqlite_migration::Error::InvalidUserVersion)
         );
-        let error = Error::Conversion;
-        let dbinit_error: InitError = error.into();
-        assert_matches!(dbinit_error, InitError::DbError(Error::Conversion));
+        let db_error = Error::ChannelClosed;
+        let dbinit_error: InitError = db_error.into();
+        assert_matches!(dbinit_error, InitError::DbError(Error::ChannelClosed));
     }
 
     #[rstest]
