@@ -209,22 +209,17 @@ impl MaildirRepository {
             .expect("storing data should succeed");
     }
 
-    pub fn delete(&self, uid: Uid) {
+    pub fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
         info!("deleting mail {uid}");
         let state = self.lock();
-        if let Some(entry) = state
-            .get_by_id(uid)
-            .expect("getting state data by uid should succeed")
-        {
-            self.maildir
-                .delete(&entry)
-                .expect("deleting mail should succeed");
-            state
-                .delete_by_id(uid)
-                .expect("deleting stored data by uid should succeed");
+        if let Some(entry) = state.get_by_id(uid)? {
+            self.maildir.delete(&entry)?;
+            state.delete_by_id(uid)?;
         } else {
             trace!("mail {uid:?} already gone");
         }
+
+        Ok(())
     }
 
     pub fn detect_changes(&self) -> LocalChanges {
@@ -347,6 +342,26 @@ impl From<maildir::Error> for StoreError {
 }
 
 impl From<state::Error> for StoreError {
+    fn from(value: state::Error) -> Self {
+        Self::State(value)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DeleteError {
+    #[error("{0}")]
+    Io(io::Error),
+    #[error("{0}")]
+    State(state::Error),
+}
+
+impl From<io::Error> for DeleteError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<state::Error> for DeleteError {
     fn from(value: state::Error) -> Self {
         Self::State(value)
     }
@@ -722,5 +737,23 @@ mod tests {
 
         let result = assert_err!(repo.repo.remove_flag(metadata.uid(), Flag::Seen));
         assert_matches!(result, Error::NoExists { .. });
+    }
+
+    #[rstest]
+    fn test_delete_deletes_mail(repo_with_mail: RepoWithMail) {
+        let uid = repo_with_mail.mail.metadata().uid();
+        assert_ok!(repo_with_mail.repo.repo.delete(uid));
+        assert_len_eq_x!(
+            assert_ok!(repo_with_mail.repo.repo.maildir.list_cur()).collect::<Vec<_>>(),
+            0
+        );
+        assert_none!(assert_ok!(
+            assert_ok!(repo_with_mail.repo.repo.state.lock()).get_by_id(uid)
+        ));
+    }
+
+    #[rstest]
+    fn test_delete_does_nothing_on_mail_missing_in_state(repo: TestMaildirRepository) {
+        assert_ok!(repo.repo.delete(Uid::MAX));
     }
 }

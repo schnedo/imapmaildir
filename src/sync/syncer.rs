@@ -123,7 +123,9 @@ impl Syncer {
     ) {
         if let Some(set) = remote_changes.deletions {
             for uid in set.iter() {
-                maildir_repository.delete(uid);
+                maildir_repository
+                    .delete(uid)
+                    .expect("deleting mails should succeed");
             }
         }
 
@@ -202,7 +204,9 @@ impl Syncer {
                     }
                     Task::Delete(sequence_set) => {
                         for uid in sequence_set.iter() {
-                            maildir_repository.delete(uid);
+                            maildir_repository
+                                .delete(uid)
+                                .expect("deleting mails should succeed");
                         }
                     }
                     Task::HighestModSeq(mod_seq) => {

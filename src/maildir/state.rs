@@ -175,6 +175,7 @@ impl State {
             .map_err(std::convert::Into::into)
     }
 
+    // todo: test deleting non existent mail should not fail
     pub fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         trace!("deleting {uid:?}");
         let mut stmt = self
