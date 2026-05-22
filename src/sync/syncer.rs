@@ -37,8 +37,12 @@ impl Syncer {
         client: AuthenticatedClient,
         mailbox: &str,
     ) {
-        let uid_validity = maildir_repository.uid_validity();
-        let highest_modseq = maildir_repository.highest_modseq();
+        let uid_validity = maildir_repository
+            .uid_validity()
+            .expect("getting uid_validity should succeed");
+        let highest_modseq = maildir_repository
+            .highest_modseq()
+            .expect("getting highest_modseq should succeed");
         let mut local_changes = maildir_repository.detect_changes();
         let (task_tx, task_rx) = mpsc::channel(32);
         Self::setup_task_processing(maildir_repository.clone(), task_rx);
@@ -132,7 +136,9 @@ impl Syncer {
         if let Ok(sequence_set) = refetch_mails.build() {
             client.fetch_mail(&sequence_set).await;
         }
-        maildir_repository.set_highest_modseq(mailbox_data.highest_modseq());
+        maildir_repository
+            .set_highest_modseq(mailbox_data.highest_modseq())
+            .expect("setting highest_modseq should succeed");
     }
 
     fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
@@ -194,14 +200,18 @@ impl Syncer {
                         }
                     }
                     Task::HighestModSeq(mod_seq) => {
-                        maildir_repository.set_highest_modseq(mod_seq);
+                        maildir_repository
+                            .set_highest_modseq(mod_seq)
+                            .expect("setting highest_modseq should succeed");
                     }
                     Task::Shutdown => {
                         task_rx.close();
                     }
                     Task::UpdateModseq(uid, mod_seq) => {
                         debug!("Setting modseq of mail {uid} to {mod_seq}");
-                        maildir_repository.update_highest_modseq(mod_seq);
+                        maildir_repository
+                            .update_highest_modseq(mod_seq)
+                            .expect("setting highest_modseq should succeed");
                     }
                 }
             }
