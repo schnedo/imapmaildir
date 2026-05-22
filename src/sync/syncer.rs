@@ -192,7 +192,9 @@ impl Syncer {
             while let Some(task) = task_rx.recv().await {
                 match task {
                     Task::NewMail(remote_mail) => {
-                        maildir_repository.store(&remote_mail);
+                        maildir_repository
+                            .store(&remote_mail)
+                            .expect("storing new mail should succeed");
                     }
                     Task::Delete(sequence_set) => {
                         for uid in sequence_set.iter() {

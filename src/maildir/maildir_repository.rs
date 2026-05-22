@@ -109,21 +109,17 @@ impl MaildirRepository {
         state.update_highest_modseq(value)
     }
 
-    pub fn store(&self, mail: &RemoteMail) {
+    pub fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
         info!(
             "storing mail {} with flags {}",
             mail.metadata().uid(),
             mail.metadata().flags()
         );
-        // todo: check if update is necessary
-        if self.update_flags(mail.metadata()).is_err() {
-            let metadata = self
-                .maildir
-                .store(mail)
-                .expect("storing mail in maildir should succeed");
-            let state = self.lock();
-            state.store(&metadata).expect("storing data should succeed");
-        }
+        let metadata = self.maildir.store(mail)?;
+        let state = self.lock();
+        state.store(&metadata)?;
+
+        Ok(())
     }
 
     pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
@@ -361,6 +357,26 @@ impl From<io::Error> for LoadError {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum StoreError {
+    #[error("{0}")]
+    Maildir(maildir::MaildirError),
+    #[error("{0}")]
+    State(state::Error),
+}
+
+impl From<maildir::MaildirError> for StoreError {
+    fn from(value: maildir::MaildirError) -> Self {
+        Self::Maildir(value)
+    }
+}
+
+impl From<state::Error> for StoreError {
+    fn from(value: state::Error) -> Self {
+        Self::State(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
@@ -369,7 +385,7 @@ mod tests {
     use rstest::*;
     use tempfile::TempDir;
 
-    use crate::repository::MailboxMetadataBuilder;
+    use crate::{imap::RemoteContent, repository::MailboxMetadataBuilder};
 
     use super::*;
 
@@ -423,6 +439,14 @@ mod tests {
             mail_dir,
             state_dir,
         }
+    }
+
+    #[fixture]
+    fn mail(highest_modseq: ModSeq) -> RemoteMail {
+        RemoteMail::new(
+            RemoteMailMetadata::new(Uid::MAX, Flag::Seen.into(), highest_modseq),
+            RemoteContent::from_string(String::new()),
+        )
     }
 
     #[rstest]
@@ -568,5 +592,34 @@ mod tests {
 
         assert_ok!(repo.update_highest_modseq(modseq));
         assert_eq!(modseq, assert_ok!(repo.highest_modseq()));
+    }
+
+    #[rstest]
+    fn test_store_stores_new_mail(repo: TestMaildirRepository, mail: RemoteMail) {
+        let uid = mail.metadata().uid();
+        assert_len_eq_x!(
+            assert_ok!(repo.repo.maildir.list_cur()).collect::<Vec<_>>(),
+            0
+        );
+
+        assert_ok!(repo.repo.store(&mail));
+
+        assert_len_eq_x!(
+            assert_ok!(repo.repo.maildir.list_cur()).collect::<Vec<_>>(),
+            1
+        );
+
+        assert_some!(assert_ok!(
+            assert_ok!(repo.repo.state.lock()).get_by_id(uid)
+        ));
+    }
+
+    #[rstest]
+    fn test_store_propagaters_maildir_error(repo: TestMaildirRepository, mail: RemoteMail) {
+        assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
+
+        let result = assert_err!(repo.repo.store(&mail));
+
+        assert_matches!(result, StoreError::Maildir(_));
     }
 }
