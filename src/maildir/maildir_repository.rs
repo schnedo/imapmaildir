@@ -89,32 +89,24 @@ impl MaildirRepository {
         }
     }
 
-    pub fn uid_validity(&self) -> UidValidity {
+    pub fn uid_validity(&self) -> Result<UidValidity, state::Error> {
         let state = self.lock();
-        state
-            .uid_validity()
-            .expect("getting uid_validity should succeed")
+        state.uid_validity()
     }
 
-    pub fn highest_modseq(&self) -> ModSeq {
+    pub fn highest_modseq(&self) -> Result<ModSeq, state::Error> {
         let state = self.lock();
-        state
-            .highest_modseq()
-            .expect("getting cached highest_modseq should succeed")
+        state.highest_modseq()
     }
 
-    pub fn set_highest_modseq(&self, value: ModSeq) {
+    pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
         let state = self.lock();
-        state
-            .set_highest_modseq(value)
-            .expect("setting highest_modseq should succeed");
+        state.set_highest_modseq(value)
     }
 
-    pub fn update_highest_modseq(&self, value: ModSeq) {
+    pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
         let mut state = self.lock();
-        state
-            .update_highest_modseq(value)
-            .expect("setting highest_modseq should succeed");
+        state.update_highest_modseq(value)
     }
 
     pub fn store(&self, mail: &RemoteMail) {
@@ -411,7 +403,6 @@ mod tests {
     }
 
     struct TestMaildirRepository {
-        #[expect(unused)]
         repo: MaildirRepository,
         mail_dir: TempDir,
         state_dir: TempDir,
@@ -537,5 +528,45 @@ mod tests {
         ));
 
         assert_matches!(result, LoadError::State(_));
+    }
+
+    #[rstest]
+    fn test_uid_validity_returns_uid_validity(
+        repo: TestMaildirRepository,
+        uid_validity: UidValidity,
+    ) {
+        let result = assert_ok!(repo.repo.uid_validity());
+
+        assert_eq!(result, uid_validity);
+    }
+
+    #[rstest]
+    fn test_highest_modseq_returns_highest_modseq(
+        repo: TestMaildirRepository,
+        highest_modseq: ModSeq,
+    ) {
+        let result = assert_ok!(repo.repo.highest_modseq());
+
+        assert_eq!(result, highest_modseq);
+    }
+
+    #[rstest]
+    fn test_set_highest_modseq_sets_highes_modseq(repo: TestMaildirRepository) {
+        let repo = repo.repo;
+        let modseq = assert_ok!(ModSeq::try_from(1));
+        assert_lt!(modseq, assert_ok!(repo.highest_modseq()));
+
+        assert_ok!(repo.set_highest_modseq(modseq));
+        assert_eq!(modseq, assert_ok!(repo.highest_modseq()));
+    }
+
+    #[rstest]
+    fn test_update_highest_modseq_updates_highest_modseq(repo: TestMaildirRepository) {
+        let repo = repo.repo;
+        let modseq = assert_ok!(ModSeq::try_from(999));
+        assert_gt!(modseq, assert_ok!(repo.highest_modseq()));
+
+        assert_ok!(repo.update_highest_modseq(modseq));
+        assert_eq!(modseq, assert_ok!(repo.highest_modseq()));
     }
 }
