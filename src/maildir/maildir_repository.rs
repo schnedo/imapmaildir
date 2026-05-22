@@ -21,12 +21,6 @@ use crate::{
 
 use super::Maildir;
 
-#[derive(Error, Debug)]
-#[error("uid {uid} does not exist in state")]
-pub struct NoExistsError {
-    uid: Uid,
-}
-
 // todo: remove Clone and rework untagged response handling
 #[derive(Clone, Debug)]
 pub struct MaildirRepository {
@@ -122,14 +116,12 @@ impl MaildirRepository {
         Ok(())
     }
 
-    pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), NoExistsError> {
+    pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
         let uid = mail_metadata.uid();
         let mut state = self.lock();
 
-        if let Some(mut entry) = state
-            .get_by_id(uid)
-            .expect("getting state data by uid should succeed")
-        {
+        // todo: should this be transactional?
+        if let Some(mut entry) = state.get_by_id(uid)? {
             info!(
                 "update flags of mail {uid}: {} -> {}",
                 entry.flags(),
@@ -137,21 +129,19 @@ impl MaildirRepository {
             );
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                self.handle_flags(&state, &mut entry, new_flags)
-                    .expect("updating flags should succeed");
+                self.handle_flags(&state, &mut entry, new_flags)?;
                 state
                     // todo: check highest modseq handling consistent with channel?
-                    .update_highest_modseq(mail_metadata.modseq())
-                    .expect("updating highest_modseq should succeed");
+                    .update_highest_modseq(mail_metadata.modseq())?;
             }
 
             Ok(())
         } else {
-            Err(NoExistsError { uid })
+            Err(Error::NoExists { uid })
         }
     }
 
-    pub fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
+    pub fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
         let state = self.lock();
         if let Some(mut entry) = state
             .get_by_id(uid)
@@ -167,11 +157,11 @@ impl MaildirRepository {
 
             Ok(())
         } else {
-            Err(NoExistsError { uid })
+            Err(Error::NoExists { uid })
         }
     }
 
-    pub fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), NoExistsError> {
+    pub fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
         let state = self.lock();
         if let Some(mut entry) = state
             .get_by_id(uid)
@@ -187,7 +177,7 @@ impl MaildirRepository {
 
             Ok(())
         } else {
-            Err(NoExistsError { uid })
+            Err(Error::NoExists { uid })
         }
     }
 
@@ -196,25 +186,19 @@ impl MaildirRepository {
         state: &State,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
-    ) -> Result<(), NoExistsError> {
+    ) -> Result<(), Error> {
         match self.maildir.update_flags(entry, new_flags) {
             Ok(()) => {
-                state
-                    .update(entry)
-                    .expect("updating stored data should succeed");
+                state.update(entry)?;
 
                 Ok(())
             }
             Err(maildir::Error::Missing(_)) => {
-                state
-                    .delete_by_id(entry.uid())
-                    .expect("deleting by uid should succeed");
+                state.delete_by_id(entry.uid())?;
 
-                Err(NoExistsError { uid: entry.uid() })
+                Err(Error::NoExists { uid: entry.uid() })
             }
-            Err(e) => {
-                todo!("handle error {e:?}")
-            }
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -371,6 +355,28 @@ impl From<maildir::Error> for StoreError {
 }
 
 impl From<state::Error> for StoreError {
+    fn from(value: state::Error) -> Self {
+        Self::State(value)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("{0}")]
+    Maildir(maildir::Error),
+    #[error("{0}")]
+    State(state::Error),
+    #[error("uid {uid} does not exist in state")]
+    NoExists { uid: Uid },
+}
+
+impl From<maildir::Error> for Error {
+    fn from(value: maildir::Error) -> Self {
+        Self::Maildir(value)
+    }
+}
+
+impl From<state::Error> for Error {
     fn from(value: state::Error) -> Self {
         Self::State(value)
     }

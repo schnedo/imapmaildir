@@ -129,8 +129,12 @@ impl Syncer {
 
         let mut refetch_mails = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
-            if maildir_repository.update_flags(update).is_err() {
-                refetch_mails.add(update.uid());
+            if let Err(error) = maildir_repository.update_flags(update) {
+                match error {
+                    crate::maildir::Error::Maildir(_) => todo!("handle error"),
+                    crate::maildir::Error::State(_) => todo!("handle error"),
+                    crate::maildir::Error::NoExists { uid } => refetch_mails.add(uid),
+                }
             }
         }
         if let Ok(sequence_set) = refetch_mails.build() {
