@@ -13,7 +13,7 @@ use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
         LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata, NewLocalMailMetadata,
-        maildir::{self, MaildirError, MaildirFile},
+        maildir::{self, MaildirFile},
         state::{self, State},
     },
     repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
@@ -205,7 +205,7 @@ impl MaildirRepository {
 
                 Ok(())
             }
-            Err(MaildirError::Missing(_)) => {
+            Err(maildir::Error::Missing(_)) => {
                 state
                     .delete_by_id(entry.uid())
                     .expect("deleting by uid should succeed");
@@ -359,13 +359,13 @@ impl From<io::Error> for LoadError {
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("{0}")]
-    Maildir(maildir::MaildirError),
+    Maildir(maildir::Error),
     #[error("{0}")]
     State(state::Error),
 }
 
-impl From<maildir::MaildirError> for StoreError {
-    fn from(value: maildir::MaildirError) -> Self {
+impl From<maildir::Error> for StoreError {
+    fn from(value: maildir::Error) -> Self {
         Self::Maildir(value)
     }
 }

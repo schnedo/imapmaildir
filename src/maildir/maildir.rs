@@ -105,7 +105,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, MaildirError> {
+    pub fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, Error> {
         let new_local_metadata = LocalMailMetadata::from(mail.metadata());
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
@@ -158,7 +158,7 @@ impl Maildir {
     fn rename_new_mail(current: PathBuf, new: PathBuf) -> io::Result<()> {
         if let Err(error) = Self::rename(current, new) {
             match error {
-                MaildirError::Existing { from, mut to } => {
+                Error::Existing { from, mut to } => {
                     let file_name = to
                         .file_name()
                         .unwrap_or_else(|| unreachable!("new name has a file name"))
@@ -168,8 +168,8 @@ impl Maildir {
                     to.set_file_name(new_name);
                     Self::rename_new_mail(from, to)
                 }
-                MaildirError::Io(error) => Err(error),
-                MaildirError::Missing(_) => {
+                Error::Io(error) => Err(error),
+                Error::Missing(_) => {
                     unreachable!("Listed new mail should still be available")
                 }
             }
@@ -188,7 +188,7 @@ impl Maildir {
         self.cur.join(mail.filename())
     }
 
-    fn rename(current: PathBuf, new: PathBuf) -> Result<(), MaildirError> {
+    fn rename(current: PathBuf, new: PathBuf) -> Result<(), Error> {
         match (current.try_exists()?, new.try_exists()?) {
             (true, true) => {
                 if Self::is_content_identical(current.as_path(), new.as_path())? {
@@ -197,9 +197,9 @@ impl Maildir {
                         current.display(),
                         new.display()
                     );
-                    fs::remove_file(&current).map_err(MaildirError::from)
+                    fs::remove_file(&current).map_err(Error::from)
                 } else {
-                    Err(MaildirError::Existing {
+                    Err(Error::Existing {
                         from: current,
                         to: new,
                     })
@@ -220,7 +220,7 @@ impl Maildir {
 
                 Ok(())
             }
-            (false, false) => Err(MaildirError::Missing(current)),
+            (false, false) => Err(Error::Missing(current)),
         }
     }
 
@@ -240,7 +240,7 @@ impl Maildir {
         &self,
         entry: impl MaildirFile,
         new_uid: Uid,
-    ) -> Result<LocalMailMetadata, MaildirError> {
+    ) -> Result<LocalMailMetadata, Error> {
         let current_mail = self.get_path_of(&entry);
         let entry = entry.set_uid(new_uid);
         let new_mail = self.get_path_of(&entry);
@@ -249,10 +249,7 @@ impl Maildir {
         Ok(entry)
     }
 
-    pub fn remove_uid(
-        &self,
-        entry: LocalMailMetadata,
-    ) -> Result<NewLocalMailMetadata, MaildirError> {
+    pub fn remove_uid(&self, entry: LocalMailMetadata) -> Result<NewLocalMailMetadata, Error> {
         let current = self.get_path_of(&entry);
         let new_metadata = NewLocalMailMetadata::from(entry);
         Self::rename(current, self.get_path_of(&new_metadata))?;
@@ -264,7 +261,7 @@ impl Maildir {
         &self,
         entry: &mut impl MaildirFile,
         new_flags: BitFlags<Flag>,
-    ) -> Result<(), MaildirError> {
+    ) -> Result<(), Error> {
         debug!("updating mail {} flags: {}", entry.filename(), new_flags);
         let current_mail = self.get_path_of(entry);
         entry.set_flags(new_flags);
@@ -320,7 +317,7 @@ impl From<io::Error> for MaildirListError {
 }
 
 #[derive(Debug, Error)]
-pub enum MaildirError {
+pub enum Error {
     #[error("Missing mail {0}")]
     Missing(PathBuf),
     #[error("Moving {from} to {to} would overwrite mail with different content")]
@@ -329,7 +326,7 @@ pub enum MaildirError {
     Io(io::Error),
 }
 
-impl From<io::Error> for MaildirError {
+impl From<io::Error> for Error {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
     }
@@ -528,7 +525,7 @@ mod tests {
         assert_ok!(fs::remove_dir(maildir.dir.path().join(dir)));
 
         let result = assert_err!(maildir.maildir.store(&new_mail));
-        if let MaildirError::Io(error) = result {
+        if let Error::Io(error) = result {
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
         } else {
             panic!("result should be io error")
@@ -714,7 +711,7 @@ mod tests {
 
         let result = assert_err!(Maildir::rename(current, new));
         match result {
-            MaildirError::Existing { from, to } => {
+            Error::Existing { from, to } => {
                 assert_eq!(from, expected_current);
                 assert_eq!(to, expected_new);
             }
@@ -738,7 +735,7 @@ mod tests {
         let expected_new = new.clone();
 
         let result = assert_err!(Maildir::rename(current, new));
-        assert_matches!(result, MaildirError::Io(_));
+        assert_matches!(result, Error::Io(_));
         assert_ok!(fs::set_permissions(temp_dir.path(), original_permissions));
         assert!(expected_current.exists());
         assert!(!expected_new.exists());
@@ -755,7 +752,7 @@ mod tests {
 
         let result = assert_err!(Maildir::rename(current, new));
         match result {
-            MaildirError::Missing(path_buf) => {
+            Error::Missing(path_buf) => {
                 assert_eq!(path_buf, expected_current);
             }
             _ => panic!("rename result should be MaildirError::Missing"),
@@ -844,7 +841,7 @@ mod tests {
         let old_metadata = metadata.clone();
 
         let result = assert_err!(maildir.remove_uid(metadata));
-        assert_matches!(result, MaildirError::Existing { .. });
+        assert_matches!(result, Error::Existing { .. });
         assert!(assert_ok!(fs::exists(maildir.get_path_of(&old_metadata))));
     }
 }
