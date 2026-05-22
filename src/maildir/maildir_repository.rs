@@ -680,6 +680,25 @@ mod tests {
     }
 
     #[rstest]
+    fn test_add_flag_removes_mail_state_if_mail_is_not_in_maildir(repo_with_mail: RepoWithMail) {
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        assert_ok!(fs::remove_dir_all(&cur));
+        assert_ok!(fs::create_dir(&cur));
+        let metadata = repo_with_mail.mail.metadata();
+
+        let result = assert_err!(
+            repo_with_mail
+                .repo
+                .repo
+                .add_flag(metadata.uid(), Flag::Deleted)
+        );
+        assert_matches!(result, Error::NoExists { .. });
+        assert_none!(assert_ok!(
+            assert_ok!(repo_with_mail.repo.repo.state.lock()).get_by_id(metadata.uid())
+        ));
+    }
+
+    #[rstest]
     fn test_remove_flag_removes_flag(repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
         let flag = Flag::Seen;
