@@ -648,4 +648,16 @@ mod tests {
 
         assert_ok!(repo_with_mail.repo.repo.update_flags(&metadata));
     }
+
+    #[rstest]
+    fn test_update_flags_errors_on_non_existent_mail(
+        repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) {
+        let metadata = mail.metadata();
+        let metadata = RemoteMailMetadata::new(metadata.uid(), metadata.flags(), metadata.modseq());
+
+        let result = assert_err!(repo.repo.update_flags(&metadata));
+        assert_matches!(result, Error::NoExists { .. });
+    }
 }
