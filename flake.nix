@@ -106,6 +106,9 @@
               ${config.pre-commit.shellHook}
             '';
 
+            env = {
+              RSTEST_TIMEOUT = 5;
+            };
             # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             # ];
 
