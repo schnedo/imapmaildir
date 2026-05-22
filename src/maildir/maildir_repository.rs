@@ -499,6 +499,19 @@ mod tests {
     }
 
     #[rstest]
+    fn test_load_removes_existing_state_on_uninitialized_maildir(repo: TestMaildirRepository) {
+        assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
+        assert!(assert_ok!(repo.state_dir.path().try_exists()));
+
+        let result = assert_err!(MaildirRepository::load(
+            repo.mail_dir.path(),
+            repo.state_dir.path()
+        ));
+
+        assert_matches!(result, LoadError::Uninitialized);
+    }
+
+    #[rstest]
     fn test_load_propagates_maildir_error(repo: TestMaildirRepository) {
         let mut permissions = assert_ok!(repo.mail_dir.path().metadata()).permissions();
         permissions.set_mode(0o200);
@@ -510,5 +523,19 @@ mod tests {
         ));
 
         assert_matches!(result, LoadError::Maildir(_));
+    }
+
+    #[rstest]
+    fn test_load_propagates_state_error(repo: TestMaildirRepository) {
+        let mut permissions = assert_ok!(repo.state_dir.path().metadata()).permissions();
+        permissions.set_mode(0o200);
+        assert_ok!(fs::set_permissions(repo.state_dir.path(), permissions));
+
+        let result = assert_err!(MaildirRepository::load(
+            repo.mail_dir.path(),
+            repo.state_dir.path()
+        ));
+
+        assert_matches!(result, LoadError::State(_));
     }
 }
