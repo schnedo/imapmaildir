@@ -137,7 +137,7 @@ impl MaildirRepository {
             );
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                self.handle_flags(&mut entry, new_flags)
+                self.handle_flags(&state, &mut entry, new_flags)
                     .expect("updating flags should succeed");
                 state
                     // todo: check highest modseq handling consistent with channel?
@@ -161,7 +161,7 @@ impl MaildirRepository {
                 info!("adding flag {flag} to mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.insert(flag);
-                self.handle_flags(&mut entry, new_flags)
+                self.handle_flags(&state, &mut entry, new_flags)
                     .expect("updating flags should succeed");
             }
 
@@ -181,7 +181,7 @@ impl MaildirRepository {
                 info!("removing flag {flag} of mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.remove(flag);
-                self.handle_flags(&mut entry, new_flags)
+                self.handle_flags(&state, &mut entry, new_flags)
                     .expect("updating flags should succeed");
             }
 
@@ -193,12 +193,12 @@ impl MaildirRepository {
 
     fn handle_flags(
         &self,
+        state: &State,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
     ) -> Result<(), NoExistsError> {
         match self.maildir.update_flags(entry, new_flags) {
             Ok(()) => {
-                let state = self.lock();
                 state
                     .update(entry)
                     .expect("updating stored data should succeed");
@@ -206,7 +206,6 @@ impl MaildirRepository {
                 Ok(())
             }
             Err(MaildirError::Missing(_)) => {
-                let state = self.lock();
                 state
                     .delete_by_id(entry.uid())
                     .expect("deleting by uid should succeed");
@@ -449,6 +448,17 @@ mod tests {
         )
     }
 
+    struct RepoWithMail {
+        repo: TestMaildirRepository,
+        mail: RemoteMail,
+    }
+    #[fixture]
+    fn repo_with_mail(repo: TestMaildirRepository, mail: RemoteMail) -> RepoWithMail {
+        assert_ok!(repo.repo.store(&mail));
+
+        RepoWithMail { repo, mail }
+    }
+
     #[rstest]
     fn test_init_works_in_empty_dirs(
         mailbox_metadata: MailboxMetadata,
@@ -621,5 +631,15 @@ mod tests {
         let result = assert_err!(repo.repo.store(&mail));
 
         assert_matches!(result, StoreError::Maildir(_));
+    }
+
+    #[rstest]
+    fn test_update_flags_updates_flags(repo_with_mail: RepoWithMail) {
+        let metadata = repo_with_mail.mail.metadata();
+        let flags = Flag::Deleted.into();
+        assert_ne!(metadata.flags(), flags);
+        let metadata = RemoteMailMetadata::new(metadata.uid(), flags, metadata.modseq());
+
+        assert_ok!(repo_with_mail.repo.repo.update_flags(&metadata));
     }
 }
