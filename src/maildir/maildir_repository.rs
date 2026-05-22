@@ -159,16 +159,12 @@ impl MaildirRepository {
 
     pub fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
         let state = self.lock();
-        if let Some(mut entry) = state
-            .get_by_id(uid)
-            .expect("getting state data by uid should succeed")
-        {
+        if let Some(mut entry) = state.get_by_id(uid)? {
             if entry.has_flag(flag) {
                 info!("removing flag {flag} of mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.remove(flag);
-                self.handle_flags(&state, &mut entry, new_flags)
-                    .expect("updating flags should succeed");
+                self.handle_flags(&state, &mut entry, new_flags)?;
             }
 
             Ok(())
@@ -680,6 +676,32 @@ mod tests {
         let metadata = mail.metadata();
 
         let result = assert_err!(repo.repo.add_flag(metadata.uid(), Flag::Deleted));
+        assert_matches!(result, Error::NoExists { .. });
+    }
+
+    #[rstest]
+    fn test_remove_flag_removes_flag(repo_with_mail: RepoWithMail) {
+        let metadata = repo_with_mail.mail.metadata();
+        let flag = Flag::Seen;
+        assert_contains!(metadata.flags(), flag);
+
+        assert_ok!(repo_with_mail.repo.repo.remove_flag(metadata.uid(), flag));
+    }
+
+    #[rstest]
+    fn test_remove_flag_does_nothing_if_flag_is_not_present(repo_with_mail: RepoWithMail) {
+        let metadata = repo_with_mail.mail.metadata();
+        let flag = Flag::Deleted;
+        assert_not_contains!(metadata.flags(), flag);
+
+        assert_ok!(repo_with_mail.repo.repo.remove_flag(metadata.uid(), flag));
+    }
+
+    #[rstest]
+    fn test_remove_flag_errors_on_non_existent_mail(repo: TestMaildirRepository, mail: RemoteMail) {
+        let metadata = mail.metadata();
+
+        let result = assert_err!(repo.repo.remove_flag(metadata.uid(), Flag::Seen));
         assert_matches!(result, Error::NoExists { .. });
     }
 }
