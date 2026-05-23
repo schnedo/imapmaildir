@@ -19,3 +19,15 @@ impl Default for TagGenerator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tag_generator_generates_tags() {
+        let generator = TagGenerator::default();
+        let first = generator.next();
+        assert_ne!(first, generator.next());
+    }
+}
