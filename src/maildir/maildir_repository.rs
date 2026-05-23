@@ -219,24 +219,18 @@ impl MaildirRepository {
         Ok(())
     }
 
-    pub fn detect_changes(&self) -> LocalChanges {
+    pub fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
         let mut news: Vec<LocalMail> = Vec::new();
-        let maildir_metadata = self
-            .maildir
-            .list_cur()
-            .expect("cur directory should be readable");
+        let maildir_metadata = self.maildir.list_cur()?;
 
         // todo: use Set instead of Map
         let mut maildir_mails = HashMap::new();
 
         for metadata in maildir_metadata {
-            let metadata = metadata.expect("file in cur should be readable");
+            let metadata = metadata?;
             match metadata {
                 maildir::MaildirEntry::New(new_local_mail_metadata) => {
-                    let content = self
-                        .maildir
-                        .read_content(&new_local_mail_metadata)
-                        .expect("reading mail content should succeed");
+                    let content = self.maildir.read_content(&new_local_mail_metadata)?;
                     news.push(LocalMail::new(content, new_local_mail_metadata));
                 }
                 maildir::MaildirEntry::MaybeTracked(local_mail_metadata) => {
@@ -248,41 +242,34 @@ impl MaildirRepository {
         let mut deletions = Vec::new();
 
         let mut state = self.lock();
-        let highest_modseq = state
-            .fore_each(|entry| {
-                let uid = entry.uid();
-                if let Some(data) = maildir_mails.remove(&uid) {
-                    let mut additional_flags = data.flags();
-                    additional_flags.remove(entry.flags());
-                    for flag in additional_flags {
-                        updates.insert_additional(flag, uid);
-                    }
-                    let mut removed_flags = entry.flags();
-                    removed_flags.remove(data.flags());
-                    for flag in removed_flags {
-                        updates.insert_removed(flag, uid);
-                    }
-                } else {
-                    deletions.push(entry.uid());
+        let highest_modseq = state.fore_each(|entry| {
+            let uid = entry.uid();
+            if let Some(data) = maildir_mails.remove(&uid) {
+                let mut additional_flags = data.flags();
+                additional_flags.remove(entry.flags());
+                for flag in additional_flags {
+                    updates.insert_additional(flag, uid);
                 }
-            })
-            .expect("getting all cached entries should succeed");
+                let mut removed_flags = entry.flags();
+                removed_flags.remove(data.flags());
+                for flag in removed_flags {
+                    updates.insert_removed(flag, uid);
+                }
+            } else {
+                deletions.push(entry.uid());
+            }
+        })?;
         for maildata in maildir_mails.into_values() {
-            let maildata = self
-                .maildir
-                .remove_uid(maildata)
-                .expect("removing uid of new mail should succeed");
+            let maildata = self.maildir.remove_uid(maildata)?;
             // todo: return Iterator and chain here
-            let content = self
-                .maildir
-                .read_content(&maildata)
-                .expect("mail contents should be readable");
+            let content = self.maildir.read_content(&maildata)?;
             news.push(LocalMail::new(content, maildata));
         }
 
         let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
         trace!("{changes:?}");
-        changes
+
+        Ok(changes)
     }
 }
 
@@ -303,6 +290,42 @@ impl From<maildir::InitError> for InitError {
 impl From<state::InitError> for InitError {
     fn from(value: state::InitError) -> Self {
         Self::State(value)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum DetectChangesError {
+    #[error("{0}")]
+    Io(io::Error),
+    #[error("{0}")]
+    Maildir(maildir::Error),
+    #[error("{0}")]
+    MaildirList(maildir::MaildirListError),
+    #[error("{0}")]
+    State(state::Error),
+}
+
+impl From<maildir::Error> for DetectChangesError {
+    fn from(value: maildir::Error) -> Self {
+        Self::Maildir(value)
+    }
+}
+
+impl From<maildir::MaildirListError> for DetectChangesError {
+    fn from(value: maildir::MaildirListError) -> Self {
+        Self::MaildirList(value)
+    }
+}
+
+impl From<state::Error> for DetectChangesError {
+    fn from(value: state::Error) -> Self {
+        Self::State(value)
+    }
+}
+
+impl From<io::Error> for DetectChangesError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
     }
 }
 
@@ -776,5 +799,119 @@ mod tests {
                 .join(mail.filename())
                 .exists()
         );
+    }
+
+    #[rstest]
+    fn test_detect_changes_has_nothing_on_no_changes(repo_with_mail: RepoWithMail) {
+        let repo = repo_with_mail.repo.repo;
+
+        let result = assert_ok!(repo.detect_changes());
+
+        assert_eq!(result.highest_modseq, assert_ok!(repo.highest_modseq()));
+        assert_len_eq_x!(result.deletions, 0);
+        assert_len_eq_x!(result.news, 0);
+        let changes = result.updates.build();
+        assert_len_eq_x!(changes.additional_flags().collect::<Vec<_>>(), 0);
+        assert_len_eq_x!(changes.removed_flags().collect::<Vec<_>>(), 0);
+    }
+
+    #[rstest]
+    fn test_detect_changes_detects_new_mail(repo_with_mail: RepoWithMail) {
+        let expected_content = "1";
+        let uid = assert_ok!(Uid::try_from(3));
+        let flag = Flag::Seen;
+        let filename = "f";
+        let new_mail_metadata = LocalMailMetadata::new(uid, flag.into(), Some(filename.into()));
+        assert_none!(assert_ok!(
+            assert_ok!(repo_with_mail.repo.repo.state.lock()).get_by_id(new_mail_metadata.uid())
+        ));
+        let expected_filename = format!("{filename}:2,{}", char::from(flag));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        assert_ok!(fs::write(
+            cur.join(new_mail_metadata.filename()),
+            expected_content
+        ));
+        let repo = repo_with_mail.repo.repo;
+
+        let mut result = assert_ok!(repo.detect_changes());
+
+        assert_len_eq_x!(&result.news, 1);
+        let mail = assert_some!(result.news.pop());
+        let (metadata, content) = mail.unpack();
+        assert_eq!(content, expected_content.as_bytes());
+        assert_eq!(metadata.filename(), expected_filename);
+        assert_eq!(metadata.flags(), BitFlags::from_flag(Flag::Seen));
+        assert!(cur.join(expected_filename).exists());
+    }
+
+    #[rstest]
+    fn test_detect_changes_detects_new_mail_without_uid(repo_with_mail: RepoWithMail) {
+        let expected_content = "1";
+        let expected_filename = "f";
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        assert_ok!(fs::write(cur.join(expected_filename), expected_content));
+        let mut expected_filename = expected_filename.to_string();
+        expected_filename.push_str(":2,S");
+        let repo = repo_with_mail.repo.repo;
+
+        let mut result = assert_ok!(repo.detect_changes());
+
+        assert_len_eq_x!(&result.news, 1);
+        let mail = assert_some!(result.news.pop());
+        let (metadata, content) = mail.unpack();
+        assert_eq!(content, expected_content.as_bytes());
+        assert_eq!(metadata.filename(), expected_filename);
+        assert_eq!(metadata.flags(), BitFlags::from_flag(Flag::Seen));
+        assert!(cur.join(expected_filename).exists());
+    }
+
+    #[rstest]
+    fn test_detect_changes_detects_flag_changes(repo_with_mail: RepoWithMail) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let metadata = assert_some!(assert_ok!(assert_ok!(repo.state.lock()).get_by_id(uid)));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        let mut new_name = metadata.filename();
+        new_name.pop();
+        new_name.push('T');
+        assert_ok!(fs::rename(
+            cur.join(metadata.filename()),
+            cur.join(new_name)
+        ));
+
+        let result = assert_ok!(repo.detect_changes());
+
+        let changes = result.updates.build();
+        let mut removed: Vec<_> = changes.removed_flags().collect();
+        assert_len_eq_x!(&removed, 1);
+        let (removed_flag, removed_uids) = assert_some!(removed.pop());
+        assert_eq!(removed_flag, Flag::Seen);
+        let mut removed_uids: Vec<_> = removed_uids.iter().collect();
+        assert_len_eq_x!(&removed_uids, 1);
+        let removed_uid = assert_some!(removed_uids.pop());
+        assert_eq!(removed_uid, uid);
+        let mut additional: Vec<_> = changes.additional_flags().collect();
+        assert_len_eq_x!(&additional, 1);
+        let (additional_flag, additional_uids) = assert_some!(additional.pop());
+        assert_eq!(additional_flag, Flag::Deleted);
+        let mut additional_uids: Vec<_> = additional_uids.iter().collect();
+        assert_len_eq_x!(&additional_uids, 1);
+        let additional_uid = assert_some!(additional_uids.pop());
+        assert_eq!(additional_uid, uid);
+    }
+
+    #[rstest]
+    fn test_detect_changes_detects_deleted_mail(repo_with_mail: RepoWithMail) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let metadata = assert_some!(assert_ok!(assert_ok!(repo.state.lock()).get_by_id(uid)));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        assert_ok!(fs::remove_file(cur.join(metadata.filename())));
+
+        let mut result = assert_ok!(repo.detect_changes());
+
+        assert_len_eq_x!(&result.deletions, 1);
+        let deleted_mail_uid = assert_some!(result.deletions.pop());
+        assert_eq!(deleted_mail_uid, uid);
     }
 }
