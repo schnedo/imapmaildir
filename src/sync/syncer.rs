@@ -43,7 +43,9 @@ impl Syncer {
         let highest_modseq = maildir_repository
             .highest_modseq()
             .expect("getting highest_modseq should succeed");
-        let mut local_changes = maildir_repository.detect_changes();
+        let mut local_changes = maildir_repository
+            .detect_changes()
+            .expect("detecting local changes should succeed");
         let (task_tx, task_rx) = mpsc::channel(32);
         Self::setup_task_processing(maildir_repository.clone(), task_rx);
 
