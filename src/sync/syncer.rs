@@ -91,7 +91,9 @@ impl Syncer {
         let mut mailinfos = client.store(mailbox, news.into_iter()).await;
         // todo: parallelize these
         while let Some((uid, metadata)) = mailinfos.recv().await {
-            maildir_repository.add_synced(metadata, uid);
+            maildir_repository
+                .add_synced(metadata, uid)
+                .expect("writing back synced uid should succeed");
         }
         let updates = updates.build();
         for (flag, sequence_set) in updates.removed_flags() {
