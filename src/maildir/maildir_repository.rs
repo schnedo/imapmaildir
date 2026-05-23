@@ -194,19 +194,16 @@ impl MaildirRepository {
         }
     }
 
-    pub fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) {
+    pub fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) -> Result<(), Error> {
         info!(
             "adding {uid} to newly synced mail {}",
             mail_metadata.filename()
         );
-        let mail_metadata = self
-            .maildir
-            .update_uid(mail_metadata, uid)
-            .expect("updating maildir with newly synced mail should succeed");
+        let mail_metadata = self.maildir.update_uid(mail_metadata, uid)?;
         let state = self.lock();
-        state
-            .store(&mail_metadata)
-            .expect("storing data should succeed");
+        state.store(&mail_metadata)?;
+
+        Ok(())
     }
 
     pub fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
@@ -391,7 +388,7 @@ impl From<state::Error> for Error {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, str::FromStr};
 
     use assertables::*;
     use rstest::*;
@@ -755,5 +752,29 @@ mod tests {
     #[rstest]
     fn test_delete_does_nothing_on_mail_missing_in_state(repo: TestMaildirRepository) {
         assert_ok!(repo.repo.delete(Uid::MAX));
+    }
+
+    #[rstest]
+    fn test_add_synced_adds_synced_mail(repo: TestMaildirRepository) {
+        let filename = "foo:2,S";
+        let metadata = assert_ok!(NewLocalMailMetadata::from_str(filename));
+        assert_ok!(fs::write(
+            repo.mail_dir.path().join("cur").join(filename),
+            "1"
+        ));
+        let uid = Uid::MAX;
+
+        assert_ok!(repo.repo.add_synced(metadata, uid));
+
+        let mail = assert_some!(assert_ok!(
+            assert_ok!(repo.repo.state.lock()).get_by_id(uid)
+        ));
+        assert!(
+            repo.mail_dir
+                .path()
+                .join("cur")
+                .join(mail.filename())
+                .exists()
+        );
     }
 }
