@@ -5,6 +5,8 @@ mod config;
 mod imap;
 mod logging;
 mod maildir;
+#[cfg(test)]
+mod mock_server;
 mod repository;
 mod sync;
 

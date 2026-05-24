@@ -30,7 +30,7 @@ jobs:
           tool: nextest
       - name: Run tests
         env:
-          RSTEST_TIMEOUT: 5
+          RSTEST_TIMEOUT: 30
         # todo: have a look at criterion.rs
         # todo: have a look at cargo mutants
         run: cargo nextest run --profile ci

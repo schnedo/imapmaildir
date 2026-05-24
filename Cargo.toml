@@ -45,3 +45,4 @@ allow_attributes = "warn"
 assertables = "9.8.3"
 rstest = "0.26.1"
 tempfile = "3.24.0"
+testcontainers = { version = "0.27.3", features = ["http_wait"] }

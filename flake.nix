@@ -103,11 +103,13 @@
               ++ config.pre-commit.settings.enabledPackages;
 
             shellHook = ''
+              systemctl --user start podman.socket
+              export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
               ${config.pre-commit.shellHook}
             '';
 
             env = {
-              RSTEST_TIMEOUT = 5;
+              RSTEST_TIMEOUT = 30;
             };
             # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             # ];
