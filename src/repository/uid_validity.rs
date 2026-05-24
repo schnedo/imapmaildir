@@ -64,6 +64,6 @@ mod tests {
         assert_eq!(uid_validity, validity);
         let validity = assert_ok!(UidValidity::try_from(&num));
         assert_eq!(uid_validity, validity);
-        assert_eq!(num, validity.into());
+        assert_eq!(num, u32::from(validity));
     }
 }
