@@ -1,9 +1,12 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fs, path::Path};
 
 use futures::{SinkExt, StreamExt};
 use log::{debug, trace};
 use tokio::{net::TcpStream, sync::mpsc};
-use tokio_native_tls::{TlsConnector, native_tls};
+use tokio_native_tls::{
+    TlsConnector,
+    native_tls::{self, Certificate},
+};
 use tokio_util::codec::Framed;
 
 use crate::imap::transport::{
@@ -29,10 +32,19 @@ impl Connection {
     pub async fn start(
         host: &str,
         port: u16,
+        server_certificate_file: Option<&Path>,
         untagged_response_sender: mpsc::Sender<ResponseData>,
     ) -> Self {
         debug!("Connecting to server");
-        let tls = native_tls::TlsConnector::new().expect("native tls should be available");
+        let mut tls = native_tls::TlsConnector::builder();
+        if let Some(cert_file) = server_certificate_file {
+            let cert = fs::read(cert_file).expect("server_certificate_file should be readable");
+            tls.add_root_certificate(
+                Certificate::from_pem(&cert)
+                    .expect("server_certificate_file should be in pem format"),
+            );
+        }
+        let tls = tls.build().expect("native tls should be available");
         let tls = TlsConnector::from(tls);
         let stream =
             (TcpStream::connect((host, port)).await).expect("connection to server should succeed");
@@ -125,5 +137,33 @@ impl Connection {
             .recv()
             .await
             .expect("channel to network task should still be open")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, str::FromStr};
+
+    use assertables::*;
+    use rstest::*;
+
+    use super::*;
+    use crate::mock_server::*;
+
+    #[rstest]
+    #[awt]
+    #[tokio::test]
+    async fn test_connecting_to_server_should_succeed(#[future] server: MockServer) {
+        let (tx, _) = mpsc::channel(1);
+        let _connection = Connection::start(
+            &server.hostname().await,
+            server.port().await,
+            Some(assert_ok!(&PathBuf::from_str(&format!(
+                "{}/mock/certificate.crt",
+                env!("CARGO_MANIFEST_DIR")
+            )))),
+            tx,
+        )
+        .await;
     }
 }
