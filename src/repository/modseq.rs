@@ -52,7 +52,7 @@ mod tests {
         let modseq = assert_ok!(ModSeq::try_from(expected));
         let modseq_ref = assert_ok!(ModSeq::try_from(expected_ref));
         assert_eq!(modseq, modseq_ref);
-        assert_eq!(expected, modseq.into());
+        assert_eq!(expected, i64::from(modseq));
     }
 
     #[rstest]

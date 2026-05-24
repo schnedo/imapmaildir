@@ -164,7 +164,7 @@ mod tests {
         let expected = 1u32;
         let a = assert_ok!(Uid::try_from(expected));
 
-        assert_eq!(expected, a.into());
-        assert_eq!(expected, (&a).into());
+        assert_eq!(expected, u32::from(a));
+        assert_eq!(expected, u32::from(&a));
     }
 }

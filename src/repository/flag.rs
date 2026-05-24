@@ -174,7 +174,7 @@ mod tests {
     #[case(Flag::Deleted, 'T')]
     #[case(Flag::Draft, 'D')]
     fn test_flag_serializes_to_correct_char(#[case] flag: Flag, #[case] char: char) {
-        assert_eq!(char, flag.into());
+        assert_eq!(char, char::from(flag));
     }
 
     #[rstest]
