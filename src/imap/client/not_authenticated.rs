@@ -28,7 +28,9 @@ impl Client {
     async fn connect(host: &str, port: u16) -> Self {
         let (untagged_response_sender, mut untagged_response_receiver) = mpsc::channel(32);
         // todo: pass configured server cert file
-        let mut connection = Connection::start(host, port, None, untagged_response_sender).await;
+        let mut connection = Connection::start(host, port, None, untagged_response_sender)
+            .await
+            .expect("creating a connection should succeed");
 
         let mut capabilities = Capabilities::default();
         let mut auth_capabilities = AuthCapabilities::default();
