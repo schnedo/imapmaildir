@@ -1,7 +1,12 @@
-use std::{borrow::Cow, fs, path::Path};
+use std::{
+    borrow::Cow,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use futures::{SinkExt, StreamExt};
 use log::{debug, trace};
+use thiserror::Error;
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_native_tls::{
     TlsConnector,
@@ -34,25 +39,32 @@ impl Connection {
         port: u16,
         server_certificate_file: Option<&Path>,
         untagged_response_sender: mpsc::Sender<ResponseData>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         debug!("Connecting to server");
         let mut tls = native_tls::TlsConnector::builder();
         if let Some(cert_file) = server_certificate_file {
-            let cert = fs::read(cert_file).expect("server_certificate_file should be readable");
-            tls.add_root_certificate(
-                Certificate::from_pem(&cert)
-                    .expect("server_certificate_file should be in pem format"),
-            );
+            let cert =
+                fs::read(cert_file).map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
+            tls.add_root_certificate(Certificate::from_pem(&cert).map_err(|_| {
+                Error::TlsError(TlsError::CertfileFormatInvalid(cert_file.to_path_buf()))
+            })?);
         }
-        let tls = tls.build().expect("native tls should be available");
+        let tls = tls
+            .build()
+            .map_err(|_| Error::TlsError(TlsError::NativeTls))?;
         let tls = TlsConnector::from(tls);
         let stream =
-            (TcpStream::connect((host, port)).await).expect("connection to server should succeed");
-        let stream = (tls.connect(host, stream).await).expect("upgrading to tls should succeed");
+            (TcpStream::connect((host, port)).await).map_err(|cause| Error::Connection {
+                host: host.to_string(),
+                port,
+                cause,
+            })?;
+        let stream = (tls.connect(host, stream).await)
+            .map_err(|e| Error::TlsError(TlsError::Validation(e)))?;
 
         let mut stream = Framed::new(stream, ImapCodec::default());
-        let (outbound_tx, mut outbound_rx) = mpsc::channel::<(String, Vec<u8>)>(2);
-        let (inbound_tx, inbound_rx) = mpsc::channel::<SendReturnValue>(2);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<(String, Vec<u8>)>(30);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<SendReturnValue>(30);
 
         tokio::spawn(async move {
             loop {
@@ -111,11 +123,11 @@ impl Connection {
             }
         });
 
-        Self {
+        Ok(Self {
             tag_generator: TagGenerator::default(),
             outbound_tx,
             inbound_rx,
-        }
+        })
     }
 
     pub async fn send(&mut self, command: Vec<u8>) -> SendReturnValue {
@@ -140,6 +152,32 @@ impl Connection {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum TlsError {
+    #[error("Cannot read server certificate file: {0}")]
+    CertfileReadError(io::Error),
+    #[error("Server certificate {0} not in pem format")]
+    CertfileFormatInvalid(PathBuf),
+    #[error(
+        "Could not find native TLS implementation (see https://docs.rs/native-tls/latest/native_tls/index.html#how-is-this-implemented)"
+    )]
+    NativeTls,
+    #[error("Server certificate could not be validated: {0}")]
+    Validation(native_tls::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("{0}")]
+    TlsError(TlsError),
+    #[error("Connecting to {host}:{port} failed: {cause}")]
+    Connection {
+        host: String,
+        port: u16,
+        cause: io::Error,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, str::FromStr};
@@ -155,15 +193,17 @@ mod tests {
     #[tokio::test]
     async fn test_connecting_to_server_should_succeed(#[future] server: MockServer) {
         let (tx, _) = mpsc::channel(1);
-        let _connection = Connection::start(
-            &server.hostname().await,
-            server.port().await,
-            Some(assert_ok!(&PathBuf::from_str(&format!(
-                "{}/mock/certificate.crt",
-                env!("CARGO_MANIFEST_DIR")
-            )))),
-            tx,
-        )
-        .await;
+        let _connection = assert_ok!(
+            Connection::start(
+                &server.hostname().await,
+                server.port().await,
+                Some(assert_ok!(&PathBuf::from_str(&format!(
+                    "{}/mock/certificate.crt",
+                    env!("CARGO_MANIFEST_DIR")
+                )))),
+                tx,
+            )
+            .await
+        );
     }
 }
