@@ -4,7 +4,7 @@ mod logging;
 use clap::Parser;
 use log::LevelFilter;
 
-use imapmaildir::Config;
+use imapmaildir::config::AccountConfig;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -23,7 +23,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
     logging::init(args.log_level);
-    let config = Config::load_from_file(&args.account);
+    let config = AccountConfig::load_from_file(&args.account);
 
     cli::run(&args, config);
 }
