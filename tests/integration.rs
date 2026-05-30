@@ -25,7 +25,7 @@ async fn test(#[future] server: MockServer) {
     let config = Account::new(
         Auth::Plain(PlainAuth::new(
             "user".to_string(),
-            vec!["echo".to_string(), "password".to_string()],
+            vec!["echo".to_string(), server.password().to_string()],
         )),
         host,
         port,
