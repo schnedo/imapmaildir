@@ -53,7 +53,7 @@ fn format_panic_info(info: &PanicHookInfo) -> String {
 
 pub fn init(level: LevelFilter) {
     let mut builder = Builder::new();
-    builder.filter_level(level);
+    builder.filter_module(env!("CARGO_CRATE_NAME"), level);
     if connected_to_journal() {
         builder.format(move |buf, record| {
             let mailbox = get_thread_name();

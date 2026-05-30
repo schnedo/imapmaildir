@@ -11,6 +11,13 @@ pub struct PlainAuth {
 }
 
 impl PlainAuth {
+    #[must_use]
+    pub fn new(user: String, password_cmd: Vec<String>) -> Self {
+        Self { user, password_cmd }
+    }
+
+    #[must_use]
+    #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
     pub fn password(&self) -> String {
         let mut cmd_parts = self.password_cmd.iter();
         let mut cmd = Command::new(
