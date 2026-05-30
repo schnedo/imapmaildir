@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use assertables::assert_ok;
 use imapmaildir::logging;
 use rstest::fixture;
@@ -63,6 +65,17 @@ pub async fn server(__setup_logging: ()) -> MockServer {
                         "/etc/dovecot/ssl/tls.key",
                     )
                     .with_access_mode(AccessMode::ReadOnly)
+                )
+                .with_mount(
+                    Mount::bind_mount(
+                        format!("{}/mock/dovecot.conf", env!("CARGO_MANIFEST_DIR")),
+                        "/etc/dovecot/dovecot.conf",
+                    )
+                    .with_access_mode(AccessMode::ReadOnly)
+                )
+                .with_copy_to(
+                    "/srv/vmail/user",
+                    PathBuf::from(format!("{}/mock/user", env!("CARGO_MANIFEST_DIR"))),
                 )
                 .with_env_var("USER_PASSWORD", &password)
                 .start()
