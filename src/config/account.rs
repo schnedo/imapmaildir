@@ -11,16 +11,35 @@ struct AccountConfigFile {
     auth: Auth,
     host: String,
     port: u16,
+    server_certificate_file: Option<PathBuf>,
     // todo: "all" for generic fetch of all mailboxes
     mailboxes: Vec<String>,
     maildir_base_path: Option<PathBuf>,
 }
 
+// todo: move config to code using it
+#[derive(Getters)]
+pub struct Connection {
+    host: String,
+    port: u16,
+    server_certificate_file: Option<PathBuf>,
+}
+
+impl Connection {
+    #[must_use]
+    pub fn new(host: String, port: u16, server_certificate_file: Option<PathBuf>) -> Self {
+        Self {
+            host,
+            port,
+            server_certificate_file,
+        }
+    }
+}
+
 #[derive(Getters)]
 pub struct Account {
     auth: Auth,
-    host: String,
-    port: u16,
+    connection: Connection,
     mailboxes: Vec<String>,
     maildir_base_path: PathBuf,
     state_dir: PathBuf,
@@ -51,8 +70,7 @@ impl Account {
 
         Self {
             auth: config.auth,
-            host: config.host,
-            port: config.port,
+            connection: Connection::new(config.host, config.port, config.server_certificate_file),
             mailboxes: config.mailboxes,
             maildir_base_path,
             state_dir,

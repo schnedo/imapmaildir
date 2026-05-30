@@ -1,8 +1,4 @@
-use std::{
-    borrow::Cow,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use std::{borrow::Cow, fs, io, path::PathBuf};
 
 use futures::{SinkExt, StreamExt};
 use log::{debug, trace};
@@ -14,9 +10,12 @@ use tokio_native_tls::{
 };
 use tokio_util::codec::Framed;
 
-use crate::imap::transport::{
-    codec::{ImapCodec, ResponseData},
-    tag_generator::TagGenerator,
+use crate::{
+    config,
+    imap::transport::{
+        codec::{ImapCodec, ResponseData},
+        tag_generator::TagGenerator,
+    },
 };
 
 #[derive(Debug)]
@@ -35,24 +34,24 @@ pub struct Connection {
 
 impl Connection {
     pub async fn start(
-        host: &str,
-        port: u16,
-        server_certificate_file: Option<&Path>,
+        connection_config: &config::Connection,
         untagged_response_sender: mpsc::Sender<ResponseData>,
     ) -> Result<Self, Error> {
         debug!("Connecting to server");
         let mut tls = native_tls::TlsConnector::builder();
-        if let Some(cert_file) = server_certificate_file {
+        if let Some(cert_file) = connection_config.server_certificate_file() {
             let cert =
                 fs::read(cert_file).map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
             tls.add_root_certificate(Certificate::from_pem(&cert).map_err(|_| {
-                Error::TlsError(TlsError::CertfileFormatInvalid(cert_file.to_path_buf()))
+                Error::TlsError(TlsError::CertfileFormatInvalid(cert_file.clone()))
             })?);
         }
         let tls = tls
             .build()
             .map_err(|_| Error::TlsError(TlsError::NativeTls))?;
         let tls = TlsConnector::from(tls);
+        let host = connection_config.host().as_str();
+        let port = connection_config.port();
         let stream =
             (TcpStream::connect((host, port)).await).map_err(|cause| Error::Connection {
                 host: host.to_string(),
@@ -245,17 +244,14 @@ mod tests {
     #[tokio::test]
     async fn test_connecting_to_server_should_succeed(#[future] server: MockServer) {
         let (tx, _) = mpsc::channel(1);
-        let _connection = assert_ok!(
-            Connection::start(
-                &server.hostname().await,
-                server.port().await,
-                Some(assert_ok!(&PathBuf::from_str(&format!(
-                    "{}/mock/certificate.crt",
-                    env!("CARGO_MANIFEST_DIR")
-                )))),
-                tx,
-            )
-            .await
+        let config = config::Connection::new(
+            server.hostname().await,
+            server.port().await,
+            Some(assert_ok!(PathBuf::from_str(&format!(
+                "{}/mock/certificate.crt",
+                env!("CARGO_MANIFEST_DIR")
+            )))),
         );
+        let _connection = assert_ok!(Connection::start(&config, tx,).await);
     }
 }
