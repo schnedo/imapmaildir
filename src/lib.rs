@@ -1,5 +1,6 @@
 pub mod config;
 mod imap;
+pub mod logging;
 mod maildir;
 mod repository;
 mod sync;

@@ -1,10 +1,9 @@
 mod cli;
-mod logging;
 
 use clap::Parser;
 use log::LevelFilter;
 
-use imapmaildir::config::Account;
+use imapmaildir::{config::Account, logging};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]

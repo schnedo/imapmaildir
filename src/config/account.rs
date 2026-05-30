@@ -46,6 +46,25 @@ pub struct Account {
 }
 
 impl Account {
+    #[must_use]
+    pub fn new(
+        auth: Auth,
+        host: String,
+        port: u16,
+        server_certificate_file: Option<PathBuf>,
+        mailboxes: Vec<String>,
+        maildir_base_path: PathBuf,
+        state_dir: PathBuf,
+    ) -> Self {
+        Self {
+            auth,
+            connection: Connection::new(host, port, server_certificate_file),
+            mailboxes,
+            maildir_base_path,
+            state_dir,
+        }
+    }
+
     #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
     #[must_use]
     pub fn load_from_file(account: &str) -> Self {
