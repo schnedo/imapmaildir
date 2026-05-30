@@ -2,13 +2,16 @@ use assertables::assert_ok;
 use imapmaildir::logging;
 use rstest::fixture;
 use testcontainers::{
-    ContainerAsync, GenericImage, ImageExt,
-    core::{AccessMode, IntoContainerPort, Mount, WaitFor, wait::HttpWaitStrategy},
+    ContainerAsync, GenericImage, Healthcheck, ImageExt,
+    core::{AccessMode, ContainerPort, Mount, WaitFor},
     runners::AsyncRunner,
 };
 
+const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
+
 pub struct MockServer {
     server: ContainerAsync<GenericImage>,
+    password: String,
 }
 
 impl MockServer {
@@ -17,7 +20,11 @@ impl MockServer {
     }
 
     pub async fn port(&self) -> u16 {
-        assert_ok!(self.server.get_host_port_ipv4(3993).await)
+        assert_ok!(self.server.get_host_port_ipv4(IMAPS_PORT).await)
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
     }
 }
 
@@ -29,44 +36,38 @@ fn __setup_logging() {
 
 #[fixture]
 pub async fn server(__setup_logging: ()) -> MockServer {
+    let password = "password".to_string();
     MockServer {
         server: assert_ok!(
-            GenericImage::new("greenmail/standalone", "2.1.8")
-                .with_exposed_port(3993.tcp())
-                .with_wait_for(WaitFor::http(
-                    HttpWaitStrategy::new("/api/service/readiness")
-                        .with_port(8080.tcp())
-                        .with_expected_status_code(200u16)
-                ))
+            GenericImage::new("dovecot/dovecot", "2.4.4-dev")
+                .with_exposed_port(IMAPS_PORT)
+                .with_wait_for(WaitFor::healthcheck())
+                .with_health_check(Healthcheck::cmd([
+                    "nc",
+                    "-z",
+                    "-w",
+                    "5",
+                    "localhost",
+                    &IMAPS_PORT.to_string(),
+                ]))
                 .with_mount(
                     Mount::bind_mount(
-                        format!("{}/mock/data", env!("CARGO_MANIFEST_DIR")),
-                        "/preload",
+                        format!("{}/mock/certificate.crt", env!("CARGO_MANIFEST_DIR")),
+                        "/etc/dovecot/ssl/tls.crt",
                     )
                     .with_access_mode(AccessMode::ReadOnly)
                 )
                 .with_mount(
                     Mount::bind_mount(
-                        format!("{}/mock/keystore.p12", env!("CARGO_MANIFEST_DIR")),
-                        "/keystore.p12",
+                        format!("{}/mock/private_key.pem", env!("CARGO_MANIFEST_DIR")),
+                        "/etc/dovecot/ssl/tls.key",
                     )
                     .with_access_mode(AccessMode::ReadOnly)
                 )
-                .with_env_var(
-                    "GREENMAIL_OPTS",
-                    [
-                        "-Dgreenmail.setup.test.imaps",
-                        "-Dgreenmail.setup.test.smtp",
-                        "-Dgreenmail.auth.disabled",
-                        "-Dgreenmail.preload.dir=/preload",
-                        "-Dgreenmail.tls.keystore.file=/keystore.p12",
-                        "-Dgreenmail.tls.keystore.password=password",
-                        "-Dgreenmail.hostname=0.0.0.0",
-                    ]
-                    .join(" "),
-                )
+                .with_env_var("USER_PASSWORD", &password)
                 .start()
                 .await
         ),
+        password,
     }
 }
