@@ -1,9 +1,9 @@
 use std::fs::remove_dir_all;
 
-use imapmaildir::config::AccountConfig;
+use imapmaildir::config::Account;
 use log::trace;
 
-pub fn nuke(config: &AccountConfig) {
+pub fn nuke(config: &Account) {
     let mails = config.maildir_base_path();
     if mails.try_exists().expect("cannot read mail directory") {
         trace!("removing {:}", mails.display());

@@ -4,11 +4,11 @@ use std::{fs::read_to_string, path::PathBuf, str::FromStr};
 use derive_getters::Getters;
 use serde::Deserialize;
 
-use crate::config::auth::AuthConfig;
+use crate::config::auth::Auth;
 
 #[derive(Deserialize)]
 struct AccountConfigFile {
-    auth: AuthConfig,
+    auth: Auth,
     host: String,
     port: u16,
     // todo: "all" for generic fetch of all mailboxes
@@ -17,8 +17,8 @@ struct AccountConfigFile {
 }
 
 #[derive(Getters)]
-pub struct AccountConfig {
-    auth: AuthConfig,
+pub struct Account {
+    auth: Auth,
     host: String,
     port: u16,
     mailboxes: Vec<String>,
@@ -26,7 +26,7 @@ pub struct AccountConfig {
     state_dir: PathBuf,
 }
 
-impl AccountConfig {
+impl Account {
     #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
     #[must_use]
     pub fn load_from_file(account: &str) -> Self {

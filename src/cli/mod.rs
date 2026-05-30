@@ -1,7 +1,7 @@
 mod nuke;
 mod sync;
 
-use imapmaildir::config::AccountConfig;
+use imapmaildir::config::Account;
 
 use crate::{
     Args,
@@ -9,7 +9,7 @@ use crate::{
     cli::sync::{sync_all, sync_mailbox},
 };
 
-pub fn run(args: &Args, config: AccountConfig) {
+pub fn run(args: &Args, config: Account) {
     if args.nuke {
         nuke(&config);
     } else if let Some(mailbox) = &args.mailbox {
