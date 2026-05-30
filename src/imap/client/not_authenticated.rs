@@ -2,7 +2,7 @@ use log::{debug, trace};
 use tokio::sync::mpsc;
 
 use crate::{
-    config::Auth,
+    config::{self, Auth},
     imap::{
         client::{
             AuthenticatedClient,
@@ -20,15 +20,18 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn login(host: &str, port: u16, auth_config: &Auth) -> AuthenticatedClient {
-        let connected = Self::connect(host, port).await;
+    pub async fn login(
+        connection_config: &config::Connection,
+        auth_config: &Auth,
+    ) -> AuthenticatedClient {
+        let connected = Self::connect(connection_config).await;
         connected.authenticate(auth_config).await
     }
 
-    async fn connect(host: &str, port: u16) -> Self {
+    async fn connect(connection_config: &config::Connection) -> Self {
         let (untagged_response_sender, mut untagged_response_receiver) = mpsc::channel(32);
         // todo: pass configured server cert file
-        let mut connection = Connection::start(host, port, None, untagged_response_sender)
+        let mut connection = Connection::start(connection_config, untagged_response_sender)
             .await
             .expect("creating a connection should succeed");
 

@@ -15,7 +15,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str) {
         .expect("tokio runtime should be buildable");
 
     rt.block_on(async {
-        let client = Client::login(config.host(), config.port(), config.auth()).await;
+        let client = Client::login(config.connection(), config.auth()).await;
 
         Syncer::sync(
             mailbox,
