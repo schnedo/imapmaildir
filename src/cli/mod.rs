@@ -1,12 +1,12 @@
 mod nuke;
 mod sync;
 
-pub use nuke::nuke;
+use imapmaildir::Config;
 
 use crate::{
     Args,
+    cli::nuke::nuke,
     cli::sync::{sync_all, sync_mailbox},
-    config::Config,
 };
 
 pub fn run(args: &Args, config: Config) {

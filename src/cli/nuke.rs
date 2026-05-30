@@ -1,8 +1,7 @@
 use std::fs::remove_dir_all;
 
+use imapmaildir::Config;
 use log::trace;
-
-use crate::config::Config;
 
 pub fn nuke(config: &Config) {
     let mails = config.maildir_base_path();

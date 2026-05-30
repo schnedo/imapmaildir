@@ -6,7 +6,7 @@ use std::{
 
 use log::{error, info, warn};
 
-use crate::{config::Config, imap::Client, sync::Syncer};
+use imapmaildir::{Client, Config, Syncer};
 
 pub fn sync_mailbox(config: &Config, mailbox: &str) {
     let rt = tokio::runtime::Builder::new_current_thread()
