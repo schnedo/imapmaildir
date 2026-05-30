@@ -1,16 +1,10 @@
+mod cli;
+mod logging;
+
 use clap::Parser;
 use log::LevelFilter;
-mod cli;
-mod config;
-mod imap;
-mod logging;
-mod maildir;
-#[cfg(test)]
-mod mock_server;
-mod repository;
-mod sync;
 
-use crate::config::Config;
+use imapmaildir::Config;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]

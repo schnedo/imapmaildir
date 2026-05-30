@@ -27,6 +27,8 @@ pub struct AccountConfig {
 }
 
 impl AccountConfig {
+    #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
+    #[must_use]
     pub fn load_from_file(account: &str) -> Self {
         let mut config_home = config_home();
         config_home.push("accounts");
