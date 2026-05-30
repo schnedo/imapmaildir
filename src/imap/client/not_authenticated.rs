@@ -54,16 +54,20 @@ impl Client {
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
                     update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
                 } else {
+                    let command = "CAPABILITY";
+                    debug!("{command}");
                     connection
-                        .send("CAPABILITY".into())
+                        .send(command.into())
                         .await
                         .expect("capability request should succeed");
-                    if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
-                        update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
-                    } else {
-                        panic!(
-                            "capability request should be answered with capabilities response as specified"
-                        );
+                    let response = untagged_response_receiver.recv().await.expect(
+                        "CAPABILITY command should return single untagged CAPABILITY response",
+                    );
+                    match response.parsed() {
+                        imap_proto::Response::Capabilities(caps) => {
+                            update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
+                        }
+                        _ => todo!("handle misbehaved response to CAPABILITY"),
                     }
                 }
             }
