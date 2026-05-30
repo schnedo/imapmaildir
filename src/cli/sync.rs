@@ -6,9 +6,9 @@ use std::{
 
 use log::{error, info, warn};
 
-use imapmaildir::{Client, Config, Syncer};
+use imapmaildir::{Client, Syncer, config::AccountConfig};
 
-pub fn sync_mailbox(config: &Config, mailbox: &str) {
+pub fn sync_mailbox(config: &AccountConfig, mailbox: &str) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
@@ -27,7 +27,7 @@ pub fn sync_mailbox(config: &Config, mailbox: &str) {
     });
 }
 
-pub fn sync_all(config: Config) {
+pub fn sync_all(config: AccountConfig) {
     let config = Arc::new(config);
     let sync_handles: Vec<JoinHandle<()>> = config
         .mailboxes()
