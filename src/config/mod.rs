@@ -1,5 +1,5 @@
 mod account;
 mod auth;
 
-pub use account::AccountConfig;
-pub use auth::AuthConfig;
+pub use account::Account;
+pub use auth::Auth;

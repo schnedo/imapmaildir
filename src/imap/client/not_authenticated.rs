@@ -2,7 +2,7 @@ use log::{debug, trace};
 use tokio::sync::mpsc;
 
 use crate::{
-    config::AuthConfig,
+    config::Auth,
     imap::{
         client::{
             AuthenticatedClient,
@@ -20,7 +20,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn login(host: &str, port: u16, auth_config: &AuthConfig) -> AuthenticatedClient {
+    pub async fn login(host: &str, port: u16, auth_config: &Auth) -> AuthenticatedClient {
         let connected = Self::connect(host, port).await;
         connected.authenticate(auth_config).await
     }
@@ -91,9 +91,9 @@ impl Client {
         }
     }
 
-    async fn authenticate(mut self, auth_config: &AuthConfig) -> AuthenticatedClient {
+    async fn authenticate(mut self, auth_config: &Auth) -> AuthenticatedClient {
         match auth_config {
-            AuthConfig::Plain(plain_auth_config) => {
+            Auth::Plain(plain_auth_config) => {
                 assert!(
                     self.auth_capabilities.contains(AuthCapability::Plain),
                     "server should support PLAIN auth capability"

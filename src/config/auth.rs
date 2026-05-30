@@ -4,13 +4,13 @@ use derive_getters::Getters;
 use serde::Deserialize;
 
 #[derive(Deserialize, Getters)]
-pub struct PlainAuthConfig {
+pub struct PlainAuth {
     user: String,
     #[getter(skip)]
     password_cmd: Vec<String>,
 }
 
-impl PlainAuthConfig {
+impl PlainAuth {
     pub fn password(&self) -> String {
         let mut cmd_parts = self.password_cmd.iter();
         let mut cmd = Command::new(
@@ -37,6 +37,6 @@ impl PlainAuthConfig {
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
-pub enum AuthConfig {
-    Plain(PlainAuthConfig),
+pub enum Auth {
+    Plain(PlainAuth),
 }
