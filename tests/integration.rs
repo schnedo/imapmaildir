@@ -31,7 +31,7 @@ async fn test(#[future] server: MockServer) {
         host,
         port,
         Some(assert_ok!(PathBuf::from_str(&format!(
-            "{}/mock/certificate.crt",
+            "{}/tests/mock/certificate.crt",
             env!("CARGO_MANIFEST_DIR")
         )))),
         vec!["INBOX".to_string(), "DRAFT".to_string()],

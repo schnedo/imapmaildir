@@ -223,14 +223,14 @@ mod tests {
                     ]))
                     .with_mount(
                         Mount::bind_mount(
-                            format!("{}/mock/certificate.crt", env!("CARGO_MANIFEST_DIR")),
+                            format!("{}/tests/mock/certificate.crt", env!("CARGO_MANIFEST_DIR")),
                             "/etc/dovecot/ssl/tls.crt",
                         )
                         .with_access_mode(AccessMode::ReadOnly)
                     )
                     .with_mount(
                         Mount::bind_mount(
-                            format!("{}/mock/private_key.pem", env!("CARGO_MANIFEST_DIR")),
+                            format!("{}/tests/mock/private_key.pem", env!("CARGO_MANIFEST_DIR")),
                             "/etc/dovecot/ssl/tls.key",
                         )
                         .with_access_mode(AccessMode::ReadOnly)
@@ -250,7 +250,7 @@ mod tests {
             server.hostname().await,
             server.port().await,
             Some(assert_ok!(PathBuf::from_str(&format!(
-                "{}/mock/certificate.crt",
+                "{}/tests/mock/certificate.crt",
                 env!("CARGO_MANIFEST_DIR")
             )))),
         );
