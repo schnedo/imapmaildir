@@ -2,7 +2,6 @@ mod fixtures;
 
 use std::path::PathBuf;
 use std::str::FromStr as _;
-use std::time::Duration;
 
 use assertables::*;
 use imapmaildir::Client;
@@ -12,7 +11,6 @@ use imapmaildir::config::Auth;
 use imapmaildir::config::PlainAuth;
 use rstest::*;
 use tempfile::tempdir;
-use tokio::time::sleep;
 
 use crate::fixtures::*;
 
@@ -47,8 +45,6 @@ async fn test(#[future] server: MockServer) {
         client,
     )
     .await;
-    // todo: this is stupid, rework api so that sync.await finishes *after* syncing is done
-    sleep(Duration::from_secs(2)).await;
     let read_dir = assert_ok!(tmp.path().join("DRAFT").join("cur").read_dir());
     assert_len_eq_x!(read_dir.collect::<Vec<_>>(), 1);
 }
