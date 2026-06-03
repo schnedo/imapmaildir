@@ -21,12 +21,8 @@ async fn test(#[future] no_changes_server: MockServer) {
         client,
     )
     .await;
-    let read_dir = assert_ok!(
-        config
-            .maildir_base_path()
-            .join("INBOX")
-            .join("cur")
-            .read_dir()
-    );
+    let container = no_changes_server.container();
+    assert_ok!(container.stop().await);
+    let read_dir = assert_ok!(config.maildir_base_path().join("INBOX/cur").read_dir());
     assert_len_eq_x!(read_dir.collect::<Vec<_>>(), 3);
 }
