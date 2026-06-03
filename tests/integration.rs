@@ -39,12 +39,12 @@ async fn test(#[future] server: MockServer) {
 
     let client = Client::login(config.connection(), config.auth()).await;
     Syncer::sync(
-        "DRAFT",
+        "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
         client,
     )
     .await;
-    let read_dir = assert_ok!(tmp.path().join("DRAFT").join("cur").read_dir());
+    let read_dir = assert_ok!(tmp.path().join("INBOX").join("cur").read_dir());
     assert_len_eq_x!(read_dir.collect::<Vec<_>>(), 1);
 }
