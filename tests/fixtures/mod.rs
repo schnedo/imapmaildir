@@ -14,7 +14,7 @@ use testcontainers::{
 const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
 
 struct MockContainerRequest {
-    server: ContainerRequest<GenericImage>,
+    image: ContainerRequest<GenericImage>,
     password: String,
 }
 
@@ -25,13 +25,13 @@ impl MockContainerRequest {
         source: impl Into<CopyDataSource>,
     ) -> MockContainerRequest {
         Self {
-            server: self.server.with_copy_to(target, source),
+            image: self.image.with_copy_to(target, source),
             ..self
         }
     }
 
     async fn start(self) -> MockServer {
-        let server = assert_ok!(self.server.start().await);
+        let container = assert_ok!(self.image.start().await);
         let tmp = assert_ok!(tempdir());
         MockServer {
             config: config_m::Account::new(
@@ -39,14 +39,14 @@ impl MockContainerRequest {
                     "user".to_string(),
                     vec!["echo".to_string(), self.password],
                 )),
-                assert_ok!(server.get_host().await).to_string(),
-                assert_ok!(server.get_host_port_ipv4(IMAPS_PORT).await),
+                assert_ok!(container.get_host().await).to_string(),
+                assert_ok!(container.get_host_port_ipv4(IMAPS_PORT).await),
                 Some(PathBuf::from(CERTIFICATE_PATH)),
                 vec!["INBOX".to_string(), "DRAFT".to_string()],
                 tmp.path().to_path_buf(),
                 tmp.path().to_path_buf(),
             ),
-            server,
+            container,
             tmp_dir: tmp,
         }
     }
@@ -54,8 +54,7 @@ impl MockContainerRequest {
 
 pub struct MockServer {
     config: config_m::Account,
-    #[expect(unused)]
-    server: ContainerAsync<GenericImage>,
+    container: ContainerAsync<GenericImage>,
     #[expect(unused)]
     tmp_dir: TempDir,
 }
@@ -63,6 +62,10 @@ pub struct MockServer {
 impl MockServer {
     pub fn config(&self) -> &config_m::Account {
         &self.config
+    }
+
+    pub fn container(&self) -> &ContainerAsync<GenericImage> {
+        &self.container
     }
 }
 
@@ -84,7 +87,7 @@ const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 fn container(__setup_logging: ()) -> MockContainerRequest {
     let password = "password".to_string();
     MockContainerRequest {
-        server: GenericImage::new("dovecot/dovecot", "2.4.4-dev")
+        image: GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
             .with_wait_for(WaitFor::healthcheck())
             .with_health_check(Healthcheck::cmd([
