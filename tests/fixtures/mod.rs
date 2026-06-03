@@ -16,7 +16,6 @@ const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
 struct MockContainerRequest {
     server: ContainerRequest<GenericImage>,
     password: String,
-    certificate_path: String,
 }
 
 impl MockContainerRequest {
@@ -42,7 +41,7 @@ impl MockContainerRequest {
                 )),
                 assert_ok!(server.get_host().await).to_string(),
                 assert_ok!(server.get_host_port_ipv4(IMAPS_PORT).await),
-                Some(PathBuf::from(self.certificate_path)),
+                Some(PathBuf::from(CERTIFICATE_PATH)),
                 vec!["INBOX".to_string(), "DRAFT".to_string()],
                 tmp.path().to_path_buf(),
                 tmp.path().to_path_buf(),
@@ -73,13 +72,17 @@ fn __setup_logging() {
     logging::init(log::LevelFilter::Trace);
 }
 
+macro_rules! mock_path {
+    ($($suffix:literal),*) => {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock/", $($suffix),*)
+    };
+}
+
+const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
+
 #[fixture]
 fn container(__setup_logging: ()) -> MockContainerRequest {
     let password = "password".to_string();
-    let certificate_path = format!(
-        "{}/tests/fixtures/mock/certificate.crt",
-        env!("CARGO_MANIFEST_DIR")
-    );
     MockContainerRequest {
         server: GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
@@ -93,32 +96,19 @@ fn container(__setup_logging: ()) -> MockContainerRequest {
                 &IMAPS_PORT.to_string(),
             ]))
             .with_mount(
-                Mount::bind_mount(&certificate_path, "/etc/dovecot/ssl/tls.crt")
+                Mount::bind_mount(CERTIFICATE_PATH, "/etc/dovecot/ssl/tls.crt")
                     .with_access_mode(AccessMode::ReadOnly),
             )
             .with_mount(
-                Mount::bind_mount(
-                    format!(
-                        "{}/tests/fixtures/mock/private_key.pem",
-                        env!("CARGO_MANIFEST_DIR")
-                    ),
-                    "/etc/dovecot/ssl/tls.key",
-                )
-                .with_access_mode(AccessMode::ReadOnly),
+                Mount::bind_mount(mock_path!("private_key.pem"), "/etc/dovecot/ssl/tls.key")
+                    .with_access_mode(AccessMode::ReadOnly),
             )
             .with_mount(
-                Mount::bind_mount(
-                    format!(
-                        "{}/tests/fixtures/mock/dovecot.conf",
-                        env!("CARGO_MANIFEST_DIR")
-                    ),
-                    "/etc/dovecot/dovecot.conf",
-                )
-                .with_access_mode(AccessMode::ReadOnly),
+                Mount::bind_mount(mock_path!("dovecot.conf"), "/etc/dovecot/dovecot.conf")
+                    .with_access_mode(AccessMode::ReadOnly),
             )
             .with_env_var("USER_PASSWORD", &password),
         password,
-        certificate_path,
     }
 }
 
@@ -127,10 +117,7 @@ pub async fn no_changes_server(container: MockContainerRequest) -> MockServer {
     container
         .with_copy_to(
             "/srv/vmail/user",
-            PathBuf::from(format!(
-                "{}/tests/fixtures/mock/data/remote/no_changes",
-                env!("CARGO_MANIFEST_DIR")
-            )),
+            PathBuf::from(mock_path!("data/remote/no_changes")),
         )
         .start()
         .await
