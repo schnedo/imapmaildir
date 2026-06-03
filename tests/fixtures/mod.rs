@@ -8,8 +8,7 @@ use imapmaildir::{config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
-    ContainerAsync, ContainerRequest, CopyDataSource, CopyTargetOptions, GenericImage, Healthcheck,
-    ImageExt,
+    ContainerAsync, GenericImage, Healthcheck, ImageExt,
     core::{AccessMode, ContainerPort, Mount, WaitFor},
     runners::AsyncRunner,
 };
@@ -20,11 +19,6 @@ macro_rules! mock_path {
     ($($suffix:literal),*) => {
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock/", $($suffix),*)
     };
-}
-
-struct MockContainerRequest {
-    image: ContainerRequest<GenericImage>,
-    password: String,
 }
 
 fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
@@ -43,50 +37,14 @@ fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
     }
 }
 
-impl MockContainerRequest {
-    fn with_copy_to(
-        self,
-        target: impl Into<CopyTargetOptions>,
-        source: impl Into<CopyDataSource>,
-    ) -> MockContainerRequest {
-        Self {
-            image: self.image.with_copy_to(target, source),
-            ..self
-        }
-    }
-
-    async fn start(self) -> MockServer {
-        let container = assert_ok!(self.image.start().await);
-        let tmp = assert_ok!(tempdir());
-        copy_dir(mock_path!("data/local"), tmp.path());
-        let base_path = tmp.path().join("data/local");
-        MockServer {
-            config: config_m::Account::new(
-                config_m::Auth::Plain(config_m::PlainAuth::new(
-                    "user".to_string(),
-                    vec!["echo".to_string(), self.password],
-                )),
-                assert_ok!(container.get_host().await).to_string(),
-                assert_ok!(container.get_host_port_ipv4(IMAPS_PORT).await),
-                Some(PathBuf::from(CERTIFICATE_PATH)),
-                vec!["INBOX".to_string(), "DRAFT".to_string()],
-                base_path.clone(),
-                base_path,
-            ),
-            container,
-            tmp_dir: tmp,
-        }
-    }
-}
-
-pub struct MockServer {
+pub struct MailSetup {
     config: config_m::Account,
     container: ContainerAsync<GenericImage>,
     #[expect(unused)]
     tmp_dir: TempDir,
 }
 
-impl MockServer {
+impl MailSetup {
     pub fn config(&self) -> &config_m::Account {
         &self.config
     }
@@ -105,10 +63,13 @@ fn __setup_logging() {
 const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
 #[fixture]
-fn container(__setup_logging: ()) -> MockContainerRequest {
+pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     let password = "password".to_string();
-    MockContainerRequest {
-        image: GenericImage::new("dovecot/dovecot", "2.4.4-dev")
+    let tmp = assert_ok!(tempdir());
+    copy_dir(mock_path!("data/local"), tmp.path());
+    let base_path = tmp.path().join("data/local");
+    let container = assert_ok!(
+        GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
             .with_wait_for(WaitFor::healthcheck())
             .with_health_check(Healthcheck::cmd([
@@ -131,18 +92,29 @@ fn container(__setup_logging: ()) -> MockContainerRequest {
                 Mount::bind_mount(mock_path!("dovecot.conf"), "/etc/dovecot/dovecot.conf")
                     .with_access_mode(AccessMode::ReadOnly),
             )
-            .with_env_var("USER_PASSWORD", &password),
-        password,
-    }
-}
+            .with_env_var("USER_PASSWORD", &password)
+            .with_copy_to(
+                "/srv/vmail/user",
+                PathBuf::from(mock_path!("data/remote/no_changes")),
+            )
+            .start()
+            .await
+    );
 
-#[fixture]
-pub async fn no_changes_server(container: MockContainerRequest) -> MockServer {
-    container
-        .with_copy_to(
-            "/srv/vmail/user",
-            PathBuf::from(mock_path!("data/remote/no_changes")),
-        )
-        .start()
-        .await
+    MailSetup {
+        config: config_m::Account::new(
+            config_m::Auth::Plain(config_m::PlainAuth::new(
+                "user".to_string(),
+                vec!["echo".to_string(), password],
+            )),
+            assert_ok!(container.get_host().await).to_string(),
+            assert_ok!(container.get_host_port_ipv4(IMAPS_PORT).await),
+            Some(PathBuf::from(CERTIFICATE_PATH)),
+            vec!["INBOX".to_string(), "DRAFT".to_string()],
+            base_path.clone(),
+            base_path,
+        ),
+        container,
+        tmp_dir: tmp,
+    }
 }
