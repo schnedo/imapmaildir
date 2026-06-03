@@ -24,7 +24,6 @@ macro_rules! mock_path {
 fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
     let from = from.as_ref();
     let to = to.as_ref();
-    assert!(from.is_dir());
     assert_ok!(fs::create_dir_all(to));
     for entry in assert_ok!(from.read_dir()) {
         let entry = assert_ok!(entry);
@@ -32,6 +31,9 @@ fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
         if ftype.is_dir() {
             copy_dir(entry.path(), to.join(entry.file_name()));
         } else {
+            if entry.file_name() == ".gitkeep" {
+                continue;
+            }
             assert_ok!(fs::copy(entry.path(), to.join(entry.file_name())));
         }
     }
@@ -42,6 +44,7 @@ pub struct MailSetup {
     container: ContainerAsync<GenericImage>,
     #[expect(unused)]
     tmp_dir: TempDir,
+    server_dir: PathBuf,
 }
 
 impl MailSetup {
@@ -51,6 +54,10 @@ impl MailSetup {
 
     pub fn container(&self) -> &ContainerAsync<GenericImage> {
         &self.container
+    }
+
+    pub fn server_dir(&self) -> &Path {
+        &self.server_dir
     }
 }
 
@@ -65,9 +72,11 @@ const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 #[fixture]
 pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     let password = "password".to_string();
-    let tmp = assert_ok!(tempdir());
-    copy_dir(mock_path!("data/local"), tmp.path());
-    let base_path = tmp.path().join("data/local");
+    let tmp_dir = assert_ok!(tempdir());
+    copy_dir(mock_path!("data/local"), tmp_dir.path());
+    let client_base_path = tmp_dir.path().join("data/local");
+    let server_dir = tmp_dir.path().join("remote");
+    copy_dir(mock_path!("data/remote"), &server_dir);
     let container = assert_ok!(
         GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
@@ -92,11 +101,11 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
                 Mount::bind_mount(mock_path!("dovecot.conf"), "/etc/dovecot/dovecot.conf")
                     .with_access_mode(AccessMode::ReadOnly),
             )
+            .with_mount(Mount::bind_mount(
+                server_dir.to_string_lossy(),
+                "/srv/vmail/user/mail"
+            ))
             .with_env_var("USER_PASSWORD", &password)
-            .with_copy_to(
-                "/srv/vmail/user",
-                PathBuf::from(mock_path!("data/remote/no_changes")),
-            )
             .start()
             .await
     );
@@ -111,10 +120,11 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             assert_ok!(container.get_host_port_ipv4(IMAPS_PORT).await),
             Some(PathBuf::from(CERTIFICATE_PATH)),
             vec!["INBOX".to_string(), "DRAFT".to_string()],
-            base_path.clone(),
-            base_path,
+            client_base_path.clone(),
+            client_base_path,
         ),
         container,
-        tmp_dir: tmp,
+        tmp_dir,
+        server_dir,
     }
 }
