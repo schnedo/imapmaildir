@@ -10,8 +10,8 @@ use crate::fixtures::*;
 #[rstest]
 #[tokio::test]
 #[awt]
-async fn test(#[future] no_changes_server: MockServer) {
-    let config = no_changes_server.config();
+async fn test(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
 
     let client = Client::login(config.connection(), config.auth()).await;
     Syncer::sync(
@@ -21,7 +21,7 @@ async fn test(#[future] no_changes_server: MockServer) {
         client,
     )
     .await;
-    let container = no_changes_server.container();
+    let container = mail_setup.container();
     assert_ok!(container.stop().await);
     let read_dir = assert_ok!(config.maildir_base_path().join("INBOX/cur").read_dir());
     assert_len_eq_x!(read_dir.collect::<Vec<_>>(), 3);
