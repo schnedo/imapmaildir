@@ -23,6 +23,8 @@ async fn test(#[future] mail_setup: MailSetup) {
     .await;
     let container = mail_setup.container();
     assert_ok!(container.stop().await);
-    let read_dir = assert_ok!(config.maildir_base_path().join("INBOX/cur").read_dir());
-    assert_len_eq_x!(read_dir.collect::<Vec<_>>(), 3);
+    let client_mails = assert_ok!(config.maildir_base_path().join("INBOX/cur").read_dir());
+    assert_len_eq_x!(client_mails.collect::<Vec<_>>(), 3);
+    let server_mails = assert_ok!(mail_setup.server_dir().join("cur").read_dir());
+    assert_len_eq_x!(server_mails.collect::<Vec<_>>(), 3);
 }
