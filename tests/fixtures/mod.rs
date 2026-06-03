@@ -54,28 +54,40 @@ pub async fn server(__setup_logging: ()) -> MockServer {
                 ]))
                 .with_mount(
                     Mount::bind_mount(
-                        format!("{}/tests/mock/certificate.crt", env!("CARGO_MANIFEST_DIR")),
+                        format!(
+                            "{}/tests/fixtures/mock/certificate.crt",
+                            env!("CARGO_MANIFEST_DIR")
+                        ),
                         "/etc/dovecot/ssl/tls.crt",
                     )
                     .with_access_mode(AccessMode::ReadOnly)
                 )
                 .with_mount(
                     Mount::bind_mount(
-                        format!("{}/tests/mock/private_key.pem", env!("CARGO_MANIFEST_DIR")),
+                        format!(
+                            "{}/tests/fixtures/mock/private_key.pem",
+                            env!("CARGO_MANIFEST_DIR")
+                        ),
                         "/etc/dovecot/ssl/tls.key",
                     )
                     .with_access_mode(AccessMode::ReadOnly)
                 )
                 .with_mount(
                     Mount::bind_mount(
-                        format!("{}/tests/mock/dovecot.conf", env!("CARGO_MANIFEST_DIR")),
+                        format!(
+                            "{}/tests/fixtures/mock/dovecot.conf",
+                            env!("CARGO_MANIFEST_DIR")
+                        ),
                         "/etc/dovecot/dovecot.conf",
                     )
                     .with_access_mode(AccessMode::ReadOnly)
                 )
                 .with_copy_to(
                     "/srv/vmail/user",
-                    PathBuf::from(format!("{}/tests/mock/user", env!("CARGO_MANIFEST_DIR"))),
+                    PathBuf::from(format!(
+                        "{}/tests/fixtures/mock/data/remote/no_changes",
+                        env!("CARGO_MANIFEST_DIR")
+                    )),
                 )
                 .with_env_var("USER_PASSWORD", &password)
                 .start()
