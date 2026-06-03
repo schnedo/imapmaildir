@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use assertables::assert_ok;
 use imapmaildir::{config as config_m, logging};
@@ -13,9 +16,31 @@ use testcontainers::{
 
 const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
 
+macro_rules! mock_path {
+    ($($suffix:literal),*) => {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock/", $($suffix),*)
+    };
+}
+
 struct MockContainerRequest {
     image: ContainerRequest<GenericImage>,
     password: String,
+}
+
+fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    assert!(from.is_dir());
+    assert_ok!(fs::create_dir_all(to));
+    for entry in assert_ok!(from.read_dir()) {
+        let entry = assert_ok!(entry);
+        let ftype = assert_ok!(entry.file_type());
+        if ftype.is_dir() {
+            copy_dir(entry.path(), to.join(entry.file_name()));
+        } else {
+            assert_ok!(fs::copy(entry.path(), to.join(entry.file_name())));
+        }
+    }
 }
 
 impl MockContainerRequest {
@@ -33,6 +58,8 @@ impl MockContainerRequest {
     async fn start(self) -> MockServer {
         let container = assert_ok!(self.image.start().await);
         let tmp = assert_ok!(tempdir());
+        copy_dir(mock_path!("data/local"), tmp.path());
+        let base_path = tmp.path().join("data/local");
         MockServer {
             config: config_m::Account::new(
                 config_m::Auth::Plain(config_m::PlainAuth::new(
@@ -43,8 +70,8 @@ impl MockContainerRequest {
                 assert_ok!(container.get_host_port_ipv4(IMAPS_PORT).await),
                 Some(PathBuf::from(CERTIFICATE_PATH)),
                 vec!["INBOX".to_string(), "DRAFT".to_string()],
-                tmp.path().to_path_buf(),
-                tmp.path().to_path_buf(),
+                base_path.clone(),
+                base_path,
             ),
             container,
             tmp_dir: tmp,
@@ -73,12 +100,6 @@ impl MockServer {
 #[once]
 fn __setup_logging() {
     logging::init(log::LevelFilter::Trace);
-}
-
-macro_rules! mock_path {
-    ($($suffix:literal),*) => {
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock/", $($suffix),*)
-    };
 }
 
 const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
