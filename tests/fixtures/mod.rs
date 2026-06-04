@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use assertables::assert_ok;
+use assertables::*;
 use imapmaildir::{config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
@@ -40,14 +40,29 @@ fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct MailFile<'a> {
     pd: PhantomData<&'a ()>,
+    uid: u64,
+    content: Vec<u8>,
+    flags: String,
 }
 
-impl<'a> MailFile<'a> {
-    pub fn new(_maildir: &'a Maildir) -> Self {
-        Self { pd: PhantomData }
+impl MailFile<'_> {
+    pub fn new(path: &Path) -> Self {
+        let content = assert_ok!(fs::read(path));
+        let name = assert_some!(path.file_name());
+        let name = name.to_string_lossy();
+        let (prefix, flags) = assert_some!(name.rsplit_once(":2,"));
+        let uid = prefix.rsplit_once("U=").map_or(prefix, |(_, uid)| uid);
+        let uid = assert_ok!(uid.parse());
+
+        Self {
+            pd: PhantomData,
+            content,
+            flags: flags.into(),
+            uid,
+        }
     }
 }
 
@@ -76,7 +91,7 @@ impl Maildir<'_> {
         let read_dir = assert_ok!(self.cur.read_dir());
         read_dir
             .map(|entry| assert_ok!(entry))
-            .map(|_entry| MailFile::new(self))
+            .map(|entry| MailFile::new(&entry.path()))
     }
 }
 
@@ -152,8 +167,8 @@ const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     let password = "password".to_string();
     let tmp_dir = assert_ok!(tempdir());
-    copy_dir(mock_path!("data/local"), tmp_dir.path());
-    let client_base_path = tmp_dir.path().join("data/local");
+    let client_base_path = tmp_dir.path().join("local");
+    copy_dir(mock_path!("data/local"), &client_base_path);
     let server_dir = tmp_dir.path().join("remote");
     copy_dir(mock_path!("data/remote"), &server_dir);
     let container = assert_ok!(
