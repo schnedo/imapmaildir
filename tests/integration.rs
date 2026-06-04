@@ -25,6 +25,7 @@ async fn test(#[future] mail_setup: MailSetup) {
     assert_ok!(container.stop().await);
     let client_mails = assert_ok!(config.maildir_base_path().join("INBOX/cur").read_dir());
     assert_len_eq_x!(client_mails.collect::<Vec<_>>(), 3);
-    let server_mails = assert_ok!(mail_setup.server_dir().join("cur").read_dir());
+    let mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let server_mails = mailbox.mails();
     assert_len_eq_x!(server_mails.collect::<Vec<_>>(), 3);
 }
