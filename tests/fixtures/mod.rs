@@ -1,5 +1,6 @@
 use std::{
     fs,
+    marker::PhantomData,
     path::{Path, PathBuf},
 };
 
@@ -39,12 +40,62 @@ fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
     }
 }
 
+#[derive(Debug)]
+pub struct MailFile<'a> {
+    pd: PhantomData<&'a ()>,
+}
+
+impl<'a> MailFile<'a> {
+    pub fn new(_maildir: &'a Maildir) -> Self {
+        Self { pd: PhantomData }
+    }
+}
+
+pub struct Maildir<'a> {
+    pd: PhantomData<&'a ServerMailStorage>,
+    cur: PathBuf,
+}
+
+impl Maildir<'_> {
+    fn new(storage: &'_ ServerMailStorage, name: &str) -> Self {
+        let cur = if name == "INBOX" {
+            storage.dir.join("cur")
+        } else {
+            let mut cur = storage.dir.join(name);
+            cur.push("cur");
+
+            cur
+        };
+        Maildir {
+            pd: PhantomData,
+            cur,
+        }
+    }
+
+    pub fn mails(&'_ self) -> impl Iterator<Item = MailFile<'_>> {
+        let read_dir = assert_ok!(self.cur.read_dir());
+        read_dir
+            .map(|entry| assert_ok!(entry))
+            .map(|_entry| MailFile::new(self))
+    }
+}
+
+pub struct ServerMailStorage {
+    dir: PathBuf,
+}
+
+impl ServerMailStorage {
+    pub fn mailbox(&'_ self, name: &str) -> Maildir<'_> {
+        Maildir::new(self, name)
+    }
+}
+
 pub struct MailSetup {
     config: config_m::Account,
     container: ContainerAsync<GenericImage>,
     #[expect(unused)]
     tmp_dir: TempDir,
-    server_dir: PathBuf,
+    server_mail_storge: ServerMailStorage,
 }
 
 impl MailSetup {
@@ -56,8 +107,8 @@ impl MailSetup {
         &self.container
     }
 
-    pub fn server_dir(&self) -> &Path {
-        &self.server_dir
+    pub fn server_mail(&self) -> &ServerMailStorage {
+        &self.server_mail_storge
     }
 }
 
@@ -125,6 +176,6 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
         ),
         container,
         tmp_dir,
-        server_dir,
+        server_mail_storge: ServerMailStorage { dir: server_dir },
     }
 }
