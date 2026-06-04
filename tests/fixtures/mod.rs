@@ -57,11 +57,11 @@ pub struct Maildir<'a> {
 }
 
 impl Maildir<'_> {
-    fn new(storage: &'_ ServerMailStorage, name: &str) -> Self {
-        let cur = if name == "INBOX" {
-            storage.dir.join("cur")
+    fn new(storage: &'_ impl MailStorage, top_level_inbox: bool, name: &str) -> Self {
+        let cur = if top_level_inbox && name == "INBOX" {
+            storage.dir().join("cur")
         } else {
-            let mut cur = storage.dir.join(name);
+            let mut cur = storage.dir().join(name);
             cur.push("cur");
 
             cur
@@ -80,14 +80,36 @@ impl Maildir<'_> {
     }
 }
 
+pub struct ClientMailStorage<'a> {
+    dir: &'a Path,
+}
+
+impl MailStorage for ClientMailStorage<'_> {
+    fn dir(&self) -> &Path {
+        self.dir
+    }
+    fn mailbox(&'_ self, name: &str) -> Maildir<'_> {
+        Maildir::new(self, false, name)
+    }
+}
+
 pub struct ServerMailStorage {
     dir: PathBuf,
 }
 
-impl ServerMailStorage {
-    pub fn mailbox(&'_ self, name: &str) -> Maildir<'_> {
-        Maildir::new(self, name)
+impl MailStorage for ServerMailStorage {
+    fn dir(&self) -> &Path {
+        &self.dir
     }
+    fn mailbox(&'_ self, name: &str) -> Maildir<'_> {
+        Maildir::new(self, true, name)
+    }
+}
+
+pub trait MailStorage: Sized {
+    fn dir(&self) -> &Path;
+
+    fn mailbox(&'_ self, name: &str) -> Maildir<'_>;
 }
 
 pub struct MailSetup {
@@ -109,6 +131,12 @@ impl MailSetup {
 
     pub fn server_mail(&self) -> &ServerMailStorage {
         &self.server_mail_storge
+    }
+
+    pub fn client_mail(&self) -> ClientMailStorage<'_> {
+        ClientMailStorage {
+            dir: self.config.maildir_base_path(),
+        }
     }
 }
 
