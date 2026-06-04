@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self},
     marker::PhantomData,
     path::{Path, PathBuf},
 };
@@ -123,8 +123,18 @@ impl MailStorage for ServerMailStorage {
 
 pub trait MailStorage: Sized {
     fn dir(&self) -> &Path;
-
     fn mailbox(&'_ self, name: &str) -> Maildir<'_>;
+    fn wipe(&self) {
+        for entry in assert_ok!(self.dir().read_dir()) {
+            let entry = assert_ok!(entry);
+            let ftype = assert_ok!(entry.file_type());
+            if ftype.is_dir() {
+                assert_ok!(fs::remove_dir_all(entry.path()));
+            } else {
+                assert_ok!(fs::remove_file(entry.path()));
+            }
+        }
+    }
 }
 
 pub struct MailSetup {
