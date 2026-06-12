@@ -116,6 +116,32 @@ mod mailfile {
 
             true
         }
+
+        pub fn remove_flag(&mut self, flag: char) -> bool {
+            if self.has_flag(flag) {
+                let mut flags: HashSet<_> = self.flags.chars().collect();
+                flags.remove(&flag);
+                let mut flags: Vec<_> = flags.into_iter().collect();
+                flags.sort_unstable();
+                let flags: String = flags.into_iter().collect();
+
+                let file_name = assert_some!(self.path.file_name())
+                    .to_string_lossy()
+                    .to_string();
+                let (prefix, _) = assert_some!(file_name.rsplit_once(":2,"));
+                let mut file_name = String::with_capacity(prefix.len() + 3 + flags.len());
+                file_name.push_str(prefix);
+                file_name.push_str(":2,");
+                file_name.push_str(&flags);
+                let new_path = self.path.with_file_name(file_name);
+                assert_ok!(fs::rename(&self.path, &new_path));
+                self.flags = flags;
+
+                true
+            } else {
+                false
+            }
+        }
     }
 }
 pub use mailfile::MailFile;
@@ -147,6 +173,10 @@ impl Maildir<'_> {
         all_mails.sort();
 
         all_mails.into_iter().map(|mail| MailFile::new(self, mail))
+    }
+
+    pub fn mail_with_flag(&self) -> Option<MailFile<'_>> {
+        self.mails().find(|mail| mail.has_flag('S'))
     }
 }
 

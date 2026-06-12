@@ -122,7 +122,68 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let mail = assert_some!(client_mailbox.mails().next());
-    assert!(mail.has_flag('D'));
+    assert!(!mail.has_flag('S'));
+    let client_mails: HashSet<_> = client_mailbox.mails().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().collect();
+    assert_eq!(server_mails, client_mails);
+}
+
+#[rstest]
+#[tokio::test]
+#[awt]
+async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let mut mail = assert_some!(client_mailbox.mail_with_flag());
+    assert!(mail.has_flag('S'));
+    assert!(mail.remove_flag('S'));
+    assert!(!mail.has_flag('S'));
+
+    let client = Client::login(config.connection(), config.auth()).await;
+    Syncer::sync(
+        "INBOX",
+        config.maildir_base_path(),
+        config.state_dir(),
+        client,
+    )
+    .await;
+    let container = mail_setup.container();
+    assert_ok!(container.stop().await);
+
+    assert_none!(client_mailbox.mail_with_flag());
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let client_mails: HashSet<_> = client_mailbox.mails().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().collect();
+    assert_eq!(server_mails, client_mails);
+}
+
+#[rstest]
+#[tokio::test]
+#[awt]
+async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
+    let server_mail = mail_setup.server_mail();
+    let server_mailbox = server_mail.mailbox("INBOX");
+    let mut mail = assert_some!(server_mailbox.mail_with_flag());
+    assert!(mail.has_flag('S'));
+    assert!(mail.remove_flag('S'));
+    assert!(!mail.has_flag('S'));
+
+    let client = Client::login(config.connection(), config.auth()).await;
+    Syncer::sync(
+        "INBOX",
+        config.maildir_base_path(),
+        config.state_dir(),
+        client,
+    )
+    .await;
+    let container = mail_setup.container();
+    assert_ok!(container.stop().await);
+
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    assert_none!(client_mailbox.mail_with_flag());
     let client_mails: HashSet<_> = client_mailbox.mails().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().collect();
     assert_eq!(server_mails, client_mails);
