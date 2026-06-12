@@ -11,7 +11,7 @@ use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
     ContainerAsync, GenericImage, Healthcheck, ImageExt,
-    core::{AccessMode, ContainerPort, Mount, WaitFor},
+    core::{AccessMode, ContainerPort, ExecCommand, Mount, WaitFor},
     runners::AsyncRunner,
 };
 
@@ -44,11 +44,53 @@ fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
 mod mailfile {
     #![expect(clippy::elidable_lifetime_names)]
     use assertables::*;
-    use std::{collections::HashSet, fs, marker::PhantomData, path::PathBuf};
+    use std::{
+        collections::{HashMap, HashSet},
+        fs::{self, File},
+        io::{BufRead, BufReader},
+        marker::PhantomData,
+        path::{Path, PathBuf},
+    };
 
     use derivative::Derivative;
 
     use crate::fixtures::Maildir;
+
+    pub struct UidList {
+        filename_to_uid: HashMap<String, u64>,
+    }
+    impl UidList {
+        pub fn new(path: &Path) -> Self {
+            let reader = BufReader::new(assert_ok!(File::open(path)));
+            let mut lines = reader.lines();
+            lines.next();
+            let mut filename_to_uid = HashMap::new();
+            for line in lines {
+                let line = assert_ok!(line);
+                let (uid, rest) = assert_some!(line.split_once(' '));
+                let uid: u64 = assert_ok!(uid.parse());
+                let (_, filename) = assert_some!(rest.split_once(':'));
+                let filename = if let Some((prefix, _)) = filename.rsplit_once(":2,") {
+                    prefix
+                } else {
+                    filename
+                };
+                filename_to_uid.insert(filename.to_string(), uid);
+            }
+
+            Self { filename_to_uid }
+        }
+
+        pub fn get_uid(&self, filename: &str) -> u64 {
+            let filename = if let Some((prefix, _)) = filename.rsplit_once(":2,") {
+                prefix
+            } else {
+                filename
+            };
+
+            *assert_some!(self.filename_to_uid.get(filename))
+        }
+    }
 
     #[derive(Derivative)]
     #[derivative(Debug, PartialEq, Eq, Hash)]
@@ -63,13 +105,18 @@ mod mailfile {
     }
 
     impl MailFile<'_> {
-        pub fn new(_maildir: &'_ Maildir, path: PathBuf) -> Self {
+        pub fn new(_maildir: &'_ impl Maildir, uid: Option<u64>, path: PathBuf) -> Self {
             let content = assert_ok!(fs::read(&path));
             let name = assert_some!(path.file_name());
             let name = name.to_string_lossy();
             let (prefix, flags) = assert_some!(name.rsplit_once(":2,"));
-            let uid = prefix.rsplit_once("U=").map_or(prefix, |(_, uid)| uid);
-            let uid = assert_ok!(uid.parse());
+            let uid = if let Some(uid) = uid {
+                uid
+            } else {
+                let uid = prefix.rsplit_once("U=").map_or(prefix, |(_, uid)| uid);
+
+                assert_ok!(uid.parse())
+            };
 
             Self {
                 pd: PhantomData,
@@ -146,14 +193,69 @@ mod mailfile {
 }
 pub use mailfile::MailFile;
 
-pub struct Maildir<'a> {
+use crate::fixtures::mailfile::UidList;
+
+pub struct ClientMaildir<'a> {
     pd: PhantomData<&'a ServerMailStorage>,
     cur: PathBuf,
 }
 
-impl Maildir<'_> {
-    fn new(storage: &'_ impl MailStorage, top_level_inbox: bool, name: &str) -> Self {
-        let cur = if top_level_inbox && name == "INBOX" {
+impl ClientMaildir<'_> {
+    fn new(storage: &'_ impl MailStorage, name: &str) -> Self {
+        let mut cur = storage.dir().join(name);
+        cur.push("cur");
+
+        Self {
+            pd: PhantomData,
+            cur,
+        }
+    }
+}
+
+pub trait Maildir {
+    async fn mails(&'_ self) -> Vec<MailFile<'_>>;
+
+    async fn mail_with_flag(&self) -> Option<MailFile<'_>>;
+
+    fn add_mail(&self, content: &[u8], flags: &str);
+}
+
+impl Maildir for ClientMaildir<'_> {
+    async fn mails(&'_ self) -> Vec<MailFile<'_>> {
+        let read_dir = assert_ok!(self.cur.read_dir());
+        let mut all_mails: Vec<_> = read_dir.map(|entry| assert_ok!(entry).path()).collect();
+        all_mails.sort();
+
+        all_mails
+            .into_iter()
+            .map(|mail| MailFile::new(self, None, mail))
+            .collect()
+    }
+
+    async fn mail_with_flag(&self) -> Option<MailFile<'_>> {
+        self.mails()
+            .await
+            .into_iter()
+            .find(|mail| mail.has_flag('S'))
+    }
+
+    fn add_mail(&self, content: &[u8], flags: &str) {
+        let mut file_name = String::from("foo:2,");
+        file_name.push_str(flags);
+        let path = self.cur.join(file_name);
+        assert!(!assert_ok!(path.try_exists()));
+        assert_ok!(fs::write(path, content));
+    }
+}
+
+pub struct ServerMaildir<'a> {
+    storage: &'a ServerMailStorage,
+    cur: PathBuf,
+}
+
+impl<'a> ServerMaildir<'a> {
+    fn new(storage: &'a ServerMailStorage, name: &str) -> Self {
+        let cur = if name == "INBOX" {
             storage.dir().join("cur")
         } else {
             let mut cur = storage.dir().join(name);
@@ -161,22 +263,60 @@ impl Maildir<'_> {
 
             cur
         };
-        Maildir {
-            pd: PhantomData,
-            cur,
-        }
-    }
 
-    pub fn mails(&'_ self) -> impl Iterator<Item = MailFile<'_>> + std::fmt::Debug {
+        Self { storage, cur }
+    }
+}
+
+impl Maildir for ServerMaildir<'_> {
+    async fn mails(&'_ self) -> Vec<MailFile<'_>> {
         let read_dir = assert_ok!(self.cur.read_dir());
         let mut all_mails: Vec<_> = read_dir.map(|entry| assert_ok!(entry).path()).collect();
         all_mails.sort();
+        let index_location = assert_some!(self.cur.parent());
+        assert_ok!(
+            self.storage
+                .container
+                .exec(ExecCommand::new([
+                    "rm",
+                    assert_some!(index_location.join("dovecot-uidlist*").to_str()),
+                    assert_some!(index_location.join("dovecot.index*").to_str()),
+                    "&&",
+                    "doveadm",
+                    "index",
+                    "-u",
+                    "user",
+                    "'*'"
+                ]))
+                .await
+        );
+        let uidlist = UidList::new(&self.storage.dir().join("dovecot-uidlist"));
 
-        all_mails.into_iter().map(|mail| MailFile::new(self, mail))
+        all_mails
+            .into_iter()
+            .map(|mail| {
+                MailFile::new(
+                    self,
+                    Some(uidlist.get_uid(assert_some!(assert_some!(mail.file_name()).to_str()))),
+                    mail,
+                )
+            })
+            .collect()
     }
 
-    pub fn mail_with_flag(&self) -> Option<MailFile<'_>> {
-        self.mails().find(|mail| mail.has_flag('S'))
+    async fn mail_with_flag(&self) -> Option<MailFile<'_>> {
+        self.mails()
+            .await
+            .into_iter()
+            .find(|mail| mail.has_flag('S'))
+    }
+
+    fn add_mail(&self, content: &[u8], flags: &str) {
+        let mut file_name = String::from("foo:2,");
+        file_name.push_str(flags);
+        let path = self.cur.join(file_name);
+        assert!(!assert_ok!(path.try_exists()));
+        assert_ok!(fs::write(path, content));
     }
 }
 
@@ -188,27 +328,28 @@ impl MailStorage for ClientMailStorage<'_> {
     fn dir(&self) -> &Path {
         self.dir
     }
-    fn mailbox(&'_ self, name: &str) -> Maildir<'_> {
-        Maildir::new(self, false, name)
+    fn mailbox(&'_ self, name: &str) -> impl Maildir {
+        ClientMaildir::new(self, name)
     }
 }
 
 pub struct ServerMailStorage {
     dir: PathBuf,
+    container: ContainerAsync<GenericImage>,
 }
 
 impl MailStorage for ServerMailStorage {
     fn dir(&self) -> &Path {
         &self.dir
     }
-    fn mailbox(&'_ self, name: &str) -> Maildir<'_> {
-        Maildir::new(self, true, name)
+    fn mailbox(&'_ self, name: &str) -> impl Maildir {
+        ServerMaildir::new(self, name)
     }
 }
 
 pub trait MailStorage: Sized {
     fn dir(&self) -> &Path;
-    fn mailbox(&'_ self, name: &str) -> Maildir<'_>;
+    fn mailbox(&'_ self, name: &str) -> impl Maildir;
     fn wipe(&self) {
         for entry in assert_ok!(self.dir().read_dir()) {
             let entry = assert_ok!(entry);
@@ -224,7 +365,6 @@ pub trait MailStorage: Sized {
 
 pub struct MailSetup {
     config: config_m::Account,
-    container: ContainerAsync<GenericImage>,
     #[expect(unused)]
     tmp_dir: TempDir,
     server_mail_storge: ServerMailStorage,
@@ -233,10 +373,6 @@ pub struct MailSetup {
 impl MailSetup {
     pub fn config(&self) -> &config_m::Account {
         &self.config
-    }
-
-    pub fn container(&self) -> &ContainerAsync<GenericImage> {
-        &self.container
     }
 
     pub fn server_mail(&self) -> &ServerMailStorage {
@@ -325,8 +461,10 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             client_base_path.clone(),
             client_base_path,
         ),
-        container,
         tmp_dir,
-        server_mail_storge: ServerMailStorage { dir: server_dir },
+        server_mail_storge: ServerMailStorage {
+            dir: server_dir,
+            container,
+        },
     }
 }
