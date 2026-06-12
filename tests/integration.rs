@@ -94,3 +94,34 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
     assert_any!(client_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
     assert_any!(server_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
 }
+
+#[rstest]
+#[tokio::test]
+#[awt]
+async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
+    let server_mail = mail_setup.server_mail();
+    let server_mailbox = server_mail.mailbox("INBOX");
+    let mut mail = assert_some!(server_mailbox.mails().next());
+    assert!(mail.add_flag('D'));
+    assert_any!(server_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
+
+    let client = Client::login(config.connection(), config.auth()).await;
+    Syncer::sync(
+        "INBOX",
+        config.maildir_base_path(),
+        config.state_dir(),
+        client,
+    )
+    .await;
+    let container = mail_setup.container();
+    assert_ok!(container.stop().await);
+
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let client_mails: HashSet<_> = client_mailbox.mails().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().collect();
+    assert_eq!(server_mails, client_mails);
+    assert_any!(client_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
+    assert_any!(server_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
+}
