@@ -35,6 +35,7 @@ async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
     assert_eq!(initial_client_mails, client_mails);
     let server_mails = server_mailbox.mails().collect();
     assert_eq!(initial_server_mails, server_mails);
+    assert_eq!(server_mails, client_mails);
 }
 
 #[rstest]
