@@ -73,8 +73,9 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let mut mail = assert_some!(client_mailbox.mails().next());
+    assert!(!mail.has_flag('D'));
     assert!(mail.add_flag('D'));
-    assert_any!(client_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
+    assert!(mail.has_flag('D'));
 
     let client = Client::login(config.connection(), config.auth()).await;
     Syncer::sync(
@@ -87,12 +88,12 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
     let container = mail_setup.container();
     assert_ok!(container.stop().await);
 
+    let mail = assert_some!(client_mailbox.mails().next());
+    assert!(mail.has_flag('D'));
     let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
     let client_mails: HashSet<_> = client_mailbox.mails().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().collect();
     assert_eq!(server_mails, client_mails);
-    assert_any!(client_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
-    assert_any!(server_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
 }
 
 #[rstest]
@@ -103,8 +104,9 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     let server_mail = mail_setup.server_mail();
     let server_mailbox = server_mail.mailbox("INBOX");
     let mut mail = assert_some!(server_mailbox.mails().next());
+    assert!(!mail.has_flag('D'));
     assert!(mail.add_flag('D'));
-    assert_any!(server_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
+    assert!(mail.has_flag('D'));
 
     let client = Client::login(config.connection(), config.auth()).await;
     Syncer::sync(
@@ -119,9 +121,9 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
 
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
+    let mail = assert_some!(client_mailbox.mails().next());
+    assert!(mail.has_flag('D'));
     let client_mails: HashSet<_> = client_mailbox.mails().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().collect();
     assert_eq!(server_mails, client_mails);
-    assert_any!(client_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
-    assert_any!(server_mailbox.mails(), |mail: MailFile| mail.has_flag('D'));
 }

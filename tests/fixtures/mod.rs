@@ -143,9 +143,10 @@ impl Maildir<'_> {
 
     pub fn mails(&'_ self) -> impl Iterator<Item = MailFile<'_>> + std::fmt::Debug {
         let read_dir = assert_ok!(self.cur.read_dir());
-        read_dir
-            .map(|entry| assert_ok!(entry))
-            .map(|entry| MailFile::new(self, entry.path()))
+        let mut all_mails: Vec<_> = read_dir.map(|entry| assert_ok!(entry).path()).collect();
+        all_mails.sort();
+
+        all_mails.into_iter().map(|mail| MailFile::new(self, mail))
     }
 }
 
