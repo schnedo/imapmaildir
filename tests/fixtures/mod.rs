@@ -1,6 +1,7 @@
 use std::{
     fs::{self},
     marker::PhantomData,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -171,6 +172,18 @@ fn __setup_logging() {
     logging::init(log::LevelFilter::Trace);
 }
 
+fn fix_permissions(path: &Path) {
+    let mut permissions = assert_ok!(path.metadata()).permissions();
+    permissions.set_mode(0o777);
+    assert_ok!(fs::set_permissions(path, permissions));
+    if path.is_dir() {
+        for path in assert_ok!(fs::read_dir(path)) {
+            let entry = assert_ok!(path);
+            fix_permissions(&entry.path());
+        }
+    }
+}
+
 const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
 #[fixture]
@@ -181,6 +194,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     copy_dir(mock_path!("data/local"), &client_base_path);
     let server_dir = tmp_dir.path().join("remote");
     copy_dir(mock_path!("data/remote"), &server_dir);
+    fix_permissions(&server_dir);
     let container = assert_ok!(
         GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
