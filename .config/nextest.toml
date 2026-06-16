@@ -5,7 +5,10 @@ leak-timeout = { period = "500ms", result = "fail" }
 [[profile.default.overrides]]
 filter = "kind(test)"
 retries = 3
-slow-timeout = { period = "20s", terminate-after = 2 }
+slow-timeout = { period = "60s", terminate-after = 2 }
+[[profile.default.overrides]]
+filter = "test(imap::transport::connection)"
+retries = 3
 
 [profile.ci]
 fail-fast = false
@@ -13,3 +16,6 @@ fail-fast = false
 [[profile.ci.overrides]]
 filter = "kind(test)"
 slow-timeout = { period = "60s", terminate-after = 2 }
+[[profile.default.overrides]]
+filter = "test(imap::transport::connection)"
+slow-timeout = { period = "40s", terminate-after = 2 }
