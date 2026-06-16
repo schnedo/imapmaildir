@@ -102,11 +102,14 @@
               ]
               ++ config.pre-commit.settings.enabledPackages;
 
-            shellHook = ''
-              systemctl --user start podman.socket
-              export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
-              ${config.pre-commit.shellHook}
-            '';
+            shellHook =
+              # bash
+              ''
+                if systemctl --user start podman.socket && [[ -S "$XDG_RUNTIME_DIR"/podman/podman.sock ]]; then
+                  export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+                fi
+                ${config.pre-commit.shellHook}
+              '';
 
             env = {
             };
