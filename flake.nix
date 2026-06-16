@@ -109,7 +109,6 @@
             '';
 
             env = {
-              RSTEST_TIMEOUT = 30;
             };
             # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             # ];
