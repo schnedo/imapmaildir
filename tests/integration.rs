@@ -239,3 +239,60 @@ async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
     assert_eq!(server_mails, client_mails);
     assert_ne!(initial_client_mails, client_mails);
 }
+#[rstest]
+#[tokio::test]
+#[awt]
+async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(initial_server_mails, client_mails);
+    let mut client_mails = client_mails.into_iter();
+    assert_some!(client_mails.next()).delete();
+
+    let client = Client::login(config.connection(), config.auth()).await;
+    Syncer::sync(
+        "INBOX",
+        config.maildir_base_path(),
+        config.state_dir(),
+        client,
+    )
+    .await;
+
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+    assert_ne!(initial_server_mails, server_mails);
+}
+
+#[rstest]
+#[tokio::test]
+#[awt]
+async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let initial_client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, initial_client_mails);
+    let mut server_mails = server_mails.into_iter();
+    assert_some!(server_mails.next()).delete();
+
+    let client = Client::login(config.connection(), config.auth()).await;
+    Syncer::sync(
+        "INBOX",
+        config.maildir_base_path(),
+        config.state_dir(),
+        client,
+    )
+    .await;
+
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+    assert_ne!(initial_client_mails, client_mails);
+}
