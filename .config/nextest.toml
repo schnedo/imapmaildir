@@ -1,2 +1,15 @@
+[profile.default]
+slow-timeout = { period = "5s", terminate-after = 2 }
+leak-timeout = { period = "500ms", result = "fail" }
+
+[[profile.default.overrides]]
+filter = "kind(test)"
+retries = 3
+slow-timeout = { period = "20s", terminate-after = 2 }
+
 [profile.ci]
 fail-fast = false
+
+[[profile.ci.overrides]]
+filter = "kind(test)"
+slow-timeout = { period = "60s", terminate-after = 2 }
