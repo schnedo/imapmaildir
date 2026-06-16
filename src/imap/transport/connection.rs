@@ -182,10 +182,14 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, str::FromStr};
+    use std::{
+        os::unix::fs::PermissionsExt as _,
+        path::{Path, PathBuf},
+    };
 
     use assertables::*;
     use rstest::*;
+    use tempfile::tempdir;
 
     use super::*;
     use testcontainers::{
@@ -194,7 +198,13 @@ mod tests {
         runners::AsyncRunner,
     };
 
+    macro_rules! mock_path {
+        ($($suffix:literal),*) => {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock/", $($suffix),*)
+        };
+    }
     const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
+    const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
     pub struct MockServer {
         server: ContainerAsync<GenericImage>,
@@ -210,8 +220,45 @@ mod tests {
         }
     }
 
+    fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
+        let from = from.as_ref();
+        let to = to.as_ref();
+        assert_ok!(fs::create_dir_all(to));
+        for entry in assert_ok!(from.read_dir()) {
+            let entry = assert_ok!(entry);
+            let ftype = assert_ok!(entry.file_type());
+            if ftype.is_dir() {
+                copy_dir(entry.path(), to.join(entry.file_name()));
+            } else {
+                if entry.file_name() == ".gitkeep" {
+                    continue;
+                }
+                assert_ok!(fs::copy(entry.path(), to.join(entry.file_name())));
+            }
+        }
+    }
+
+    fn fix_permissions(path: &Path) {
+        let mut permissions = assert_ok!(path.metadata()).permissions();
+        permissions.set_mode(0o777);
+        assert_ok!(fs::set_permissions(path, permissions));
+        if path.is_dir() {
+            for path in assert_ok!(fs::read_dir(path)) {
+                let entry = assert_ok!(path);
+                fix_permissions(&entry.path());
+            }
+        }
+    }
+
     #[fixture]
     pub async fn server() -> MockServer {
+        let password = "password".to_string();
+        let tmp_dir = assert_ok!(tempdir());
+        let client_base_path = tmp_dir.path().join("local");
+        copy_dir(mock_path!("data/local"), &client_base_path);
+        let server_dir = tmp_dir.path().join("remote");
+        copy_dir(mock_path!("data/remote"), &server_dir);
+        fix_permissions(&server_dir);
         MockServer {
             server: assert_ok!(
                 GenericImage::new("dovecot/dovecot", "2.4.4-dev")
@@ -226,19 +273,25 @@ mod tests {
                         &IMAPS_PORT.to_string(),
                     ]))
                     .with_mount(
-                        Mount::bind_mount(
-                            format!("{}/tests/mock/certificate.crt", env!("CARGO_MANIFEST_DIR")),
-                            "/etc/dovecot/ssl/tls.crt",
-                        )
-                        .with_access_mode(AccessMode::ReadOnly)
+                        Mount::bind_mount(CERTIFICATE_PATH, "/etc/dovecot/ssl/tls.crt")
+                            .with_access_mode(AccessMode::ReadOnly),
                     )
                     .with_mount(
                         Mount::bind_mount(
-                            format!("{}/tests/mock/private_key.pem", env!("CARGO_MANIFEST_DIR")),
-                            "/etc/dovecot/ssl/tls.key",
+                            mock_path!("private_key.pem"),
+                            "/etc/dovecot/ssl/tls.key"
                         )
-                        .with_access_mode(AccessMode::ReadOnly)
+                        .with_access_mode(AccessMode::ReadOnly),
                     )
+                    .with_mount(
+                        Mount::bind_mount(mock_path!("dovecot.conf"), "/etc/dovecot/dovecot.conf")
+                            .with_access_mode(AccessMode::ReadOnly),
+                    )
+                    .with_mount(Mount::bind_mount(
+                        server_dir.to_string_lossy(),
+                        "/srv/vmail/user/mail"
+                    ))
+                    .with_env_var("USER_PASSWORD", &password)
                     .start()
                     .await
             ),
@@ -253,10 +306,7 @@ mod tests {
         let config = config::Connection::new(
             server.hostname().await,
             server.port().await,
-            Some(assert_ok!(PathBuf::from_str(&format!(
-                "{}/tests/mock/certificate.crt",
-                env!("CARGO_MANIFEST_DIR")
-            )))),
+            Some(PathBuf::from(CERTIFICATE_PATH)),
         );
         let _connection = assert_ok!(Connection::start(&config, tx,).await);
     }
