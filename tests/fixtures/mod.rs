@@ -189,6 +189,10 @@ mod mailfile {
                 false
             }
         }
+
+        pub fn delete(self) {
+            assert_ok!(fs::remove_file(self.path));
+        }
     }
 }
 pub use mailfile::MailFile;
