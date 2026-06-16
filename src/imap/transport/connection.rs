@@ -118,6 +118,10 @@ impl Connection {
                             },
                         }
                     }
+                    else => {
+                        log::debug!("Connection to server has shut down. Stopping response handling");
+                        break;
+                    }
                 }
             }
         });
