@@ -1,11 +1,14 @@
 use std::{
-    fs::{self},
+    collections::{HashMap, HashSet},
+    fs::{self, File},
+    io::{BufRead as _, BufReader},
     marker::PhantomData,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
 use assertables::*;
+use derivative::Derivative;
 use imapmaildir::{config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
@@ -41,163 +44,144 @@ fn copy_dir(from: impl AsRef<Path>, to: impl AsRef<Path>) {
     }
 }
 
-mod mailfile {
-    #![expect(clippy::elidable_lifetime_names)]
-    use assertables::*;
-    use std::{
-        collections::{HashMap, HashSet},
-        fs::{self, File},
-        io::{BufRead, BufReader},
-        marker::PhantomData,
-        path::{Path, PathBuf},
-    };
-
-    use derivative::Derivative;
-
-    use crate::fixtures::Maildir;
-
-    pub struct UidList {
-        filename_to_uid: HashMap<String, u64>,
-    }
-    impl UidList {
-        pub fn new(path: &Path) -> Self {
-            let reader = BufReader::new(assert_ok!(File::open(path)));
-            let mut lines = reader.lines();
-            lines.next();
-            let mut filename_to_uid = HashMap::new();
-            for line in lines {
-                let line = assert_ok!(line);
-                let (uid, rest) = assert_some!(line.split_once(' '));
-                let uid: u64 = assert_ok!(uid.parse());
-                let (_, filename) = assert_some!(rest.split_once(':'));
-                let filename = if let Some((prefix, _)) = filename.rsplit_once(":2,") {
-                    prefix
-                } else {
-                    filename
-                };
-                filename_to_uid.insert(filename.to_string(), uid);
-            }
-
-            Self { filename_to_uid }
-        }
-
-        pub fn get_uid(&self, filename: &str) -> u64 {
+pub struct UidList {
+    filename_to_uid: HashMap<String, u64>,
+}
+impl UidList {
+    pub fn new(path: &Path) -> Self {
+        let reader = BufReader::new(assert_ok!(File::open(path)));
+        let mut lines = reader.lines();
+        lines.next();
+        let mut filename_to_uid = HashMap::new();
+        for line in lines {
+            let line = assert_ok!(line);
+            let (uid, rest) = assert_some!(line.split_once(' '));
+            let uid: u64 = assert_ok!(uid.parse());
+            let (_, filename) = assert_some!(rest.split_once(':'));
             let filename = if let Some((prefix, _)) = filename.rsplit_once(":2,") {
                 prefix
             } else {
                 filename
             };
+            filename_to_uid.insert(filename.to_string(), uid);
+        }
 
-            *assert_some!(self.filename_to_uid.get(filename))
+        Self { filename_to_uid }
+    }
+
+    pub fn get_uid(&self, filename: &str) -> u64 {
+        let filename = if let Some((prefix, _)) = filename.rsplit_once(":2,") {
+            prefix
+        } else {
+            filename
+        };
+
+        *assert_some!(self.filename_to_uid.get(filename))
+    }
+}
+
+#[derive(Derivative)]
+#[derivative(Debug, PartialEq, Eq, Hash)]
+pub struct MailFile<'a> {
+    pd: PhantomData<&'a ()>,
+    uid: u64,
+    content: Vec<u8>,
+    flags: String,
+    #[derivative(PartialEq = "ignore")]
+    #[derivative(PartialEq = "ignore", Hash = "ignore")]
+    path: PathBuf,
+}
+
+impl MailFile<'_> {
+    pub fn new(_maildir: &'_ impl Maildir, uid: Option<u64>, path: PathBuf) -> Self {
+        let content = assert_ok!(fs::read(&path));
+        let name = assert_some!(path.file_name());
+        let name = name.to_string_lossy();
+        let (prefix, flags) = assert_some!(name.rsplit_once(":2,"));
+        let uid = if let Some(uid) = uid {
+            uid
+        } else {
+            let uid = prefix.rsplit_once("U=").map_or(prefix, |(_, uid)| uid);
+
+            assert_ok!(uid.parse())
+        };
+
+        Self {
+            pd: PhantomData,
+            content,
+            flags: flags.into(),
+            uid,
+            path,
         }
     }
 
-    #[derive(Derivative)]
-    #[derivative(Debug, PartialEq, Eq, Hash)]
-    pub struct MailFile<'a> {
-        pd: PhantomData<&'a ()>,
-        uid: u64,
-        content: Vec<u8>,
-        flags: String,
-        #[derivative(PartialEq = "ignore")]
-        #[derivative(PartialEq = "ignore", Hash = "ignore")]
-        path: PathBuf,
+    pub fn has_flag(&self, flag: char) -> bool {
+        self.flags.contains(flag)
     }
 
-    impl MailFile<'_> {
-        pub fn new(_maildir: &'_ impl Maildir, uid: Option<u64>, path: PathBuf) -> Self {
-            let content = assert_ok!(fs::read(&path));
-            let name = assert_some!(path.file_name());
-            let name = name.to_string_lossy();
-            let (prefix, flags) = assert_some!(name.rsplit_once(":2,"));
-            let uid = if let Some(uid) = uid {
-                uid
-            } else {
-                let uid = prefix.rsplit_once("U=").map_or(prefix, |(_, uid)| uid);
-
-                assert_ok!(uid.parse())
-            };
-
-            Self {
-                pd: PhantomData,
-                content,
-                flags: flags.into(),
-                uid,
-                path,
+    pub fn add_flag(&mut self, flag: char) -> bool {
+        let (flags, mut file_name) = if self.flags.is_empty() {
+            (
+                String::from(flag),
+                assert_some!(self.path.file_name())
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        } else {
+            let mut flags: HashSet<_> = self.flags.chars().collect();
+            if !flags.insert(flag) {
+                return false;
             }
-        }
+            let mut flags: Vec<_> = flags.drain().collect();
+            flags.sort_unstable();
+            let flags: String = flags.into_iter().collect();
+            let file_name = assert_some!(self.path.file_name()).to_string_lossy();
+            let (prefix, _) = assert_some!(file_name.rsplit_once(":2,"));
+            let mut file_name = String::with_capacity(prefix.len() + 3 + flags.len());
+            file_name.push_str(prefix);
+            file_name.push_str(":2,");
 
-        pub fn has_flag(&self, flag: char) -> bool {
-            self.flags.contains(flag)
-        }
+            (flags, file_name)
+        };
+        file_name.push_str(&flags);
+        let new_path = self.path.with_file_name(file_name);
+        assert_ok!(fs::rename(&self.path, &new_path));
+        self.flags = flags;
+        self.path = new_path;
 
-        pub fn add_flag(&mut self, flag: char) -> bool {
-            let (flags, mut file_name) = if self.flags.is_empty() {
-                (
-                    String::from(flag),
-                    assert_some!(self.path.file_name())
-                        .to_string_lossy()
-                        .to_string(),
-                )
-            } else {
-                let mut flags: HashSet<_> = self.flags.chars().collect();
-                if !flags.insert(flag) {
-                    return false;
-                }
-                let mut flags: Vec<_> = flags.drain().collect();
-                flags.sort_unstable();
-                let flags: String = flags.into_iter().collect();
-                let file_name = assert_some!(self.path.file_name()).to_string_lossy();
-                let (prefix, _) = assert_some!(file_name.rsplit_once(":2,"));
-                let mut file_name = String::with_capacity(prefix.len() + 3 + flags.len());
-                file_name.push_str(prefix);
-                file_name.push_str(":2,");
+        true
+    }
 
-                (flags, file_name)
-            };
+    pub fn remove_flag(&mut self, flag: char) -> bool {
+        if self.has_flag(flag) {
+            let mut flags: HashSet<_> = self.flags.chars().collect();
+            flags.remove(&flag);
+            let mut flags: Vec<_> = flags.into_iter().collect();
+            flags.sort_unstable();
+            let flags: String = flags.into_iter().collect();
+
+            let file_name = assert_some!(self.path.file_name())
+                .to_string_lossy()
+                .to_string();
+            let (prefix, _) = assert_some!(file_name.rsplit_once(":2,"));
+            let mut file_name = String::with_capacity(prefix.len() + 3 + flags.len());
+            file_name.push_str(prefix);
+            file_name.push_str(":2,");
             file_name.push_str(&flags);
             let new_path = self.path.with_file_name(file_name);
             assert_ok!(fs::rename(&self.path, &new_path));
             self.flags = flags;
-            self.path = new_path;
 
             true
-        }
-
-        pub fn remove_flag(&mut self, flag: char) -> bool {
-            if self.has_flag(flag) {
-                let mut flags: HashSet<_> = self.flags.chars().collect();
-                flags.remove(&flag);
-                let mut flags: Vec<_> = flags.into_iter().collect();
-                flags.sort_unstable();
-                let flags: String = flags.into_iter().collect();
-
-                let file_name = assert_some!(self.path.file_name())
-                    .to_string_lossy()
-                    .to_string();
-                let (prefix, _) = assert_some!(file_name.rsplit_once(":2,"));
-                let mut file_name = String::with_capacity(prefix.len() + 3 + flags.len());
-                file_name.push_str(prefix);
-                file_name.push_str(":2,");
-                file_name.push_str(&flags);
-                let new_path = self.path.with_file_name(file_name);
-                assert_ok!(fs::rename(&self.path, &new_path));
-                self.flags = flags;
-
-                true
-            } else {
-                false
-            }
-        }
-
-        pub fn delete(self) {
-            assert_ok!(fs::remove_file(self.path));
+        } else {
+            false
         }
     }
-}
-pub use mailfile::MailFile;
 
-use crate::fixtures::mailfile::UidList;
+    pub fn delete(self) {
+        assert_ok!(fs::remove_file(self.path));
+    }
+}
 
 pub struct ClientMaildir<'a> {
     pd: PhantomData<&'a ServerMailStorage>,
