@@ -217,7 +217,7 @@ pub trait Maildir {
 
     async fn mail_with_flag(&self) -> Option<MailFile<'_>>;
 
-    fn add_mail(&self, content: &[u8], flags: &str);
+    fn add_mail(&self, content: &[u8]);
 }
 
 impl Maildir for ClientMaildir<'_> {
@@ -239,9 +239,8 @@ impl Maildir for ClientMaildir<'_> {
             .find(|mail| mail.has_flag('S'))
     }
 
-    fn add_mail(&self, content: &[u8], flags: &str) {
-        let mut file_name = String::from("foo:2,");
-        file_name.push_str(flags);
+    fn add_mail(&self, content: &[u8]) {
+        let file_name = String::from("foo:2,S");
         let path = self.cur.join(file_name);
         assert!(!assert_ok!(path.try_exists()));
         assert_ok!(fs::write(path, content));
@@ -251,20 +250,22 @@ impl Maildir for ClientMaildir<'_> {
 pub struct ServerMaildir<'a> {
     storage: &'a ServerMailStorage,
     cur: PathBuf,
+    new: PathBuf,
 }
 
 impl<'a> ServerMaildir<'a> {
     fn new(storage: &'a ServerMailStorage, name: &str) -> Self {
-        let cur = if name == "INBOX" {
-            storage.dir().join("cur")
+        let (cur, new) = if name == "INBOX" {
+            (storage.dir().join("cur"), storage.dir().join("new"))
         } else {
             let mut cur = storage.dir().join(name);
+            let new = cur.join("new");
             cur.push("cur");
 
-            cur
+            (cur, new)
         };
 
-        Self { storage, cur }
+        Self { storage, cur, new }
     }
 }
 
@@ -311,10 +312,9 @@ impl Maildir for ServerMaildir<'_> {
             .find(|mail| mail.has_flag('S'))
     }
 
-    fn add_mail(&self, content: &[u8], flags: &str) {
-        let mut file_name = String::from("foo:2,");
-        file_name.push_str(flags);
-        let path = self.cur.join(file_name);
+    fn add_mail(&self, content: &[u8]) {
+        let file_name = String::from("foo");
+        let path = self.new.join(file_name);
         assert!(!assert_ok!(path.try_exists()));
         assert_ok!(fs::write(path, content));
     }

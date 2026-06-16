@@ -191,10 +191,10 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
     let client_mailbox = client_mail.mailbox("INBOX");
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
-    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
-    assert_eq!(server_mails, client_mails);
+    let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(initial_server_mails, client_mails);
     let content = String::from("new");
-    client_mailbox.add_mail(content.as_bytes(), "S");
+    client_mailbox.add_mail(content.as_bytes());
 
     let client = Client::login(config.connection(), config.auth()).await;
     Syncer::sync(
@@ -208,4 +208,34 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
     assert_eq!(server_mails, client_mails);
+    assert_ne!(initial_server_mails, server_mails);
+}
+
+#[rstest]
+#[tokio::test]
+#[awt]
+async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
+    let config = mail_setup.config();
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let initial_client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, initial_client_mails);
+    let content = String::from("new");
+    server_mailbox.add_mail(content.as_bytes());
+
+    let client = Client::login(config.connection(), config.auth()).await;
+    Syncer::sync(
+        "INBOX",
+        config.maildir_base_path(),
+        config.state_dir(),
+        client,
+    )
+    .await;
+
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+    assert_ne!(initial_client_mails, client_mails);
 }
