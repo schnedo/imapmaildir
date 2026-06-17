@@ -13,6 +13,7 @@ pkgs.rustPlatform.buildRustPackage {
     lockFile = ../Cargo.lock;
   };
   useNextest = true;
+  # todo: let integration tests run
   cargoTestFlags = [
     "--lib"
   ];
