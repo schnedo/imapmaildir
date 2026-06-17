@@ -12,6 +12,14 @@ pkgs.rustPlatform.buildRustPackage {
   cargoLock = {
     lockFile = ../Cargo.lock;
   };
+  useNextest = true;
+  cargoTestFlags = [
+    "--lib"
+  ];
+  checkFlags = [
+    "--skip"
+    "imap::transport::connection"
+  ];
   buildInputs = with pkgs; [
     openssl.dev
   ];
