@@ -42,8 +42,8 @@ pedantic = { level = "warn", priority = -2 }
 allow_attributes = "warn"
 
 [dev-dependencies]
-assertables = "9.8.3"
-derivative = "2.2.0"
-rstest = "0.26.1"
-tempfile = "3.24.0"
-testcontainers = "0.27.3"
+assertables = "=9.8.3"
+derivative = "=2.2.0"
+rstest = "=0.26.1"
+tempfile = "=3.24.0"
+testcontainers = "=0.27.3"
