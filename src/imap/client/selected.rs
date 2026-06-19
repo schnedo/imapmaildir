@@ -92,6 +92,21 @@ impl SelectedClient {
                                     .await
                                     .expect("task channel should still be open");
                             }
+                            [
+                                imap_proto::AttributeValue::Uid(uid),
+                                imap_proto::AttributeValue::ModSeq(modseq),
+                                imap_proto::AttributeValue::Flags(flags),
+                            ] => {
+                                trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
+                                task_tx
+                                    .send(Task::UpdateFlags(RemoteMailMetadata::new(
+                                        uid.try_into().expect("uid should be nonzero"),
+                                        Flag::into_bitflags(flags),
+                                        modseq.try_into().expect("modseq shoud be nonzero"),
+                                    )))
+                                    .await
+                                    .expect("task channel should still be open");
+                            }
                             _ => {
                                 trace!("attributes {attributes:?}");
                                 panic!(
