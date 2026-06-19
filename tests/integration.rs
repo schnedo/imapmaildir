@@ -21,7 +21,7 @@ async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
     let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -47,7 +47,7 @@ async fn test_initial_sync_works(#[future] mail_setup: MailSetup) {
     let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -76,7 +76,7 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
     assert!(mail.has_flag('D'));
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -107,7 +107,7 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     assert!(mail.has_flag('D'));
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -138,7 +138,7 @@ async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
     assert!(!mail.has_flag('S'));
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -166,7 +166,7 @@ async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
     assert!(!mail.has_flag('S'));
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -197,7 +197,7 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
     client_mailbox.add_mail(content.as_bytes());
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -226,7 +226,7 @@ async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
     server_mailbox.add_mail(content.as_bytes());
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -254,7 +254,7 @@ async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
     assert_some!(client_mails.next()).delete();
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),
@@ -283,7 +283,7 @@ async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
     assert_some!(server_mails.next()).delete();
 
     let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync(
+    Syncer::sync_once(
         "INBOX",
         config.maildir_base_path(),
         config.state_dir(),

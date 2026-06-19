@@ -1,8 +1,8 @@
-use std::io::Write as _;
 use std::mem::transmute;
+use std::{io::Write as _, sync::Arc};
 
 use log::{debug, trace};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     imap::{
@@ -18,8 +18,11 @@ use crate::{
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
+    idling: Arc<Mutex<bool>>,
+    idle_stop_rx: mpsc::Receiver<()>,
 }
 impl SelectedClient {
+    #[expect(clippy::too_many_lines)]
     pub fn new(
         connection: Connection,
         capabilities: &Capabilities,
@@ -34,6 +37,10 @@ impl SelectedClient {
             capabilities.contains(Capability::UidPlus),
             "server should support UIDPLUS capability"
         );
+        let idling = Arc::new(Mutex::new(false));
+        let is_idling = idling.clone();
+        let (idle_stop_tx, idle_stop_rx) = mpsc::channel(1);
+
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
                 match response.parsed() {
@@ -116,6 +123,39 @@ impl SelectedClient {
                             .await
                             .expect("deletion channel should still be open");
                     }
+                    imap_proto::Response::Expunge(_) => {
+                        let mut is_idling = is_idling.lock().await;
+                        if *is_idling {
+                            trace!("stopping idle");
+                            *is_idling = false;
+                            idle_stop_tx
+                                .send(())
+                                .await
+                                .expect("idle stop channel should still be open");
+                        } else {
+                            trace!("ignoring response due to not idling");
+                        }
+                    }
+                    imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
+                        imap_proto::MailboxDatum::Exists(_)
+                        | imap_proto::MailboxDatum::Recent(_) => {
+                            let mut is_idling = is_idling.lock().await;
+                            if *is_idling {
+                                trace!("stopping idle");
+                                *is_idling = false;
+                                idle_stop_tx
+                                    .send(())
+                                    .await
+                                    .expect("idle stop channel should still be open");
+                            } else {
+                                trace!("ignoring response due to not idling");
+                            }
+                        }
+                        _ => trace!(
+                            "ignoring unhandled mailbox data response {:?}",
+                            response.parsed()
+                        ),
+                    },
                     _ => {
                         trace!(
                             "ignoring unhandled untagged response {:?}",
@@ -126,7 +166,11 @@ impl SelectedClient {
             }
         });
 
-        Self { connection }
+        Self {
+            connection,
+            idling,
+            idle_stop_rx,
+        }
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
@@ -139,7 +183,22 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all(&mut self) {
-        self.fetch_mail(&SequenceSet::all()).await;
+        let command = "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[])";
+        debug!("{command}");
+        self.connection
+            .send(command.into())
+            .await
+            .expect("fetching mails should succeed");
+    }
+
+    pub async fn fetch_since(&mut self, modseq: ModSeq) {
+        let command =
+            format!("UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[]) (CHANGEDSINCE {modseq})");
+        debug!("{command}");
+        self.connection
+            .send(command.into())
+            .await
+            .expect("fetching mails should succeed");
     }
 
     pub async fn store(
@@ -243,6 +302,34 @@ impl SelectedClient {
             .send(command.into_bytes())
             .await
             .expect("sending uid expunge should succeed");
+    }
+
+    pub async fn idle(&mut self) {
+        let command = "IDLE";
+        debug!("{command}");
+        *self.idling.lock().await = true;
+        let response = self
+            .connection
+            .send(command.into())
+            .await
+            .expect("sending idle should succeed");
+        match response.parsed() {
+            imap_proto::Response::Continue {
+                code: _,
+                information: _,
+            } => trace!("idling"),
+            _ => todo!("handle idle no continuation"),
+        }
+        self.idle_stop_rx
+            .recv()
+            .await
+            .expect("idle stop channel should still be open");
+        let command = "DONE";
+        debug!("{command}");
+        self.connection
+            .send_continuation(command.into())
+            .await
+            .expect("sending idle done should succeed");
     }
 }
 
