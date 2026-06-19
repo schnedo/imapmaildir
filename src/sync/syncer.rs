@@ -258,6 +258,16 @@ impl Syncer {
                             .update_highest_modseq(mod_seq)
                             .expect("setting highest_modseq should succeed");
                     }
+                    Task::UpdateFlags(remote_mail_metadata) => {
+                        debug!(
+                            "Setting flags of mail {} to {}",
+                            remote_mail_metadata.uid(),
+                            remote_mail_metadata.flags()
+                        );
+                        maildir_repository
+                            .update_flags(&remote_mail_metadata)
+                            .expect("updating flags should succeed");
+                    }
                 }
             }
         })
