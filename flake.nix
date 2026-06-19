@@ -105,10 +105,12 @@
             shellHook =
               # bash
               ''
-                if systemctl --user start podman.socket && [[ -S "$XDG_RUNTIME_DIR"/podman/podman.sock ]]; then
-                  export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+                if [[ ! $SKIP_SHELL_HOOK ]]; then
+                  if systemctl --user start podman.socket && [[ -S "$XDG_RUNTIME_DIR"/podman/podman.sock ]]; then
+                    export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+                  fi
+                  ${config.pre-commit.shellHook}
                 fi
-                ${config.pre-commit.shellHook}
               '';
 
             env = {
