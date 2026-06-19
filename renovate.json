@@ -5,7 +5,8 @@
     ":automergeAll",
     ":disableDependencyDashboard",
     ":rebaseStalePrs",
-    ":semanticCommits"
+    ":semanticCommits",
+    ":semanticPrefixFixDepsChoreOthers"
   ],
   "prConcurrentLimit": 1
 }
