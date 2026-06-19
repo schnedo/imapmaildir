@@ -115,19 +115,6 @@ impl SelectedClient {
                             }
                         }
                     }
-                    imap_proto::Response::Data {
-                        code: Some(imap_proto::ResponseCode::HighestModSeq(modseq)),
-                        ..
-                    } => {
-                        task_tx
-                            .send(Task::HighestModSeq(
-                                modseq
-                                    .try_into()
-                                    .expect("received highest_modseq should be valid"),
-                            ))
-                            .await
-                            .expect("channel should be open");
-                    }
                     imap_proto::Response::Vanished { earlier, uids } => {
                         trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
                         task_tx
