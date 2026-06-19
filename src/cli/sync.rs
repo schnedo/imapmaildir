@@ -8,7 +8,7 @@ use log::{error, info, warn};
 
 use imapmaildir::{Client, Syncer, config::Account};
 
-pub fn sync_mailbox(config: &Account, mailbox: &str) {
+pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
@@ -17,17 +17,27 @@ pub fn sync_mailbox(config: &Account, mailbox: &str) {
     rt.block_on(async {
         let client = Client::login(config.connection(), config.auth()).await;
 
-        Syncer::sync_once(
-            mailbox,
-            config.maildir_base_path(),
-            config.state_dir(),
-            client,
-        )
-        .await;
+        if idle {
+            Syncer::sync_continuously(
+                mailbox,
+                config.maildir_base_path(),
+                config.state_dir(),
+                client,
+            )
+            .await;
+        } else {
+            Syncer::sync_once(
+                mailbox,
+                config.maildir_base_path(),
+                config.state_dir(),
+                client,
+            )
+            .await;
+        }
     });
 }
 
-pub fn sync_all(config: Account) {
+pub fn sync_all(config: Account, idle: bool) {
     let config = Arc::new(config);
     let sync_handles: Vec<JoinHandle<()>> = config
         .mailboxes()
@@ -39,7 +49,7 @@ pub fn sync_all(config: Account) {
             let thread_builder = thread::Builder::new().name(mailbox.clone());
             thread_builder
                 .spawn(move || {
-                    sync_mailbox(&config, &mailbox_clone);
+                    sync_mailbox(&config, &mailbox_clone, idle);
                     info!("finished syncing {mailbox_clone}");
                 })
                 .expect("spawning sync thread should succeed")
