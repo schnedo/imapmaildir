@@ -13,7 +13,7 @@ use imapmaildir::{config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
-    ContainerAsync, GenericImage, Healthcheck, ImageExt,
+    ContainerAsync, GenericImage, ImageExt,
     core::{AccessMode, ContainerPort, ExecCommand, Mount, WaitFor},
     runners::AsyncRunner,
 };
@@ -406,15 +406,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     let container = assert_ok!(
         GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
-            .with_wait_for(WaitFor::healthcheck())
-            .with_health_check(Healthcheck::cmd([
-                "nc",
-                "-z",
-                "-w",
-                "5",
-                "localhost",
-                &IMAPS_PORT.to_string(),
-            ]))
+            .with_wait_for(WaitFor::message_on_stdout("starting up for"))
             .with_mount(
                 Mount::bind_mount(CERTIFICATE_PATH, "/etc/dovecot/ssl/tls.crt")
                     .with_access_mode(AccessMode::ReadOnly),
