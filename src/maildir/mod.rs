@@ -3,6 +3,7 @@ mod local_mail;
 mod maildir;
 mod maildir_repository;
 mod state;
+mod watcher;
 
 pub use local_changes::LocalChanges;
 pub use local_changes::LocalFlagChangesBuilder;

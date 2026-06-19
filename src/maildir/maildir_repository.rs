@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use log::{info, trace, warn};
 
@@ -15,6 +16,7 @@ use crate::{
         LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata, NewLocalMailMetadata,
         maildir::{self, MaildirFile},
         state::{self, State},
+        watcher::Change,
     },
     repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
 };
@@ -81,6 +83,11 @@ impl MaildirRepository {
                 err.into_inner()
             }
         }
+    }
+
+    pub fn watch(&mut self) -> mpsc::Receiver<Change> {
+        info!("listening for maildir mail changes");
+        self.maildir.watch()
     }
 
     pub fn uid_validity(&self) -> Result<UidValidity, state::Error> {

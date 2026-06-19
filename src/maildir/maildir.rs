@@ -10,12 +10,14 @@ use std::{
 use enumflags2::BitFlags;
 use log::{debug, info, trace, warn};
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use crate::{
     imap::RemoteMail,
     maildir::{
         LocalMailMetadata,
         local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
+        watcher::{Change, Watch},
     },
     repository::{Flag, Uid},
 };
@@ -33,6 +35,7 @@ pub struct Maildir {
     new: PathBuf,
     cur: PathBuf,
     tmp: PathBuf,
+    watch: Option<Watch>,
 }
 
 impl Maildir {
@@ -65,7 +68,12 @@ impl Maildir {
         let new = mail_dir.join("new");
         let cur = mail_dir.join("cur");
         let tmp = mail_dir.join("tmp");
-        Self { new, cur, tmp }
+        Self {
+            new,
+            cur,
+            tmp,
+            watch: None,
+        }
     }
 
     pub fn load(mail_dir: &Path) -> Result<Self, LoadError> {
@@ -99,6 +107,13 @@ impl Maildir {
             (_, Err(e), _) => Err(LoadError::Io(mail.cur, e.kind())),
             (_, _, Err(e)) => Err(LoadError::Io(mail.tmp, e.kind())),
         }
+    }
+
+    pub fn watch(&mut self) -> mpsc::Receiver<Change> {
+        let (watch, rx) = Watch::new(&self.cur);
+        self.watch = Some(watch);
+
+        rx
     }
 
     // Algorithm
