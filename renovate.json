@@ -8,5 +8,8 @@
     ":semanticCommits",
     ":semanticPrefixFixDepsChoreOthers"
   ],
-  "prConcurrentLimit": 1
+  "prConcurrentLimit": 1,
+  "nix": {
+    "enabled": true
+  }
 }
