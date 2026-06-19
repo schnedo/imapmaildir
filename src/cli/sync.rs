@@ -17,7 +17,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str) {
     rt.block_on(async {
         let client = Client::login(config.connection(), config.auth()).await;
 
-        Syncer::sync(
+        Syncer::sync_once(
             mailbox,
             config.maildir_base_path(),
             config.state_dir(),

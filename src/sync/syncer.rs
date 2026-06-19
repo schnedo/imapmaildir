@@ -14,21 +14,57 @@ use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
 pub struct Syncer {}
 
 impl Syncer {
-    pub async fn sync(
+    #[expect(clippy::missing_panics_doc)]
+    pub async fn sync_once(
         mailbox: &str,
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
     ) {
+        let ((_, task_tx), _) = Self::sync(mailbox, mail_dir, state_dir, client).await;
+        task_tx
+            .send(Task::Shutdown)
+            .await
+            .expect("sending shutdown task should succeed");
+    }
+
+    #[expect(clippy::missing_panics_doc)]
+    pub async fn sync_continuously(
+        mailbox: &str,
+        mail_dir: &Path,
+        state_dir: &Path,
+        client: AuthenticatedClient,
+    ) -> ! {
+        let ((mut client, _), maildir_repository) =
+            Self::sync(mailbox, mail_dir, state_dir, client).await;
+        loop {
+            let current_highest_modseq = maildir_repository
+                .highest_modseq()
+                .expect("getting highest modseq should succeed");
+            client.idle().await;
+            client.fetch_since(current_highest_modseq).await;
+        }
+    }
+
+    async fn sync(
+        mailbox: &str,
+        mail_dir: &Path,
+        state_dir: &Path,
+        client: AuthenticatedClient,
+    ) -> ((SelectedClient, mpsc::Sender<Task>), MaildirRepository) {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
         if let Ok(maildir_repository) = MaildirRepository::load(&mailbox_maildir, &mailbox_statedir)
         {
-            Self::sync_existing(&maildir_repository, client, mailbox).await;
+            (
+                (Self::sync_existing(&maildir_repository, client, mailbox).await),
+                maildir_repository,
+            )
         } else {
             info!("no existing maildir found. Running inital sync");
-            Self::sync_new(client, &mailbox_maildir, &mailbox_statedir, mailbox).await;
+
+            Self::sync_new(client, &mailbox_maildir, &mailbox_statedir, mailbox).await
         }
     }
 
@@ -36,7 +72,7 @@ impl Syncer {
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
-    ) {
+    ) -> (SelectedClient, mpsc::Sender<Task>) {
         let uid_validity = maildir_repository
             .uid_validity()
             .expect("getting uid_validity should succeed");
@@ -72,10 +108,7 @@ impl Syncer {
         )
         .await;
         Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
-        task_tx
-            .send(Task::Shutdown)
-            .await
-            .expect("sending shutdown task should succeed");
+        (client, task_tx)
     }
 
     async fn handle_local_changes(
@@ -178,19 +211,17 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         mailbox: &str,
-    ) {
+    ) -> ((SelectedClient, mpsc::Sender<Task>), MaildirRepository) {
         let (task_tx, task_rx) = mpsc::channel(32);
         let mut selection = client.select(task_tx.clone(), mailbox).await;
 
         let maildir_repository =
             MaildirRepository::try_init(&selection.mailbox_data, mail_dir, state_dir)
                 .expect("initializing maildir repository should succeed");
-        Self::setup_task_processing(maildir_repository, task_rx);
+        Self::setup_task_processing(maildir_repository.clone(), task_rx);
         selection.client.fetch_all().await;
-        task_tx
-            .send(Task::Shutdown)
-            .await
-            .expect("sending shutdown task should succeed");
+
+        ((selection.client, task_tx), maildir_repository)
     }
 
     fn setup_task_processing(
