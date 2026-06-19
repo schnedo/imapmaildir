@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path, time::Duration};
 
-use log::{debug, info};
+use log::{debug, info, trace};
 use tokio::sync::mpsc;
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
@@ -36,8 +36,16 @@ impl Syncer {
         client: AuthenticatedClient,
         idle_timeout: Duration,
     ) -> ! {
-        let ((mut client, _), maildir_repository) =
+        let ((mut client, _), mut maildir_repository) =
             Self::sync(mailbox, mail_dir, state_dir, client).await;
+        let mut local_change_rx = maildir_repository.watch();
+
+        tokio::spawn(async move {
+            while let Some(change) = local_change_rx.recv().await {
+                trace!("handling local change {change:?}");
+            }
+        });
+
         info!("listening for server mail changes");
         loop {
             if client.idle(idle_timeout).await {
