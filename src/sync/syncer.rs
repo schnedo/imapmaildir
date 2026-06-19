@@ -38,10 +38,10 @@ impl Syncer {
         let ((mut client, _), maildir_repository) =
             Self::sync(mailbox, mail_dir, state_dir, client).await;
         loop {
+            client.idle().await;
             let current_highest_modseq = maildir_repository
                 .highest_modseq()
                 .expect("getting highest modseq should succeed");
-            client.idle().await;
             client.fetch_since(current_highest_modseq).await;
         }
     }
@@ -243,11 +243,6 @@ impl Syncer {
                                 .delete(uid)
                                 .expect("deleting mails should succeed");
                         }
-                    }
-                    Task::HighestModSeq(mod_seq) => {
-                        maildir_repository
-                            .set_highest_modseq(mod_seq)
-                            .expect("setting highest_modseq should succeed");
                     }
                     Task::Shutdown => {
                         task_rx.close();

@@ -6,7 +6,6 @@ use crate::{
 pub enum Task {
     NewMail(RemoteMail),
     Delete(SequenceSet),
-    HighestModSeq(ModSeq),
     UpdateFlags(RemoteMailMetadata),
     UpdateModseq(Uid, ModSeq),
     Shutdown,
