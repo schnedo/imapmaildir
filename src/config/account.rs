@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::config::auth::Auth;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AccountConfigFile {
     auth: Auth,
     host: String,

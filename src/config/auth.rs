@@ -4,6 +4,7 @@ use derive_getters::Getters;
 use serde::Deserialize;
 
 #[derive(Deserialize, Getters, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct PlainAuth {
     user: String,
     #[getter(skip)]
