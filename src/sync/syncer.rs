@@ -4,7 +4,7 @@ use crate::{
     repository::{MailboxMetadata, SequenceSet, SequenceSetBuilder, Uid},
     sync::task::Task,
 };
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashSet, path::Path, time::Duration};
 
 use log::{debug, info};
 use tokio::sync::mpsc;
@@ -34,15 +34,18 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
+        idle_timeout: Duration,
     ) -> ! {
         let ((mut client, _), maildir_repository) =
             Self::sync(mailbox, mail_dir, state_dir, client).await;
+        info!("listening for server mail changes");
         loop {
-            client.idle().await;
-            let current_highest_modseq = maildir_repository
-                .highest_modseq()
-                .expect("getting highest modseq should succeed");
-            client.fetch_since(current_highest_modseq).await;
+            if client.idle(idle_timeout).await {
+                let current_highest_modseq = maildir_repository
+                    .highest_modseq()
+                    .expect("getting highest modseq should succeed");
+                client.fetch_since(current_highest_modseq).await;
+            }
         }
     }
 

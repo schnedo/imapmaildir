@@ -3,7 +3,7 @@ use std::process::Command;
 use derive_getters::Getters;
 use serde::Deserialize;
 
-#[derive(Deserialize, Getters)]
+#[derive(Deserialize, Getters, Debug)]
 pub struct PlainAuth {
     user: String,
     #[getter(skip)]
@@ -42,7 +42,7 @@ impl PlainAuth {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum Auth {
     Plain(PlainAuth),
