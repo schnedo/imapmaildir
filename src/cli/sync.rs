@@ -11,6 +11,7 @@ use imapmaildir::{Client, Syncer, config::Account};
 pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
+        .enable_time()
         .build()
         .expect("tokio runtime should be buildable");
 
@@ -23,6 +24,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
                 config.maildir_base_path(),
                 config.state_dir(),
                 client,
+                config.idle_timout(),
             )
             .await;
         } else {

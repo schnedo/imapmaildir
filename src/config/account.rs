@@ -1,5 +1,5 @@
 use ::std::env;
-use std::{fs::read_to_string, path::PathBuf, str::FromStr};
+use std::{fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -11,6 +11,8 @@ struct AccountConfigFile {
     auth: Auth,
     host: String,
     port: u16,
+    #[serde(default, with = "humantime_serde")]
+    idle_timeout: Option<Duration>,
     server_certificate_file: Option<PathBuf>,
     // todo: "all" for generic fetch of all mailboxes
     mailboxes: Vec<String>,
@@ -18,7 +20,7 @@ struct AccountConfigFile {
 }
 
 // todo: move config to code using it
-#[derive(Getters)]
+#[derive(Getters, Debug)]
 pub struct Connection {
     host: String,
     port: u16,
@@ -36,16 +38,19 @@ impl Connection {
     }
 }
 
-#[derive(Getters)]
+#[derive(Getters, Debug)]
 pub struct Account {
     auth: Auth,
     connection: Connection,
     mailboxes: Vec<String>,
     maildir_base_path: PathBuf,
     state_dir: PathBuf,
+    #[getter(copy)]
+    idle_timout: Duration,
 }
 
 impl Account {
+    #[expect(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         auth: Auth,
@@ -55,6 +60,7 @@ impl Account {
         mailboxes: Vec<String>,
         maildir_base_path: PathBuf,
         state_dir: PathBuf,
+        idle_timout: Duration,
     ) -> Self {
         Self {
             auth,
@@ -62,6 +68,7 @@ impl Account {
             mailboxes,
             maildir_base_path,
             state_dir,
+            idle_timout,
         }
     }
 
@@ -93,6 +100,7 @@ impl Account {
             mailboxes: config.mailboxes,
             maildir_base_path,
             state_dir,
+            idle_timout: config.idle_timeout.unwrap_or(Duration::from_mins(29)),
         }
     }
 }

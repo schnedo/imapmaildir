@@ -5,7 +5,7 @@ use std::io::stdin;
 
 use clap::{Parser, Subcommand};
 use imapmaildir::{config::Account, logging};
-use log::LevelFilter;
+use log::{LevelFilter, debug};
 
 use crate::{
     cli::nuke::nuke,
@@ -49,6 +49,7 @@ pub struct SyncArgs {
 pub fn run(cli: &Cli) {
     logging::init(cli.log_level);
     let config = Account::load_from_file(&cli.account);
+    debug!("parsed config: {config:?}");
 
     match &cli.command {
         Command::Nuke(nuke_args) => {

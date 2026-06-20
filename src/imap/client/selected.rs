@@ -1,4 +1,5 @@
 use std::mem::transmute;
+use std::time::Duration;
 use std::{io::Write as _, sync::Arc};
 
 use log::{debug, trace};
@@ -306,10 +307,11 @@ impl SelectedClient {
             .expect("sending uid expunge should succeed");
     }
 
-    pub async fn idle(&mut self) {
+    pub async fn idle(&mut self, timeout: Duration) -> bool {
         let command = "IDLE";
         debug!("{command}");
         *self.idling.lock().await = true;
+        let timeout_handle = tokio::spawn(tokio::time::sleep(timeout));
         let response = self
             .connection
             .send(command.into())
@@ -319,19 +321,30 @@ impl SelectedClient {
             imap_proto::Response::Continue {
                 code: _,
                 information: _,
-            } => trace!("idling"),
+            } => trace!("idling for up to {} seconds", timeout.as_secs()),
             _ => todo!("handle idle no continuation"),
         }
-        self.idle_stop_rx
-            .recv()
-            .await
-            .expect("idle stop channel should still be open");
+        let idle_stopped = tokio::select! {
+            stop = self.idle_stop_rx.recv() => {
+                stop.expect("idle stop channel should still be open");
+
+                true
+            }
+            timeout = timeout_handle => {
+                timeout.expect("idle timeout should not fail");
+                debug!("idle timed out");
+
+                false
+            }
+        };
         let command = "DONE";
         debug!("{command}");
         self.connection
             .send_continuation(command.into())
             .await
             .expect("sending idle done should succeed");
+
+        idle_stopped
     }
 }
 

@@ -5,6 +5,7 @@ use std::{
     marker::PhantomData,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use assertables::*;
@@ -440,6 +441,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             vec!["INBOX".to_string(), "DRAFT".to_string()],
             client_base_path.clone(),
             client_base_path,
+            Duration::from_secs(30),
         ),
         tmp_dir,
         server_mail_storge: ServerMailStorage {
