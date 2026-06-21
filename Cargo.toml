@@ -22,7 +22,7 @@ log = { version = "0.4.27", features = [
   "release_max_level_debug",
   "std",
 ] }
-nom = "7"
+nom = "8"
 rusqlite = { version = "0.40.0", features = ["bundled"] }
 rusqlite_migration = { version = "2.4.1", features = ["from-directory"] }
 rustix = { version = "1.0.5", features = [
