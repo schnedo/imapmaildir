@@ -1,10 +1,5 @@
 use enumflags2::BitFlags;
-use std::{
-    collections::HashMap,
-    io,
-    path::Path,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::HashMap, io, path::Path};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -27,15 +22,12 @@ use super::Maildir;
 #[derive(Clone, Debug)]
 pub struct MaildirRepository {
     maildir: Maildir,
-    state: Arc<Mutex<State>>,
+    state: State,
 }
 
 impl MaildirRepository {
     fn new(maildir: Maildir, state: State) -> Self {
-        Self {
-            maildir,
-            state: Arc::new(Mutex::new(state)),
-        }
+        Self { maildir, state }
     }
 
     pub fn try_init(
@@ -74,61 +66,44 @@ impl MaildirRepository {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        match self.state.lock() {
-            Ok(db) => db,
-            Err(err) => {
-                warn!("Encountered poisened mutex to db connection");
-
-                err.into_inner()
-            }
-        }
-    }
-
-    pub fn watch(&mut self) -> mpsc::Receiver<Change> {
+    pub async fn watch(&mut self) -> mpsc::Receiver<Change> {
         info!("listening for maildir mail changes");
-        self.maildir.watch()
+        self.maildir.watch().await
     }
 
     pub fn uid_validity(&self) -> Result<UidValidity, state::Error> {
-        let state = self.lock();
-        state.uid_validity()
+        self.state.uid_validity()
     }
 
     pub fn highest_modseq(&self) -> Result<ModSeq, state::Error> {
-        let state = self.lock();
-        state.highest_modseq()
+        self.state.highest_modseq()
     }
 
     pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
-        let state = self.lock();
-        state.set_highest_modseq(value)
+        self.state.set_highest_modseq(value)
     }
 
     pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
-        let mut state = self.lock();
-        state.update_highest_modseq(value)
+        self.state.update_highest_modseq(value)
     }
 
-    pub fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
+    pub async fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
         info!(
             "storing mail {} with flags {}",
             mail.metadata().uid(),
             mail.metadata().flags()
         );
-        let metadata = self.maildir.store(mail)?;
-        let state = self.lock();
-        state.store(&metadata)?;
+        let metadata = self.maildir.store(mail).await?;
+        self.state.store(&metadata)?;
 
         Ok(())
     }
 
-    pub fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
+    pub async fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
         let uid = mail_metadata.uid();
-        let mut state = self.lock();
 
         // todo: should this be transactional?
-        if let Some(mut entry) = state.get_by_id(uid)? {
+        if let Some(mut entry) = self.state.get_by_id(uid)? {
             info!(
                 "update flags of mail {uid}: {} -> {}",
                 entry.flags(),
@@ -136,8 +111,8 @@ impl MaildirRepository {
             );
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
-                self.handle_flags(&state, &mut entry, new_flags)?;
-                state
+                self.handle_flags(&mut entry, new_flags).await?;
+                self.state
                     // todo: check highest modseq handling consistent with channel?
                     .update_highest_modseq(mail_metadata.modseq())?;
             }
@@ -148,14 +123,13 @@ impl MaildirRepository {
         }
     }
 
-    pub fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
-        let state = self.lock();
-        if let Some(mut entry) = state.get_by_id(uid)? {
+    pub async fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
+        if let Some(mut entry) = self.state.get_by_id(uid)? {
             if !entry.has_flag(flag) {
                 info!("adding flag {flag} to mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.insert(flag);
-                self.handle_flags(&state, &mut entry, new_flags)?;
+                self.handle_flags(&mut entry, new_flags).await?;
             }
 
             Ok(())
@@ -164,14 +138,13 @@ impl MaildirRepository {
         }
     }
 
-    pub fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
-        let state = self.lock();
-        if let Some(mut entry) = state.get_by_id(uid)? {
+    pub async fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
+        if let Some(mut entry) = self.state.get_by_id(uid)? {
             if entry.has_flag(flag) {
                 info!("removing flag {flag} of mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.remove(flag);
-                self.handle_flags(&state, &mut entry, new_flags)?;
+                self.handle_flags(&mut entry, new_flags).await?;
             }
 
             Ok(())
@@ -180,20 +153,19 @@ impl MaildirRepository {
         }
     }
 
-    fn handle_flags(
+    async fn handle_flags(
         &self,
-        state: &State,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
     ) -> Result<(), Error> {
-        match self.maildir.update_flags(entry, new_flags) {
+        match self.maildir.update_flags(entry, new_flags).await {
             Ok(()) => {
-                state.update(entry)?;
+                self.state.update(entry)?;
 
                 Ok(())
             }
             Err(maildir::Error::Missing(_)) => {
-                state.delete_by_id(entry.uid())?;
+                self.state.delete_by_id(entry.uid())?;
 
                 Err(Error::NoExists { uid: entry.uid() })
             }
@@ -201,24 +173,26 @@ impl MaildirRepository {
         }
     }
 
-    pub fn add_synced(&self, mail_metadata: NewLocalMailMetadata, uid: Uid) -> Result<(), Error> {
+    pub async fn add_synced(
+        &self,
+        mail_metadata: NewLocalMailMetadata,
+        uid: Uid,
+    ) -> Result<(), Error> {
         info!(
             "adding {uid} to newly synced mail {}",
             mail_metadata.filename()
         );
-        let mail_metadata = self.maildir.update_uid(mail_metadata, uid)?;
-        let state = self.lock();
-        state.store(&mail_metadata)?;
+        let mail_metadata = self.maildir.update_uid(mail_metadata, uid).await?;
+        self.state.store(&mail_metadata)?;
 
         Ok(())
     }
 
-    pub fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
+    pub async fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
         info!("deleting mail {uid}");
-        let state = self.lock();
-        if let Some(entry) = state.get_by_id(uid)? {
-            self.maildir.delete(&entry)?;
-            state.delete_by_id(uid)?;
+        if let Some(entry) = self.state.get_by_id(uid)? {
+            self.maildir.delete(&entry).await?;
+            self.state.delete_by_id(uid)?;
         } else {
             trace!("mail {uid:?} already gone");
         }
@@ -226,14 +200,14 @@ impl MaildirRepository {
         Ok(())
     }
 
-    pub fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
+    pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
         let mut news: Vec<LocalMail> = Vec::new();
-        let maildir_metadata = self.maildir.list_cur()?;
+        let mut maildir_metadata = self.maildir.list_cur()?;
 
         // todo: use Set instead of Map
         let mut maildir_mails = HashMap::new();
 
-        for metadata in maildir_metadata {
+        while let Some(metadata) = maildir_metadata.recv().await {
             let metadata = metadata?;
             match metadata {
                 maildir::MaildirEntry::New(new_local_mail_metadata) => {
@@ -248,8 +222,7 @@ impl MaildirRepository {
         let mut updates = LocalFlagChangesBuilder::default();
         let mut deletions = Vec::new();
 
-        let mut state = self.lock();
-        let highest_modseq = state.fore_each(|entry| {
+        let highest_modseq = self.state.fore_each(|entry| {
             let uid = entry.uid();
             if let Some(data) = maildir_mails.remove(&uid) {
                 let mut additional_flags = data.flags();
@@ -267,7 +240,7 @@ impl MaildirRepository {
             }
         })?;
         for maildata in maildir_mails.into_values() {
-            let maildata = self.maildir.remove_uid(maildata)?;
+            let maildata = self.maildir.remove_uid(maildata).await?;
             // todo: return Iterator and chain here
             let content = self.maildir.read_content(&maildata)?;
             news.push(LocalMail::new(content, maildata));
@@ -493,8 +466,8 @@ mod tests {
         mail: RemoteMail,
     }
     #[fixture]
-    fn repo_with_mail(repo: TestMaildirRepository, mail: RemoteMail) -> RepoWithMail {
-        assert_ok!(repo.repo.store(&mail));
+    async fn repo_with_mail(repo: TestMaildirRepository, mail: RemoteMail) -> RepoWithMail {
+        assert_ok!(repo.repo.store(&mail).await);
 
         RepoWithMail { repo, mail }
     }
@@ -605,7 +578,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_uid_validity_returns_uid_validity(
+    #[tokio::test]
+    async fn test_uid_validity_returns_uid_validity(
         repo: TestMaildirRepository,
         uid_validity: UidValidity,
     ) {
@@ -615,7 +589,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_highest_modseq_returns_highest_modseq(
+    #[tokio::test]
+    async fn test_highest_modseq_returns_highest_modseq(
         repo: TestMaildirRepository,
         highest_modseq: ModSeq,
     ) {
@@ -625,7 +600,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_set_highest_modseq_sets_highes_modseq(repo: TestMaildirRepository) {
+    #[tokio::test]
+    async fn test_set_highest_modseq_sets_highes_modseq(repo: TestMaildirRepository) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(1));
         assert_lt!(modseq, assert_ok!(repo.highest_modseq()));
@@ -635,7 +611,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_update_highest_modseq_updates_highest_modseq(repo: TestMaildirRepository) {
+    #[tokio::test]
+    async fn test_update_highest_modseq_updates_highest_modseq(repo: TestMaildirRepository) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(999));
         assert_gt!(modseq, assert_ok!(repo.highest_modseq()));
@@ -645,84 +622,109 @@ mod tests {
     }
 
     #[rstest]
-    fn test_store_stores_new_mail(repo: TestMaildirRepository, mail: RemoteMail) {
+    #[tokio::test]
+    async fn test_store_stores_new_mail(repo: TestMaildirRepository, mail: RemoteMail) {
         let uid = mail.metadata().uid();
-        assert_len_eq_x!(
-            assert_ok!(repo.repo.maildir.list_cur()).collect::<Vec<_>>(),
-            0
-        );
+        assert_none!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
 
-        assert_ok!(repo.repo.store(&mail));
+        assert_ok!(repo.repo.store(&mail).await);
 
-        assert_len_eq_x!(
-            assert_ok!(repo.repo.maildir.list_cur()).collect::<Vec<_>>(),
-            1
-        );
+        let mut list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_some!(list_rx.recv().await));
+        assert_none!(list_rx.recv().await);
 
-        assert_some!(assert_ok!(
-            assert_ok!(repo.repo.state.lock()).get_by_id(uid)
-        ));
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
     }
 
     #[rstest]
-    fn test_store_propagaters_maildir_error(repo: TestMaildirRepository, mail: RemoteMail) {
+    #[tokio::test]
+    async fn test_store_propagaters_maildir_error(repo: TestMaildirRepository, mail: RemoteMail) {
         assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
 
-        let result = assert_err!(repo.repo.store(&mail));
+        let result = assert_err!(repo.repo.store(&mail).await);
 
         assert_matches!(result, StoreError::Maildir(_));
     }
 
     #[rstest]
-    fn test_update_flags_updates_flags(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_update_flags_updates_flags(#[future] repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
         let flags = Flag::Deleted.into();
         assert_ne!(metadata.flags(), flags);
         let metadata = RemoteMailMetadata::new(metadata.uid(), flags, metadata.modseq());
 
-        assert_ok!(repo_with_mail.repo.repo.update_flags(&metadata));
+        assert_ok!(repo_with_mail.repo.repo.update_flags(&metadata).await);
     }
 
     #[rstest]
-    fn test_update_flags_errors_on_non_existent_mail(
+    #[tokio::test]
+    async fn test_update_flags_errors_on_non_existent_mail(
         repo: TestMaildirRepository,
         mail: RemoteMail,
     ) {
         let metadata = mail.metadata();
         let metadata = RemoteMailMetadata::new(metadata.uid(), metadata.flags(), metadata.modseq());
 
-        let result = assert_err!(repo.repo.update_flags(&metadata));
+        let result = assert_err!(repo.repo.update_flags(&metadata).await);
         assert_matches!(result, Error::NoExists { .. });
     }
 
     #[rstest]
-    fn test_add_flag_adds_flag(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_add_flag_adds_flag(#[future] repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
         let flag = Flag::Deleted;
         assert_not_contains!(metadata.flags(), flag);
 
-        assert_ok!(repo_with_mail.repo.repo.add_flag(metadata.uid(), flag));
+        assert_ok!(
+            repo_with_mail
+                .repo
+                .repo
+                .add_flag(metadata.uid(), flag)
+                .await
+        );
     }
 
     #[rstest]
-    fn test_add_flag_does_nothing_if_flag_is_already_present(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_add_flag_does_nothing_if_flag_is_already_present(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
         let metadata = repo_with_mail.mail.metadata();
         let flag = Flag::Seen;
         assert_contains!(metadata.flags(), flag);
 
-        assert_ok!(repo_with_mail.repo.repo.add_flag(metadata.uid(), flag));
+        assert_ok!(
+            repo_with_mail
+                .repo
+                .repo
+                .add_flag(metadata.uid(), flag)
+                .await
+        );
     }
 
     #[rstest]
-    fn test_add_flag_errors_on_non_existent_mail(repo: TestMaildirRepository, mail: RemoteMail) {
+    #[tokio::test]
+    async fn test_add_flag_errors_on_non_existent_mail(
+        repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) {
         let metadata = mail.metadata();
 
-        let result = assert_err!(repo.repo.add_flag(metadata.uid(), Flag::Deleted));
+        let result = assert_err!(repo.repo.add_flag(metadata.uid(), Flag::Deleted).await);
         assert_matches!(result, Error::NoExists { .. });
     }
 
     #[rstest]
-    fn test_add_flag_removes_mail_state_if_mail_is_not_in_maildir(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_add_flag_removes_mail_state_if_mail_is_not_in_maildir(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
         assert_ok!(fs::remove_dir_all(&cur));
         assert_ok!(fs::create_dir(&cur));
@@ -733,59 +735,85 @@ mod tests {
                 .repo
                 .repo
                 .add_flag(metadata.uid(), Flag::Deleted)
+                .await
         );
         assert_matches!(result, Error::NoExists { .. });
         assert_none!(assert_ok!(
-            assert_ok!(repo_with_mail.repo.repo.state.lock()).get_by_id(metadata.uid())
+            repo_with_mail.repo.repo.state.get_by_id(metadata.uid())
         ));
     }
 
     #[rstest]
-    fn test_remove_flag_removes_flag(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_remove_flag_removes_flag(#[future] repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
         let flag = Flag::Seen;
         assert_contains!(metadata.flags(), flag);
 
-        assert_ok!(repo_with_mail.repo.repo.remove_flag(metadata.uid(), flag));
+        assert_ok!(
+            repo_with_mail
+                .repo
+                .repo
+                .remove_flag(metadata.uid(), flag)
+                .await
+        );
     }
 
     #[rstest]
-    fn test_remove_flag_does_nothing_if_flag_is_not_present(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_remove_flag_does_nothing_if_flag_is_not_present(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
         let metadata = repo_with_mail.mail.metadata();
         let flag = Flag::Deleted;
         assert_not_contains!(metadata.flags(), flag);
 
-        assert_ok!(repo_with_mail.repo.repo.remove_flag(metadata.uid(), flag));
+        assert_ok!(
+            repo_with_mail
+                .repo
+                .repo
+                .remove_flag(metadata.uid(), flag)
+                .await
+        );
     }
 
     #[rstest]
-    fn test_remove_flag_errors_on_non_existent_mail(repo: TestMaildirRepository, mail: RemoteMail) {
+    #[tokio::test]
+    async fn test_remove_flag_errors_on_non_existent_mail(
+        repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) {
         let metadata = mail.metadata();
 
-        let result = assert_err!(repo.repo.remove_flag(metadata.uid(), Flag::Seen));
+        let result = assert_err!(repo.repo.remove_flag(metadata.uid(), Flag::Seen).await);
         assert_matches!(result, Error::NoExists { .. });
     }
 
     #[rstest]
-    fn test_delete_deletes_mail(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_delete_deletes_mail(#[future] repo_with_mail: RepoWithMail) {
         let uid = repo_with_mail.mail.metadata().uid();
-        assert_ok!(repo_with_mail.repo.repo.delete(uid));
-        assert_len_eq_x!(
-            assert_ok!(repo_with_mail.repo.repo.maildir.list_cur()).collect::<Vec<_>>(),
-            0
+        assert_ok!(repo_with_mail.repo.repo.delete(uid).await);
+        assert_none!(
+            assert_ok!(repo_with_mail.repo.repo.maildir.list_cur())
+                .recv()
+                .await
         );
-        assert_none!(assert_ok!(
-            assert_ok!(repo_with_mail.repo.repo.state.lock()).get_by_id(uid)
-        ));
+        assert_none!(assert_ok!(repo_with_mail.repo.repo.state.get_by_id(uid)));
     }
 
     #[rstest]
-    fn test_delete_does_nothing_on_mail_missing_in_state(repo: TestMaildirRepository) {
-        assert_ok!(repo.repo.delete(Uid::MAX));
+    #[tokio::test]
+    async fn test_delete_does_nothing_on_mail_missing_in_state(repo: TestMaildirRepository) {
+        assert_ok!(repo.repo.delete(Uid::MAX).await);
     }
 
     #[rstest]
-    fn test_add_synced_adds_synced_mail(repo: TestMaildirRepository) {
+    #[tokio::test]
+    async fn test_add_synced_adds_synced_mail(repo: TestMaildirRepository) {
         let filename = "foo:2,S";
         let metadata = assert_ok!(NewLocalMailMetadata::from_str(filename));
         assert_ok!(fs::write(
@@ -794,11 +822,9 @@ mod tests {
         ));
         let uid = Uid::MAX;
 
-        assert_ok!(repo.repo.add_synced(metadata, uid));
+        assert_ok!(repo.repo.add_synced(metadata, uid).await);
 
-        let mail = assert_some!(assert_ok!(
-            assert_ok!(repo.repo.state.lock()).get_by_id(uid)
-        ));
+        let mail = assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
         assert!(
             repo.mail_dir
                 .path()
@@ -809,10 +835,12 @@ mod tests {
     }
 
     #[rstest]
-    fn test_detect_changes_has_nothing_on_no_changes(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_detect_changes_has_nothing_on_no_changes(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
 
-        let result = assert_ok!(repo.detect_changes());
+        let result = assert_ok!(repo.detect_changes().await);
 
         assert_eq!(result.highest_modseq, assert_ok!(repo.highest_modseq()));
         assert_len_eq_x!(result.deletions, 0);
@@ -823,14 +851,20 @@ mod tests {
     }
 
     #[rstest]
-    fn test_detect_changes_detects_new_mail(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_detect_changes_detects_new_mail(#[future] repo_with_mail: RepoWithMail) {
         let expected_content = "1";
         let uid = assert_ok!(Uid::try_from(3));
         let flag = Flag::Seen;
         let filename = "f";
         let new_mail_metadata = LocalMailMetadata::new(uid, flag.into(), Some(filename.into()));
         assert_none!(assert_ok!(
-            assert_ok!(repo_with_mail.repo.repo.state.lock()).get_by_id(new_mail_metadata.uid())
+            repo_with_mail
+                .repo
+                .repo
+                .state
+                .get_by_id(new_mail_metadata.uid())
         ));
         let expected_filename = format!("{filename}:2,{}", char::from(flag));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
@@ -840,7 +874,7 @@ mod tests {
         ));
         let repo = repo_with_mail.repo.repo;
 
-        let mut result = assert_ok!(repo.detect_changes());
+        let mut result = assert_ok!(repo.detect_changes().await);
 
         assert_len_eq_x!(&result.news, 1);
         let mail = assert_some!(result.news.pop());
@@ -852,7 +886,11 @@ mod tests {
     }
 
     #[rstest]
-    fn test_detect_changes_detects_new_mail_without_uid(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_detect_changes_detects_new_mail_without_uid(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
         let expected_content = "1";
         let expected_filename = "f";
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
@@ -861,7 +899,7 @@ mod tests {
         expected_filename.push_str(":2,S");
         let repo = repo_with_mail.repo.repo;
 
-        let mut result = assert_ok!(repo.detect_changes());
+        let mut result = assert_ok!(repo.detect_changes().await);
 
         assert_len_eq_x!(&result.news, 1);
         let mail = assert_some!(result.news.pop());
@@ -873,10 +911,12 @@ mod tests {
     }
 
     #[rstest]
-    fn test_detect_changes_detects_flag_changes(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_detect_changes_detects_flag_changes(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
         let uid = repo_with_mail.mail.metadata().uid();
-        let metadata = assert_some!(assert_ok!(assert_ok!(repo.state.lock()).get_by_id(uid)));
+        let metadata = assert_some!(assert_ok!(repo.state.get_by_id(uid)));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
         let mut new_name = metadata.filename();
         new_name.pop();
@@ -886,7 +926,7 @@ mod tests {
             cur.join(new_name)
         ));
 
-        let result = assert_ok!(repo.detect_changes());
+        let result = assert_ok!(repo.detect_changes().await);
 
         let changes = result.updates.build();
         let mut removed: Vec<_> = changes.removed_flags().collect();
@@ -908,14 +948,16 @@ mod tests {
     }
 
     #[rstest]
-    fn test_detect_changes_detects_deleted_mail(repo_with_mail: RepoWithMail) {
+    #[tokio::test]
+    #[awt]
+    async fn test_detect_changes_detects_deleted_mail(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
         let uid = repo_with_mail.mail.metadata().uid();
-        let metadata = assert_some!(assert_ok!(assert_ok!(repo.state.lock()).get_by_id(uid)));
+        let metadata = assert_some!(assert_ok!(repo.state.get_by_id(uid)));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
         assert_ok!(fs::remove_file(cur.join(metadata.filename())));
 
-        let mut result = assert_ok!(repo.detect_changes());
+        let mut result = assert_ok!(repo.detect_changes().await);
 
         assert_len_eq_x!(&result.deletions, 1);
         let deleted_mail_uid = assert_some!(result.deletions.pop());

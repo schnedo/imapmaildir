@@ -38,7 +38,7 @@ impl Syncer {
     ) -> ! {
         let ((mut client, _), mut maildir_repository) =
             Self::sync(mailbox, mail_dir, state_dir, client).await;
-        let mut local_change_rx = maildir_repository.watch();
+        let mut local_change_rx = maildir_repository.watch().await;
 
         tokio::spawn(async move {
             while let Some(change) = local_change_rx.recv().await {
@@ -92,6 +92,7 @@ impl Syncer {
             .expect("getting highest_modseq should succeed");
         let mut local_changes = maildir_repository
             .detect_changes()
+            .await
             .expect("detecting local changes should succeed");
         let (task_tx, task_rx) = mpsc::channel(32);
         Self::setup_task_processing(maildir_repository.clone(), task_rx);
@@ -139,6 +140,7 @@ impl Syncer {
         while let Some((uid, metadata)) = mailinfos.recv().await {
             maildir_repository
                 .add_synced(metadata, uid)
+                .await
                 .expect("writing back synced uid should succeed");
         }
         let updates = updates.build();
@@ -147,6 +149,7 @@ impl Syncer {
             for uid in sequence_set.iter() {
                 maildir_repository
                     .remove_flag(uid, flag)
+                    .await
                     .expect("removing flag from maildir_repository should succeed");
             }
         }
@@ -155,6 +158,7 @@ impl Syncer {
             for uid in sequence_set.iter() {
                 maildir_repository
                     .add_flag(uid, flag)
+                    .await
                     .expect("adding flag to maildir_repository should succeed");
             }
         }
@@ -173,13 +177,14 @@ impl Syncer {
             for uid in set.iter() {
                 maildir_repository
                     .delete(uid)
+                    .await
                     .expect("deleting mails should succeed");
             }
         }
 
         let mut refetch_mails = SequenceSetBuilder::default();
         for update in &remote_changes.updates {
-            if let Err(error) = maildir_repository.update_flags(update) {
+            if let Err(error) = maildir_repository.update_flags(update).await {
                 match error {
                     crate::maildir::Error::Maildir(_) => todo!("handle error"),
                     crate::maildir::Error::State(_) => todo!("handle error"),
@@ -246,12 +251,14 @@ impl Syncer {
                     Task::NewMail(remote_mail) => {
                         maildir_repository
                             .store(&remote_mail)
+                            .await
                             .expect("storing new mail should succeed");
                     }
                     Task::Delete(sequence_set) => {
                         for uid in sequence_set.iter() {
                             maildir_repository
                                 .delete(uid)
+                                .await
                                 .expect("deleting mails should succeed");
                         }
                     }
@@ -272,6 +279,7 @@ impl Syncer {
                         );
                         maildir_repository
                             .update_flags(&remote_mail_metadata)
+                            .await
                             .expect("updating flags should succeed");
                     }
                 }
