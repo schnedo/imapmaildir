@@ -10,6 +10,7 @@ use std::{
 
 use enumflags2::BitFlags;
 use log::{debug, info, trace, warn};
+use rustix::path::Arg;
 use thiserror::Error;
 use tokio::sync::{
     Mutex,
@@ -21,7 +22,7 @@ use crate::{
     maildir::{
         LocalMailMetadata,
         local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
-        watcher::{Change, Watch},
+        watcher::{self, Watch},
     },
     repository::{Flag, Uid},
 };
@@ -113,12 +114,154 @@ impl Maildir {
         }
     }
 
-    pub async fn watch(&mut self) -> mpsc::Receiver<Change> {
-        let (watch, rx) = Watch::new(&self.cur);
+    #[expect(clippy::too_many_lines)]
+    pub async fn watch(self, buffer_size: usize) -> mpsc::Receiver<Change> {
+        let (change_tx, change_rx) = mpsc::channel(buffer_size);
+        let (watch, mut rx) = Watch::new(&self.cur, buffer_size);
         let mut my_watch = self.watch.lock().await;
         *my_watch = Some(watch);
+        drop(my_watch);
+        tokio::spawn(async move {
+            while let Some(change) = rx.recv().await {
+                trace!("handling filechange {change:?}");
+                match change {
+                    watcher::Change::Rename { from, to } => {
+                        let from_entry: Result<LocalMailMetadata, _> = from.parse();
+                        let to_entry: Result<MaildirEntry, _> = to.parse();
+                        match (from_entry, to_entry) {
+                            (Ok(from), Ok(to)) => {
+                                let to = match to {
+                                    MaildirEntry::New(to) => {
+                                        let old_to = to.filename();
+                                        let to = to.set_uid(from.uid());
+                                        Self::rename_new_mail(
+                                            self.watch.lock().await.as_ref(),
+                                            self.cur.join(old_to),
+                                            self.cur.join(to.filename()),
+                                        )
+                                        .await
+                                        .expect("renaming file should succeed");
 
-        rx
+                                        to
+                                    }
+                                    MaildirEntry::MaybeTracked(to) => {
+                                        if from.uid() == to.uid() {
+                                            to
+                                        } else {
+                                            let old_to = to.filename();
+                                            let to = to.set_uid(from.uid());
+                                            Self::rename_new_mail(
+                                                self.watch.lock().await.as_ref(),
+                                                self.cur.join(old_to),
+                                                self.cur.join(to.filename()),
+                                            )
+                                            .await
+                                            .expect("renaming file should succeed");
+
+                                            to
+                                        }
+                                    }
+                                };
+
+                                change_tx
+                                    .send(Change::Rename { from, to })
+                                    .await
+                                    .expect("change sender should still be open");
+                            }
+                            (Ok(from), Err(_)) => {
+                                Self::send_new_unstructured_change(
+                                    &self.watch,
+                                    &self.cur,
+                                    &change_tx,
+                                    to,
+                                )
+                                .await;
+                                change_tx
+                                    .send(Change::Deletion(from))
+                                    .await
+                                    .expect("change sender should still be open");
+                            }
+                            (Err(_), Ok(to)) => {
+                                warn!("ignoring deletion of untracked file {from}");
+                                self.send_new_structured_change(&change_tx, to).await;
+                            }
+                            (Err(_), Err(_)) => {
+                                warn!("ignoring deletion of untracked file {from}");
+                                Self::send_new_unstructured_change(
+                                    &self.watch,
+                                    &self.cur,
+                                    &change_tx,
+                                    to,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    watcher::Change::New(filename) => {
+                        let entry: Result<MaildirEntry, _> = filename.parse();
+                        if let Ok(entry) = entry {
+                            self.send_new_structured_change(&change_tx, entry).await;
+                        } else {
+                            Self::send_new_unstructured_change(
+                                &self.watch,
+                                &self.cur,
+                                &change_tx,
+                                filename,
+                            )
+                            .await;
+                        }
+                    }
+                    watcher::Change::Deletion(filename) => {
+                        let entry: Result<LocalMailMetadata, _> = filename.parse();
+                        if let Ok(entry) = entry {
+                            change_tx
+                                .send(Change::Deletion(entry))
+                                .await
+                                .expect("change sender should still be open");
+                        } else {
+                            warn!("ignoring removal of untracked file {filename}");
+                        }
+                    }
+                }
+            }
+        });
+
+        change_rx
+    }
+
+    async fn send_new_structured_change(
+        &self,
+        change_tx: &mpsc::Sender<Change>,
+        entry: MaildirEntry,
+    ) {
+        let to = match entry {
+            MaildirEntry::New(entry) => entry,
+            MaildirEntry::MaybeTracked(to) => self
+                .remove_uid(to)
+                .await
+                .expect("removing uid of new file should succeed"),
+        };
+
+        change_tx
+            .send(Change::New(to))
+            .await
+            .expect("change sender should still be open");
+    }
+
+    async fn send_new_unstructured_change(
+        watch: &Arc<Mutex<Option<Watch>>>,
+        cur: &Path,
+        change_tx: &mpsc::Sender<Change>,
+        filename: String,
+    ) {
+        let metadata = Self::handle_new_unstructured_file(watch, cur, filename)
+            .await
+            .expect("new file should be handleable");
+
+        change_tx
+            .send(Change::New(metadata))
+            .await
+            .expect("change sender should still be open");
     }
 
     // Algorithm
@@ -155,6 +298,7 @@ impl Maildir {
     pub fn list_cur(&self) -> io::Result<mpsc::Receiver<Result<MaildirEntry, MaildirListError>>> {
         let dir_contents = fs::read_dir(self.cur.as_path())?;
         let watch = self.watch.clone();
+        let cur = self.cur.clone();
         let (list_tx, list_rx) = mpsc::channel(32);
         tokio::spawn(async move {
             for entry in dir_contents {
@@ -182,21 +326,20 @@ impl Maildir {
                                         list_tx.send(Ok(MaildirEntry::New(metadata))).await?;
                                     }
                                     (Err(_), Err(_)) => {
-                                        let current = entry.path();
-                                        let metadata =
-                                            NewLocalMailMetadata::new(Flag::Seen.into(), filename);
-                                        let new = current.with_file_name(metadata.to_string());
-                                        if let Err(err) = Self::rename_new_mail(
-                                            watch.lock().await.as_ref(),
-                                            current,
-                                            new,
+                                        match Self::handle_new_unstructured_file(
+                                            &watch, &cur, filename,
                                         )
                                         .await
                                         {
-                                            list_tx.send(Err(err.into())).await?;
+                                            Ok(metadata) => {
+                                                list_tx
+                                                    .send(Ok(MaildirEntry::New(metadata)))
+                                                    .await?;
+                                            }
+                                            Err(err) => {
+                                                list_tx.send(Err(err.into())).await?;
+                                            }
                                         }
-
-                                        list_tx.send(Ok(MaildirEntry::New(metadata))).await?;
                                     }
                                 }
                             }
@@ -251,6 +394,7 @@ impl Maildir {
     }
 
     async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
+        // todo: write and match error instead of checking if exists
         match (current.try_exists()?, new.try_exists()?) {
             (true, true) => {
                 if Self::is_content_identical(current.as_path(), new.as_path())? {
@@ -361,6 +505,29 @@ impl Maildir {
             }
         })
     }
+
+    async fn handle_new_unstructured_file(
+        watch: &Arc<Mutex<Option<Watch>>>,
+        cur: &Path,
+        filename: String,
+    ) -> io::Result<NewLocalMailMetadata> {
+        let current = cur.join(&filename);
+        let metadata = NewLocalMailMetadata::new(Flag::Seen.into(), filename);
+        let new = cur.join(metadata.filename());
+        Self::rename_new_mail(watch.lock().await.as_ref(), current, new).await?;
+
+        Ok(metadata)
+    }
+}
+
+#[derive(Debug)]
+pub enum Change {
+    Deletion(LocalMailMetadata),
+    New(NewLocalMailMetadata),
+    Rename {
+        from: LocalMailMetadata,
+        to: LocalMailMetadata,
+    },
 }
 
 #[derive(Debug, Error, PartialEq)]

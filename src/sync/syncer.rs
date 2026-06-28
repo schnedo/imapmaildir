@@ -36,9 +36,10 @@ impl Syncer {
         client: AuthenticatedClient,
         idle_timeout: Duration,
     ) -> ! {
-        let ((mut client, _), mut maildir_repository) =
+        let ((mut client, _), maildir_repository) =
             Self::sync(mailbox, mail_dir, state_dir, client).await;
-        let mut local_change_rx = maildir_repository.watch().await;
+        let repo = maildir_repository.clone();
+        let mut local_change_rx = repo.watch().await;
 
         tokio::spawn(async move {
             while let Some(change) = local_change_rx.recv().await {

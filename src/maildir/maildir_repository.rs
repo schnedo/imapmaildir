@@ -9,9 +9,8 @@ use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
         LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata, NewLocalMailMetadata,
-        maildir::{self, MaildirFile},
+        maildir::{self, Change, MaildirFile},
         state::{self, State},
-        watcher::Change,
     },
     repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
 };
@@ -66,9 +65,11 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn watch(&mut self) -> mpsc::Receiver<Change> {
+    pub async fn watch(self) -> mpsc::Receiver<Change> {
         info!("listening for maildir mail changes");
-        self.maildir.watch().await
+        let size = 32;
+
+        self.maildir.watch(size).await
     }
 
     pub fn uid_validity(&self) -> Result<UidValidity, state::Error> {
