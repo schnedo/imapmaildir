@@ -20,7 +20,7 @@ use tokio::sync::{
 use crate::{
     imap::RemoteMail,
     maildir::{
-        LocalMailMetadata,
+        LocalMail, LocalMailMetadata,
         local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
         watcher::{self, Watch},
     },
@@ -32,6 +32,18 @@ pub trait MaildirFile {
     fn set_uid(self, uid: Uid) -> LocalMailMetadata;
     fn flags(&self) -> BitFlags<Flag>;
     fn set_flags(&mut self, flags: BitFlags<Flag>);
+    fn additional_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
+        let mut additional_flags = self.flags();
+        additional_flags.remove(other.flags());
+
+        additional_flags
+    }
+    fn removed_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
+        let mut removed_flags = other.flags();
+        removed_flags.remove(self.flags());
+
+        removed_flags
+    }
 }
 
 // todo: check if Arc covers clone use case
@@ -241,9 +253,10 @@ impl Maildir {
                 .await
                 .expect("removing uid of new file should succeed"),
         };
+        let content = self.read_content(&to).expect("mail should be readable");
 
         change_tx
-            .send(Change::New(to))
+            .send(Change::New(LocalMail::new(content, to)))
             .await
             .expect("change sender should still be open");
     }
@@ -257,9 +270,11 @@ impl Maildir {
         let metadata = Self::handle_new_unstructured_file(watch, cur, filename)
             .await
             .expect("new file should be handleable");
+        let content =
+            fs::read(cur.join(metadata.filename())).expect("mail content should be readable");
 
         change_tx
-            .send(Change::New(metadata))
+            .send(Change::New(LocalMail::new(content, metadata)))
             .await
             .expect("change sender should still be open");
     }
@@ -523,7 +538,7 @@ impl Maildir {
 #[derive(Debug)]
 pub enum Change {
     Deletion(LocalMailMetadata),
-    New(NewLocalMailMetadata),
+    New(LocalMail),
     Rename {
         from: LocalMailMetadata,
         to: LocalMailMetadata,

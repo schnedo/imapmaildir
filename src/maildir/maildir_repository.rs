@@ -1,5 +1,5 @@
 use enumflags2::BitFlags;
-use std::{collections::HashMap, io, path::Path};
+use std::{collections::HashMap, io, path::Path, time::Duration};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
@@ -65,11 +65,74 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn watch(self) -> mpsc::Receiver<Change> {
-        info!("listening for maildir mail changes");
-        let size = 32;
+    fn update_flag_changes(
+        flag_changes_builder: &mut LocalFlagChangesBuilder,
+        old: &LocalMailMetadata,
+        new: &LocalMailMetadata,
+    ) {
+        debug_assert_eq!(old.uid(), new.uid());
+        let additional_flags = new.additional_flags_compared_to(old);
+        for flag in additional_flags {
+            flag_changes_builder.insert_additional(flag, new.uid());
+        }
+        let removed_flags = new.removed_flags_compared_to(old);
+        for flag in removed_flags {
+            flag_changes_builder.insert_removed(flag, new.uid());
+        }
+    }
 
-        self.maildir.watch(size).await
+    pub async fn watch(self) -> mpsc::Receiver<LocalChanges> {
+        info!("listening for maildir mail changes");
+        let (changes_tx, changes_rx) = mpsc::channel(1);
+        let size = 32;
+        let this = self.clone();
+        let mut rx = self.maildir.watch(size).await;
+
+        tokio::spawn(async move {
+            loop {
+                let mut deletions = Vec::new();
+                let mut news = Vec::new();
+                let mut updates = LocalFlagChangesBuilder::default();
+                let mut handle_change = |change| match change {
+                    Change::Deletion(entry) => {
+                        deletions.push(entry.uid());
+                    }
+                    Change::New(mail) => {
+                        news.push(mail);
+                    }
+                    Change::Rename { from, to } => {
+                        Self::update_flag_changes(&mut updates, &from, &to);
+                    }
+                };
+                let change = rx.recv().await.expect("changes_rx should still be open");
+                let highest_modseq = this
+                    .highest_modseq()
+                    .expect("getting highest modseq should succeed");
+                handle_change(change);
+
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_millis(100)) => {
+                        break;
+                    }
+                        Some(change) = rx.recv() => {
+                            handle_change(change);
+                        }
+                    }
+                }
+                changes_tx
+                    .send(LocalChanges {
+                        highest_modseq,
+                        updates,
+                        deletions,
+                        news,
+                    })
+                    .await
+                    .expect("changes_tx should still be open");
+            }
+        });
+
+        changes_rx
     }
 
     pub fn uid_validity(&self) -> Result<UidValidity, state::Error> {
@@ -226,16 +289,7 @@ impl MaildirRepository {
         let highest_modseq = self.state.fore_each(|entry| {
             let uid = entry.uid();
             if let Some(data) = maildir_mails.remove(&uid) {
-                let mut additional_flags = data.flags();
-                additional_flags.remove(entry.flags());
-                for flag in additional_flags {
-                    updates.insert_additional(flag, uid);
-                }
-                let mut removed_flags = entry.flags();
-                removed_flags.remove(data.flags());
-                for flag in removed_flags {
-                    updates.insert_removed(flag, uid);
-                }
+                Self::update_flag_changes(&mut updates, &entry, &data);
             } else {
                 deletions.push(entry.uid());
             }
