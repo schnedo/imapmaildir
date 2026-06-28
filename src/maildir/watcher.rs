@@ -16,8 +16,8 @@ pub struct Watch {
     ignore_files: Arc<Mutex<HashSet<OsString>>>,
 }
 impl Watch {
-    pub fn new(path: &Path) -> (Self, mpsc::Receiver<Change>) {
-        let (change_tx, change_rx) = mpsc::channel(32);
+    pub fn new(path: &Path, buffer_size: usize) -> (Self, mpsc::Receiver<Change>) {
+        let (change_tx, change_rx) = mpsc::channel(buffer_size);
         let ignore_files = Arc::new(Mutex::new(HashSet::new()));
         let inotfy = Inotify::init().expect("initializing inotify should succeed");
         inotfy
@@ -43,6 +43,9 @@ impl Watch {
                         trace!("move_matches {move_matches:?}");
                         if let Some(filename) = move_matches.remove(&cookie) {
                             trace!("file {cookie:?} timed out");
+                            let filename = filename
+                                .into_string()
+                                .expect("filename should be valid utf8");
                             match mask {
                                 EventMask::MOVED_TO => change_tx
                                     .send(Change::New(filename))
@@ -68,6 +71,9 @@ impl Watch {
                                     .expect("name should always be present in delete event");
                                 let mut ignored = ignored.lock().await;
                                 if !ignored.remove(&filename) {
+                                    let filename = filename
+                                        .into_string()
+                                        .expect("filename should be valid utf8");
                                     change_tx
                                         .send(Change::Deletion(filename))
                                         .await
@@ -80,6 +86,9 @@ impl Watch {
                                     .expect("name should always be present in create event");
                                 let mut ignored = ignored.lock().await;
                                 if !ignored.remove(&filename) {
+                                    let filename = filename
+                                        .into_string()
+                                        .expect("filename should be valid utf8");
                                     change_tx
                                         .send(Change::New(filename))
                                         .await
@@ -121,6 +130,12 @@ impl Watch {
         if let Some(stored_name) = move_matches.remove(&event.cookie) {
             let mut ignored = ignored.lock().await;
             if !(ignored.remove(&filename) || ignored.remove(&stored_name)) {
+                let filename = filename
+                    .into_string()
+                    .expect("filename should be valid utf8");
+                let stored_name = stored_name
+                    .into_string()
+                    .expect("filename should be valid utf8");
                 let change = match event.mask {
                     EventMask::MOVED_FROM => Change::Rename {
                         from: filename,
@@ -136,7 +151,7 @@ impl Watch {
                     .send(change)
                     .await
                     .expect("change channel should still be open");
-            };
+            }
         } else {
             move_matches.insert(event.cookie, filename);
             let timedout_tx = timedout_tx.clone();
@@ -153,7 +168,7 @@ impl Watch {
 
 #[derive(Debug)]
 pub enum Change {
-    Deletion(OsString),
-    New(OsString),
-    Rename { from: OsString, to: OsString },
+    Deletion(String),
+    New(String),
+    Rename { from: String, to: String },
 }
