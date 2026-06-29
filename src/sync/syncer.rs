@@ -1,5 +1,5 @@
 use crate::{
-    imap::{RemoteChanges, RemoteMailMetadata, SelectedClient, Selection},
+    imap::{IdleStopReason, RemoteChanges, RemoteMailMetadata, SelectedClient, Selection},
     maildir::LocalChanges,
     repository::{MailboxMetadata, SequenceSet, SequenceSetBuilder, Uid},
     sync::task::Task,
@@ -41,19 +41,32 @@ impl Syncer {
         let repo = maildir_repository.clone();
         let mut local_change_rx = repo.watch().await;
 
+        let stop_tx = client.idle_stop_tx();
         tokio::spawn(async move {
-            while let Some(change) = local_change_rx.recv().await {
-                trace!("handling local change {change:?}");
+            while let Some(changes) = local_change_rx.recv().await {
+                trace!("detected local changes {changes:?}");
+                stop_tx
+                    .send(IdleStopReason::Local { changes })
+                    .await
+                    .expect("stop idle channel should still be open");
             }
         });
 
-        info!("listening for server mail changes");
         loop {
-            if client.idle(idle_timeout).await {
-                let current_highest_modseq = maildir_repository
-                    .highest_modseq()
-                    .expect("getting highest modseq should succeed");
-                client.fetch_since(current_highest_modseq).await;
+            match client.idle(idle_timeout).await {
+                IdleStopReason::Remote => {
+                    trace!("handling remote idle changes");
+                    let current_highest_modseq = maildir_repository
+                        .highest_modseq()
+                        .expect("getting highest modseq should succeed");
+                    client.fetch_since(current_highest_modseq).await;
+                }
+                IdleStopReason::Local { changes } => {
+                    trace!("handling local idle changes");
+                    Self::handle_local_changes(&mut client, changes, mailbox, &maildir_repository)
+                        .await;
+                }
+                IdleStopReason::Timeout => {}
             }
         }
     }
