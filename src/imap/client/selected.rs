@@ -5,6 +5,7 @@ use std::{io::Write as _, sync::Arc};
 use log::{debug, trace};
 use tokio::sync::{Mutex, mpsc};
 
+use crate::maildir::LocalChanges;
 use crate::{
     imap::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
@@ -16,11 +17,18 @@ use crate::{
     sync::Task,
 };
 
+pub enum IdleStopReason {
+    Timeout,
+    Remote,
+    Local { changes: LocalChanges },
+}
+
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
     idling: Arc<Mutex<bool>>,
-    idle_stop_rx: mpsc::Receiver<()>,
+    idle_stop_rx: mpsc::Receiver<IdleStopReason>,
+    idle_stop_tx: mpsc::Sender<IdleStopReason>,
 }
 impl SelectedClient {
     #[expect(clippy::too_many_lines)]
@@ -40,7 +48,8 @@ impl SelectedClient {
         );
         let idling = Arc::new(Mutex::new(false));
         let is_idling = idling.clone();
-        let (idle_stop_tx, idle_stop_rx) = mpsc::channel(1);
+        let (stop_tx, idle_stop_rx) = mpsc::channel(1);
+        let idle_stop_tx = stop_tx.clone();
 
         tokio::spawn(async move {
             while let Some(response) = untagged_response_receiver.recv().await {
@@ -131,8 +140,8 @@ impl SelectedClient {
                         if *is_idling {
                             trace!("stopping idle");
                             *is_idling = false;
-                            idle_stop_tx
-                                .send(())
+                            stop_tx
+                                .send(IdleStopReason::Remote)
                                 .await
                                 .expect("idle stop channel should still be open");
                         } else {
@@ -146,8 +155,8 @@ impl SelectedClient {
                             if *is_idling {
                                 trace!("stopping idle");
                                 *is_idling = false;
-                                idle_stop_tx
-                                    .send(())
+                                stop_tx
+                                    .send(IdleStopReason::Remote)
                                     .await
                                     .expect("idle stop channel should still be open");
                             } else {
@@ -173,6 +182,7 @@ impl SelectedClient {
             connection,
             idling,
             idle_stop_rx,
+            idle_stop_tx,
         }
     }
 
@@ -307,7 +317,11 @@ impl SelectedClient {
             .expect("sending uid expunge should succeed");
     }
 
-    pub async fn idle(&mut self, timeout: Duration) -> bool {
+    pub fn idle_stop_tx(&self) -> mpsc::Sender<IdleStopReason> {
+        self.idle_stop_tx.clone()
+    }
+
+    pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
         let command = "IDLE";
         debug!("{command}");
         *self.idling.lock().await = true;
@@ -324,17 +338,15 @@ impl SelectedClient {
             } => trace!("idling for up to {} seconds", timeout.as_secs()),
             _ => todo!("handle idle no continuation"),
         }
-        let idle_stopped = tokio::select! {
+        let stop_reason = tokio::select! {
             stop = self.idle_stop_rx.recv() => {
-                stop.expect("idle stop channel should still be open");
-
-                true
+                stop.expect("idle stop channel should still be open")
             }
             timeout = timeout_handle => {
                 timeout.expect("idle timeout should not fail");
                 debug!("idle timed out");
 
-                false
+                IdleStopReason::Timeout
             }
         };
         let command = "DONE";
@@ -343,8 +355,9 @@ impl SelectedClient {
             .send_continuation(command.into())
             .await
             .expect("sending idle done should succeed");
+        *self.idling.lock().await = false;
 
-        idle_stopped
+        stop_reason
     }
 }
 

@@ -5,4 +5,5 @@ mod selected;
 
 pub use authenticated::AuthenticatedClient;
 pub use not_authenticated::Client;
+pub use selected::IdleStopReason;
 pub use selected::SelectedClient;
