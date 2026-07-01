@@ -3,7 +3,7 @@ use std::{collections::HashMap, io, path::Path, time::Duration};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
@@ -82,7 +82,7 @@ impl MaildirRepository {
     }
 
     pub async fn watch(self) -> mpsc::Receiver<LocalChanges> {
-        info!("listening for maildir mail changes");
+        debug!("listening for maildir mail changes");
         let (changes_tx, changes_rx) = mpsc::channel(1);
         let size = 32;
         let this = self.clone();
