@@ -39,9 +39,10 @@ impl Syncer {
         let ((mut client, _), maildir_repository) =
             Self::sync(mailbox, mail_dir, state_dir, client).await;
         let repo = maildir_repository.clone();
-        let mut local_change_rx = repo.watch().await;
-
         let stop_tx = client.idle_stop_tx();
+
+        info!("listening for mail changes...");
+        let mut local_change_rx = repo.watch().await;
         tokio::spawn(async move {
             while let Some(changes) = local_change_rx.recv().await {
                 trace!("detected local changes {changes:?}");
@@ -55,18 +56,23 @@ impl Syncer {
         loop {
             match client.idle(idle_timeout).await {
                 IdleStopReason::Remote => {
-                    trace!("handling remote idle changes");
+                    info!("handling new remote changes");
                     let current_highest_modseq = maildir_repository
                         .highest_modseq()
                         .expect("getting highest modseq should succeed");
                     client.fetch_since(current_highest_modseq).await;
                 }
                 IdleStopReason::Local { changes } => {
-                    trace!("handling local idle changes");
+                    info!("handling new local changes");
                     Self::handle_local_changes(&mut client, changes, mailbox, &maildir_repository)
                         .await;
                 }
-                IdleStopReason::Timeout => {}
+                IdleStopReason::Timeout => {
+                    info!(
+                        "idle timed out after {} seconds. Reissuing...",
+                        idle_timeout.as_secs()
+                    );
+                }
             }
         }
     }
