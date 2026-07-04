@@ -26,6 +26,7 @@ async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -52,6 +53,7 @@ async fn test_initial_sync_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -81,6 +83,7 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -112,6 +115,7 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -143,6 +147,7 @@ async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -171,6 +176,7 @@ async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -202,6 +208,7 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -231,6 +238,7 @@ async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -259,6 +267,7 @@ async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 
@@ -288,6 +297,7 @@ async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
         config.maildir_base_path(),
         config.state_dir(),
         client,
+        || {},
     )
     .await;
 

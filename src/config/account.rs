@@ -1,5 +1,5 @@
 use ::std::env;
-use std::{fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
+use std::{ffi::OsString, fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -18,6 +18,7 @@ struct AccountConfigFile {
     // todo: "all" for generic fetch of all mailboxes
     mailboxes: Vec<String>,
     maildir_base_path: Option<PathBuf>,
+    on_local_change: Vec<OsString>,
 }
 
 // todo: move config to code using it
@@ -39,6 +40,7 @@ impl Connection {
     }
 }
 
+// todo: why 2 structs? custom logic should be configurable in serde/derive_getters
 #[derive(Getters, Debug)]
 pub struct Account {
     auth: Auth,
@@ -48,6 +50,7 @@ pub struct Account {
     state_dir: PathBuf,
     #[getter(copy)]
     idle_timout: Duration,
+    on_local_change: Vec<OsString>,
 }
 
 impl Account {
@@ -62,6 +65,7 @@ impl Account {
         maildir_base_path: PathBuf,
         state_dir: PathBuf,
         idle_timout: Duration,
+        on_local_change: Vec<OsString>,
     ) -> Self {
         Self {
             auth,
@@ -70,6 +74,7 @@ impl Account {
             maildir_base_path,
             state_dir,
             idle_timout,
+            on_local_change,
         }
     }
 
@@ -102,6 +107,7 @@ impl Account {
             maildir_base_path,
             state_dir,
             idle_timout: config.idle_timeout.unwrap_or(Duration::from_mins(29)),
+            on_local_change: config.on_local_change,
         }
     }
 }

@@ -6,7 +6,7 @@ use std::{
 
 use log::{error, info, warn};
 
-use imapmaildir::{Client, Syncer, config::Account};
+use imapmaildir::{Client, Syncer, config::Account, on_local_change};
 
 pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -18,6 +18,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
     rt.block_on(async {
         let client = Client::login(config.connection(), config.auth()).await;
 
+        let on_change = on_local_change(config.on_local_change());
         if idle {
             Syncer::sync_continuously(
                 mailbox,
@@ -25,6 +26,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
                 config.state_dir(),
                 client,
                 config.idle_timout(),
+                on_change,
             )
             .await;
         } else {
@@ -33,6 +35,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
                 config.maildir_base_path(),
                 config.state_dir(),
                 client,
+                on_change,
             )
             .await;
         }

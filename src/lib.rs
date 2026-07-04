@@ -7,3 +7,4 @@ mod sync;
 
 pub use crate::imap::Client;
 pub use crate::sync::Syncer;
+pub use crate::sync::on_local_change;

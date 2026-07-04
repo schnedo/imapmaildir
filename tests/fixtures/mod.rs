@@ -442,6 +442,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             client_base_path.clone(),
             client_base_path,
             Duration::from_secs(30),
+            Vec::new(),
         ),
         tmp_dir,
         server_mail_storge: ServerMailStorage {
