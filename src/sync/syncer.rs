@@ -20,8 +20,10 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
+        on_local_change: impl FnMut() + Send + 'static,
     ) {
-        let ((_, task_tx), _) = Self::sync(mailbox, mail_dir, state_dir, client).await;
+        let ((_, task_tx), _) =
+            Self::sync(mailbox, mail_dir, state_dir, client, on_local_change).await;
         task_tx
             .send(Task::Shutdown)
             .await
@@ -35,9 +37,10 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
         idle_timeout: Duration,
+        on_local_change: impl FnMut() + Send + 'static,
     ) -> ! {
         let ((mut client, _), maildir_repository) =
-            Self::sync(mailbox, mail_dir, state_dir, client).await;
+            Self::sync(mailbox, mail_dir, state_dir, client, on_local_change).await;
         let repo = maildir_repository.clone();
         let stop_tx = client.idle_stop_tx();
 
@@ -82,6 +85,7 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
+        on_local_change: impl FnMut() + Send + 'static,
     ) -> ((SelectedClient, mpsc::Sender<Task>), MaildirRepository) {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
@@ -89,13 +93,20 @@ impl Syncer {
         if let Ok(maildir_repository) = MaildirRepository::load(&mailbox_maildir, &mailbox_statedir)
         {
             (
-                (Self::sync_existing(&maildir_repository, client, mailbox).await),
+                (Self::sync_existing(&maildir_repository, client, mailbox, on_local_change).await),
                 maildir_repository,
             )
         } else {
             info!("no existing maildir found. Running inital sync");
 
-            Self::sync_new(client, &mailbox_maildir, &mailbox_statedir, mailbox).await
+            Self::sync_new(
+                client,
+                &mailbox_maildir,
+                &mailbox_statedir,
+                mailbox,
+                on_local_change,
+            )
+            .await
         }
     }
 
@@ -103,6 +114,7 @@ impl Syncer {
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
+        on_local_change: impl FnMut() + Send + 'static,
     ) -> (SelectedClient, mpsc::Sender<Task>) {
         let uid_validity = maildir_repository
             .uid_validity()
@@ -115,7 +127,7 @@ impl Syncer {
             .await
             .expect("detecting local changes should succeed");
         let (task_tx, task_rx) = mpsc::channel(32);
-        Self::setup_task_processing(maildir_repository.clone(), task_rx);
+        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
 
         let Selection {
             mut client,
@@ -247,6 +259,7 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         mailbox: &str,
+        on_local_change: impl FnMut() + Send + 'static,
     ) -> ((SelectedClient, mpsc::Sender<Task>), MaildirRepository) {
         let (task_tx, task_rx) = mpsc::channel(32);
         let mut selection = client.select(task_tx.clone(), mailbox).await;
@@ -254,7 +267,7 @@ impl Syncer {
         let maildir_repository =
             MaildirRepository::try_init(&selection.mailbox_data, mail_dir, state_dir)
                 .expect("initializing maildir repository should succeed");
-        Self::setup_task_processing(maildir_repository.clone(), task_rx);
+        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
         selection.client.fetch_all().await;
 
         ((selection.client, task_tx), maildir_repository)
@@ -263,6 +276,7 @@ impl Syncer {
     fn setup_task_processing(
         maildir_repository: MaildirRepository,
         mut task_rx: mpsc::Receiver<Task>,
+        mut on_local_change: impl FnMut() + Send + 'static,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             debug!("Listening to incoming mail...");
@@ -273,6 +287,7 @@ impl Syncer {
                             .store(&remote_mail)
                             .await
                             .expect("storing new mail should succeed");
+                        on_local_change();
                     }
                     Task::Delete(sequence_set) => {
                         for uid in sequence_set.iter() {
@@ -281,6 +296,7 @@ impl Syncer {
                                 .await
                                 .expect("deleting mails should succeed");
                         }
+                        on_local_change();
                     }
                     Task::Shutdown => {
                         task_rx.close();
@@ -290,6 +306,7 @@ impl Syncer {
                         maildir_repository
                             .update_highest_modseq(mod_seq)
                             .expect("setting highest_modseq should succeed");
+                        on_local_change();
                     }
                     Task::UpdateFlags(remote_mail_metadata) => {
                         debug!(
@@ -301,6 +318,7 @@ impl Syncer {
                             .update_flags(&remote_mail_metadata)
                             .await
                             .expect("updating flags should succeed");
+                        on_local_change();
                     }
                 }
             }
