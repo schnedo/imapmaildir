@@ -1,5 +1,5 @@
 use ::std::env;
-use std::{ffi::OsString, fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
+use std::{fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -19,7 +19,7 @@ struct AccountConfigFile {
     mailboxes: Vec<String>,
     maildir_base_path: Option<PathBuf>,
     #[serde(default)]
-    on_local_change: Vec<OsString>,
+    on_local_change: Vec<String>,
 }
 
 // todo: move config to code using it
@@ -51,7 +51,7 @@ pub struct Account {
     state_dir: PathBuf,
     #[getter(copy)]
     idle_timout: Duration,
-    on_local_change: Vec<OsString>,
+    on_local_change: Vec<String>,
 }
 
 impl Account {
@@ -66,7 +66,7 @@ impl Account {
         maildir_base_path: PathBuf,
         state_dir: PathBuf,
         idle_timout: Duration,
-        on_local_change: Vec<OsString>,
+        on_local_change: Vec<String>,
     ) -> Self {
         Self {
             auth,
