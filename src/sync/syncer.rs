@@ -75,6 +75,7 @@ impl Syncer {
                         "idle timed out after {} seconds. Reissuing...",
                         idle_timeout.as_secs()
                     );
+                    // todo: optional client.fetch_since for gmail support
                 }
             }
         }
