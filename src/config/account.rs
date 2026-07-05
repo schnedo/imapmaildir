@@ -18,6 +18,7 @@ struct AccountConfigFile {
     // todo: "all" for generic fetch of all mailboxes
     mailboxes: Vec<String>,
     maildir_base_path: Option<PathBuf>,
+    #[serde(default)]
     on_local_change: Vec<OsString>,
 }
 
