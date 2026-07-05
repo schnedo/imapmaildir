@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead as _, BufReader},
@@ -49,6 +50,7 @@ pub struct UidList {
     filename_to_uid: HashMap<String, u64>,
 }
 impl UidList {
+    #[must_use]
     pub fn new(path: &Path) -> Self {
         let reader = BufReader::new(assert_ok!(File::open(path)));
         let mut lines = reader.lines();
@@ -70,6 +72,7 @@ impl UidList {
         Self { filename_to_uid }
     }
 
+    #[must_use]
     pub fn get_uid(&self, filename: &str) -> u64 {
         let filename = if let Some((prefix, _)) = filename.rsplit_once(":2,") {
             prefix
@@ -116,6 +119,7 @@ impl MailFile<'_> {
         }
     }
 
+    #[must_use]
     pub fn has_flag(&self, flag: char) -> bool {
         self.flags.contains(flag)
     }
@@ -182,6 +186,11 @@ impl MailFile<'_> {
     pub fn delete(self) {
         assert_ok!(fs::remove_file(self.path));
     }
+
+    #[must_use]
+    pub fn content(&self) -> &[u8] {
+        &self.content
+    }
 }
 
 pub struct ClientMaildir<'a> {
@@ -202,8 +211,10 @@ impl ClientMaildir<'_> {
 }
 
 pub trait Maildir {
+    #[expect(async_fn_in_trait)]
     async fn mails(&'_ self) -> Vec<MailFile<'_>>;
 
+    #[expect(async_fn_in_trait)]
     async fn mail_with_flag(&self) -> Option<MailFile<'_>>;
 
     fn add_mail(&self, content: &[u8]);
@@ -240,6 +251,7 @@ pub struct ServerMaildir<'a> {
     storage: &'a ServerMailStorage,
     cur: PathBuf,
     new: PathBuf,
+    file_counter: RefCell<u32>,
 }
 
 impl<'a> ServerMaildir<'a> {
@@ -254,7 +266,12 @@ impl<'a> ServerMaildir<'a> {
             (cur, new)
         };
 
-        Self { storage, cur, new }
+        Self {
+            storage,
+            cur,
+            new,
+            file_counter: RefCell::new(0),
+        }
     }
 }
 
@@ -302,10 +319,12 @@ impl Maildir for ServerMaildir<'_> {
     }
 
     fn add_mail(&self, content: &[u8]) {
-        let file_name = String::from("foo");
+        let mut file_counter = self.file_counter.borrow_mut();
+        let file_name = file_counter.to_string();
         let path = self.new.join(file_name);
         assert!(!assert_ok!(path.try_exists()));
         assert_ok!(fs::write(path, content));
+        *file_counter += 1;
     }
 }
 
@@ -360,14 +379,17 @@ pub struct MailSetup {
 }
 
 impl MailSetup {
+    #[must_use]
     pub fn config(&self) -> &config_m::Account {
         &self.config
     }
 
+    #[must_use]
     pub fn server_mail(&self) -> &ServerMailStorage {
         &self.server_mail_storge
     }
 
+    #[must_use]
     pub fn client_mail(&self) -> ClientMailStorage<'_> {
         ClientMailStorage {
             dir: self.config.maildir_base_path(),
