@@ -1,4 +1,4 @@
-mod fixtures;
+pub mod fixtures;
 
 use std::collections::HashSet;
 
