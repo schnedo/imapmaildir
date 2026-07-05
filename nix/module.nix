@@ -19,6 +19,31 @@
         {
           options.imapmaildir = {
             enable = lib.mkEnableOption "imapmaildir";
+            idle = lib.mkOption {
+              type = lib.types.submodule {
+                options = {
+                  enable = lib.mkOption {
+                    type = lib.types.bool;
+                    default = true;
+                    description = "Enable continuously listening to remote changes via imap IDLE and to local changes via inotify";
+                  };
+                  timeoutSeconds = lib.mkOption {
+                    type = lib.types.int;
+                    default = 29 * 60;
+                    description = "Time until imap IDLE is cancelled and reissued to prevent connection timeout";
+                  };
+                };
+              };
+            };
+            onChange = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Command to execute after remote changes got synced";
+              example = [
+                "notify-send"
+                "new mail"
+              ];
+            };
             mailboxes = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
@@ -28,17 +53,16 @@
                 options = {
                   name = lib.mkOption {
                     type = lib.types.str;
+                    default = "imapmaildir-sync-${name}";
                   };
                   intervalSec = lib.mkOption {
                     type = lib.types.int;
                     default = 5 * 60;
+                    description = "Time in seconds between consecutive sync runs. Only relevant if idle is disabled";
                   };
                   extraConfig = lib.mkOption {
                     type = lib.types.attrs;
                   };
-                };
-                config = {
-                  name = lib.mkDefault "imapmaildir-sync-${name}";
                 };
               };
             };
@@ -69,7 +93,7 @@
               Type = "exec";
               ExecStart = "${
                 lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
-              } --account ${name}";
+              } --account ${name} sync${lib.optionalString account.imapmaildir.idle.enable " --idle"}";
             };
           }
         ];
@@ -80,7 +104,7 @@
         let
           inherit (account.imapmaildir.service) name;
         in
-        {
+        lib.mkIf account.imapmaildir.idle.enable {
           "${name}" = {
             Unit = {
               Description = "timer for ${name}";
@@ -114,6 +138,8 @@
                 # todo: assert use tls
                 port = if builtins.isNull port then 993 else port;
                 inherit (account.imapmaildir) mailboxes;
+                idle_timeout = "${builtins.toString account.imapmaildir.idle.timeoutSeconds}s";
+                on_local_change = account.imapmaildir.onChange;
                 maildir_base_path = account.maildir.absPath;
                 auth = {
                   type = "Plain";
