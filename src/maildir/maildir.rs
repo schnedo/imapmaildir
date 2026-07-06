@@ -429,7 +429,7 @@ impl Maildir {
             (true, false) => {
                 trace!("renaming {:} to {:}", current.display(), new.display());
                 if let Some(watch) = watch {
-                    watch.ignore_next_update_for_file(&current).await;
+                    watch.ignore_next_update_for_file(&new).await;
                 }
                 fs::rename(current, new)?;
 
