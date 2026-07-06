@@ -40,24 +40,25 @@ impl Watch {
             loop {
                 tokio::select! {
                     Some((cookie, mask)) = timedout_rx.recv() => {
-                        trace!("move_matches {move_matches:?}");
+                        trace!("file {cookie:?} timed out");
                         if let Some(filename) = move_matches.remove(&cookie) {
-                            trace!("file {cookie:?} timed out");
-                            let filename = filename
-                                .into_string()
-                                .expect("filename should be valid utf8");
-                            match mask {
-                                EventMask::MOVED_TO => change_tx
-                                    .send(Change::New(filename))
-                                    .await
-                                    .expect("change channel should still be open"),
-                                EventMask::MOVED_FROM => change_tx
-                                    .send(Change::Deletion(filename))
-                                    .await
-                                    .expect("change channel should still be open"),
-                                _ => unreachable!("mask should only be defined values")
+                            let mut ignored = ignored.lock().await;
+                            if !ignored.remove(&filename) {
+                                let filename = filename
+                                    .into_string()
+                                    .expect("filename should be valid utf8");
+                                match mask {
+                                    EventMask::MOVED_TO => change_tx
+                                        .send(Change::New(filename))
+                                        .await
+                                        .expect("change channel should still be open"),
+                                    EventMask::MOVED_FROM => change_tx
+                                        .send(Change::Deletion(filename))
+                                        .await
+                                        .expect("change channel should still be open"),
+                                    _ => unreachable!("mask should only be defined values")
+                                }
                             }
-
                         }
                     },
                     Some(event) = stream.next() => {
@@ -125,8 +126,6 @@ impl Watch {
         let filename = event
             .name
             .expect("name should always be present in move event");
-        trace!("move_matches {move_matches:?}");
-        trace!("ignore_files {ignored:?}");
         if let Some(stored_name) = move_matches.remove(&event.cookie) {
             let mut ignored = ignored.lock().await;
             if !(ignored.remove(&filename) || ignored.remove(&stored_name)) {
