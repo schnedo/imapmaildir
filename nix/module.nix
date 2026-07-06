@@ -104,7 +104,7 @@
         let
           inherit (account.imapmaildir.service) name;
         in
-        lib.mkIf account.imapmaildir.idle.enable {
+        lib.mkIf (!account.imapmaildir.idle.enable) {
           "${name}" = {
             Unit = {
               Description = "timer for ${name}";
