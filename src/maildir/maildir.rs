@@ -288,9 +288,6 @@ impl Maildir {
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         trace!("writing to {}", file_path.display());
-        if let Some(watch) = self.watch.lock().await.as_ref() {
-            watch.ignore_next_update_for_file(&file_path).await;
-        }
         let mut file = OpenOptions::new()
             .mode(0o400)
             .write(true)
