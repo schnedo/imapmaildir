@@ -139,7 +139,6 @@ impl State {
     }
 
     pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
-        trace!("setting highest_modseq {value}");
         set_highest_modseq(
             &self.db.lock().expect("state lock should not be poisoned"),
             value,
