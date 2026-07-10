@@ -405,6 +405,32 @@ impl Maildir {
         self.cur.join(mail.filename())
     }
 
+    pub async fn handle_uid_conflict(
+        &self,
+        current: &LocalMailMetadata,
+        new: &LocalMailMetadata,
+    ) -> Result<(), Error> {
+        let current_path = self.get_path_of(current);
+        let new_path = self.get_path_of(new);
+        if Self::is_content_identical(&current_path, &new_path)? {
+            self.delete(new).await?;
+        } else {
+            let tmp_path = self.tmp.join(new.filename());
+            warn!(
+                "Found already existing mail with uid {} and different content. Moving new mail to {}",
+                new.uid(),
+                tmp_path.display()
+            );
+            let watch = self.watch.lock().await;
+            if let Some(watch) = watch.as_ref() {
+                watch.ignore_next_update_for_file(&new_path).await;
+                fs::rename(&new_path, &tmp_path)?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
         // todo: write and match error instead of checking if exists
         match (current.try_exists()?, new.try_exists()?) {

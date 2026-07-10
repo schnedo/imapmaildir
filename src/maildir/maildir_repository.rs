@@ -152,15 +152,33 @@ impl MaildirRepository {
     }
 
     pub async fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
-        info!(
-            "storing mail {} with flags {}",
-            mail.metadata().uid(),
-            mail.metadata().flags()
-        );
+        let uid = mail.metadata().uid();
+        info!("storing mail {uid} with flags {}", mail.metadata().flags());
         let metadata = self.maildir.store(mail).await?;
-        self.state.store(&metadata)?;
+        if let Err(state::Error::Db(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::ConstraintViolation,
+                ..
+            },
+            _,
+        ))) = self.state.store(&metadata)
+        {
+            if let Some(existing_mail) = self.state.get_by_id(uid)? {
+                self.maildir
+                    .handle_uid_conflict(&existing_mail, &metadata)
+                    .await?;
 
-        Ok(())
+                Ok(())
+            } else {
+                unreachable!("stored mail should exist on store ConstraintViolation");
+            }
+        } else {
+            self.state
+                // todo: check highest modseq handling consistent with channel?
+                .update_highest_modseq(mail.metadata().modseq())?;
+
+            Ok(())
+        }
     }
 
     pub async fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
@@ -681,6 +699,28 @@ mod tests {
     async fn test_store_stores_new_mail(repo: TestMaildirRepository, mail: RemoteMail) {
         let uid = mail.metadata().uid();
         assert_none!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
+
+        assert_ok!(repo.repo.store(&mail).await);
+
+        let mut list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_some!(list_rx.recv().await));
+        assert_none!(list_rx.recv().await);
+
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
+    }
+
+    #[rstest]
+    #[tokio::test]
+    #[awt]
+    async fn test_store_does_not_store_new_mail_if_mail_with_same_uid_already_present(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
+        let RepoWithMail { repo, mail, .. } = repo_with_mail;
+        let uid = mail.metadata().uid();
+        let mut list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_some!(list_rx.recv().await));
+        assert_none!(list_rx.recv().await);
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
 
         assert_ok!(repo.repo.store(&mail).await);
 
