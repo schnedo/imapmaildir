@@ -383,8 +383,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_state_inits_correctly(
+    fn test_state_inits_correctly(
         state: TestState,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
@@ -425,8 +424,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_load_loads_correct(
+    fn test_load_loads_correct(
         loadable_state_dir: TempDir,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
@@ -452,10 +450,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
-        state: TestState,
-    ) {
+    fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(state: TestState) {
         let initial_modseq = assert_ok!(state.state.highest_modseq());
         let new_modseq = assert_ok!(ModSeq::try_from(i64::MAX));
         assert_gt!(new_modseq, initial_modseq);
@@ -465,8 +460,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
+    fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
         let initial_modseq = assert_ok!(state.state.highest_modseq());
         let new_modseq = assert_ok!(ModSeq::try_from(1));
         assert_le!(new_modseq, initial_modseq);
@@ -476,8 +470,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_set_highest_modseq_always_updates(state: TestState) {
+    fn test_set_highest_modseq_always_updates(state: TestState) {
         let initial_modseq = assert_ok!(state.state.highest_modseq());
         let new_modseq = assert_ok!(ModSeq::try_from(1));
         assert_lt!(new_modseq, initial_modseq);
@@ -487,8 +480,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
+    fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid())));
         assert_ok!(state.state.store(&metadata));
         let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
@@ -496,8 +488,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_updating_metadata_succeeds(state: TestState, mut metadata: LocalMailMetadata) {
+    fn test_updating_metadata_succeeds(state: TestState, mut metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata));
         let flags = Flag::Seen | Flag::Deleted;
         assert_ne!(flags, metadata.flags());
@@ -508,8 +499,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
+    fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata));
         assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
         assert_ok!(state.state.delete_by_id(metadata.uid()));
@@ -517,8 +507,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_foreach_fails_with_invalid_uid_in_state(state: TestState) {
+    fn test_foreach_fails_with_invalid_uid_in_state(state: TestState) {
         let db = state
             .state
             .db
@@ -532,8 +521,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
-    async fn test_foreach_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
+    fn test_foreach_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.store(&metadata));
         let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
         let metadata = metadata.set_uid(assert_ok!(Uid::try_from(9)));
