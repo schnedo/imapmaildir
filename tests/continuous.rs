@@ -3,10 +3,7 @@ pub mod fixtures;
 use std::collections::HashSet;
 
 use assertables::*;
-use imapmaildir::Client;
-use imapmaildir::Syncer;
 use rstest::*;
-use tokio::sync::mpsc;
 
 use crate::fixtures::*;
 
@@ -14,34 +11,13 @@ use crate::fixtures::*;
 #[tokio::test]
 #[awt]
 async fn test_recieve_new_remote_mail(#[future] mail_setup: MailSetup) {
-    let (call_tx, mut call_rx) = mpsc::channel(1);
-    let config = mail_setup.config();
-    let maildir_base_path = config.maildir_base_path().clone();
-    let state_dir = config.state_dir().clone();
-    let idle_timout = config.idle_timout();
-    let client = Client::login(config.connection(), config.auth()).await;
-
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let initial_client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
 
-    let handle = tokio::spawn(async move {
-        Syncer::sync_continuously(
-            "INBOX",
-            &maildir_base_path,
-            &state_dir,
-            client,
-            idle_timout,
-            move || {
-                let call = call_tx.clone();
-                tokio::spawn(async move {
-                    assert_ok!(call.send(()).await);
-                });
-            },
-        )
-        .await;
-    });
+    let (handle, mut call_rx) = mail_setup.sync_continuous("INBOX").await;
+    tokio::task::yield_now().await;
 
     let content = b"flksajflkajf";
     server_mailbox.add_mail(content);

@@ -11,7 +11,7 @@ use std::{
 
 use assertables::*;
 use derivative::Derivative;
-use imapmaildir::{config as config_m, logging};
+use imapmaildir::{Client, Syncer, config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
@@ -19,6 +19,7 @@ use testcontainers::{
     core::{AccessMode, ContainerPort, ExecCommand, Mount, WaitFor},
     runners::AsyncRunner,
 };
+use tokio::{sync::mpsc, task::JoinHandle};
 
 const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
 
@@ -394,6 +395,35 @@ impl MailSetup {
         ClientMailStorage {
             dir: self.config.maildir_base_path(),
         }
+    }
+
+    pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, mpsc::Receiver<()>) {
+        let (call_tx, call_rx) = mpsc::channel(1);
+        let config = self.config();
+        let maildir_base_path = config.maildir_base_path().clone();
+        let state_dir = config.state_dir().clone();
+        let idle_timout = config.idle_timout();
+        let client = Client::login(config.connection(), config.auth()).await;
+        let mailbox = mailbox.to_string();
+        let handle = tokio::spawn(async move {
+            Syncer::sync_continuously(
+                &mailbox,
+                &maildir_base_path,
+                &state_dir,
+                client,
+                idle_timout,
+                move || {
+                    eprintln!("calling onchange");
+                    let call = call_tx.clone();
+                    tokio::spawn(async move {
+                        assert_ok!(call.send(()).await);
+                    });
+                },
+            )
+            .await;
+        });
+
+        (handle, call_rx)
     }
 }
 
