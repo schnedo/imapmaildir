@@ -1,5 +1,6 @@
 use std::{ffi::OsStr, time::Duration};
 
+use log::info;
 use tokio::{process::Command, sync::mpsc};
 
 fn debounce(
@@ -44,6 +45,7 @@ fn subprocess_call(cmd: &[impl AsRef<OsStr>]) -> Box<dyn FnMut() + Send> {
     }
 }
 pub fn on_local_change(cmd: &[impl AsRef<OsStr>]) -> impl FnMut() + Send + 'static {
+    info!("calling on_change hook");
     let mut cmd = subprocess_call(cmd);
     debounce(Duration::from_millis(100), move || {
         cmd();
