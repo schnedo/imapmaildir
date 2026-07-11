@@ -397,6 +397,20 @@ impl MailSetup {
         }
     }
 
+    pub async fn sync(&self, mailbox: &str) -> () {
+        let config = self.config();
+        let client = Client::login(config.connection(), config.auth()).await;
+
+        Syncer::sync_once(
+            mailbox,
+            config.maildir_base_path(),
+            config.state_dir(),
+            client,
+            || {},
+        )
+        .await;
+    }
+
     pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, mpsc::Receiver<()>) {
         let (call_tx, call_rx) = mpsc::channel(1);
         let config = self.config();
