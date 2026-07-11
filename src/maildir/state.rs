@@ -8,7 +8,6 @@ use std::{
 
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
-use log::{debug, trace, warn};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
 use rusqlite_migration::Migrations;
 use thiserror::Error;
@@ -46,7 +45,7 @@ impl State {
 
     pub fn load(state_dir: &Path) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir)?;
-        debug!(
+        log::debug!(
             "try loading existing state file {}",
             state_file.to_string_lossy()
         );
@@ -69,11 +68,11 @@ impl State {
 
     pub fn init(state_dir: &Path, mailbox_metadata: &MailboxMetadata) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir)?;
-        debug!("creating new state file {}", state_file.to_string_lossy());
+        log::debug!("creating new state file {}", state_file.to_string_lossy());
         let mut db = Connection::open(state_file)?;
         apply_migrations(&mut db)?;
 
-        trace!(
+        log::trace!(
             "setting cached uid_validity {}",
             mailbox_metadata.uid_validity()
         );
@@ -97,7 +96,7 @@ impl State {
             if let Err(e) = fs::remove_dir(state_dir)
                 && e.kind() != io::ErrorKind::DirectoryNotEmpty
             {
-                warn!(
+                log::warn!(
                     "Could not remove empty state directory {}: {e}",
                     state_dir.display()
                 );
@@ -114,7 +113,7 @@ impl State {
     }
 
     pub fn uid_validity(&self) -> Result<UidValidity, Error> {
-        trace!("getting cached uid_validity");
+        log::trace!("getting cached uid_validity");
         self.db
             .lock()
             .expect("state lock should not be poisoned")
@@ -126,7 +125,7 @@ impl State {
     }
 
     pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
-        trace!("check for updating highest_modseq with {value:?}");
+        log::trace!("check for updating highest_modseq with {value:?}");
         let mut db = self.db.lock().expect("state lock should not be poisoned");
         let transaction = db.transaction()?;
         let highest_modseq = get_highest_modseq(&transaction)?;
@@ -147,12 +146,12 @@ impl State {
     }
 
     pub fn highest_modseq(&self) -> Result<ModSeq, Error> {
-        trace!("getting cached highest_modseq");
+        log::trace!("getting cached highest_modseq");
         get_highest_modseq(&self.db.lock().expect("state lock should not be poisoned"))
     }
 
     pub fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
-        trace!("updating mail cache {data:?}");
+        log::trace!("updating mail cache {data:?}");
         let db = self.db.lock().expect("state lock should not be poisoned");
         let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
         stmt.execute((data.flags().bits(), u32::from(data.uid())))?;
@@ -161,7 +160,7 @@ impl State {
     }
 
     pub fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
-        trace!("storing mail cache {data:?}");
+        log::trace!("storing mail cache {data:?}");
         let uid = data.uid();
         let db = self.db.lock().expect("state lock should not be poisoned");
         let mut stmt = db
@@ -172,7 +171,7 @@ impl State {
     }
 
     pub fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
-        trace!("get existing metadata with {uid:?}");
+        log::trace!("get existing metadata with {uid:?}");
         let db = self.db.lock().expect("state lock should not be poisoned");
         let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
 
@@ -183,7 +182,7 @@ impl State {
 
     // todo: test deleting non existent mail should not fail
     pub fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
-        trace!("deleting {uid:?}");
+        log::trace!("deleting {uid:?}");
         let db = self.db.lock().expect("state lock should not be poisoned");
         let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
         stmt.execute([u32::from(uid)])?;
@@ -192,7 +191,7 @@ impl State {
     }
 
     pub fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
-        trace!("getting all stored mail metadata");
+        log::trace!("getting all stored mail metadata");
         let mut db = self.db.lock().expect("state lock should not be poisoned");
         let db = db.transaction()?;
         let mut stmt = db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
@@ -298,7 +297,7 @@ fn get_highest_modseq(db: &Connection) -> Result<ModSeq, Error> {
 }
 
 fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
-    trace!("setting highest_modseq {value}");
+    log::trace!("setting highest_modseq {value}");
     let mut stmt = db.prepare_cached("update mailbox_metadata set highest_modseq=?1")?;
     stmt.execute([i64::from(value)])?;
 

@@ -9,7 +9,6 @@ use std::{
 };
 
 use enumflags2::BitFlags;
-use log::{debug, info, trace, warn};
 use rustix::path::Arg;
 use thiserror::Error;
 use tokio::sync::{
@@ -61,7 +60,7 @@ impl Maildir {
             Ok(_) | Err(LoadError::Partial(_)) => Err(InitError::Exists(mail_dir.to_path_buf())),
             Err(LoadError::Io(path, kind)) => Err(InitError::Io(path, kind)),
             Err(_) => {
-                info!("creating maildir in {:#}", mail_dir.display());
+                log::info!("creating maildir in {:#}", mail_dir.display());
                 let mut builder = DirBuilder::new();
                 builder.recursive(true).mode(0o700);
 
@@ -95,7 +94,7 @@ impl Maildir {
 
     pub fn load(mail_dir: &Path) -> Result<Self, LoadError> {
         let mail = Self::unchecked(mail_dir);
-        trace!("loading maildir {mail:?}");
+        log::trace!("loading maildir {mail:?}");
         match (
             // todo: this should check for directories (.metadata().is_dir), not just existence
             // todo: check for read/write mode
@@ -105,7 +104,7 @@ impl Maildir {
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
             (Ok(new_exists), Ok(true), Ok(tmp_exists)) => {
-                warn!(
+                log::warn!(
                     "Found partially existing maildir with intact \"cur\" directory. Recreating \"tmp\" and \"new\"..."
                 );
                 if !new_exists && let Err(e) = fs::create_dir(&mail.new) {
@@ -135,7 +134,7 @@ impl Maildir {
         drop(my_watch);
         tokio::spawn(async move {
             while let Some(change) = rx.recv().await {
-                trace!("handling filechange {change:?}");
+                log::trace!("handling filechange {change:?}");
                 match change {
                     watcher::Change::Rename { from, to } => {
                         let from_entry: Result<LocalMailMetadata, _> = from.parse();
@@ -194,11 +193,11 @@ impl Maildir {
                                     .expect("change sender should still be open");
                             }
                             (Err(_), Ok(to)) => {
-                                warn!("ignoring deletion of untracked file {from}");
+                                log::warn!("ignoring deletion of untracked file {from}");
                                 self.send_new_structured_change(&change_tx, to).await;
                             }
                             (Err(_), Err(_)) => {
-                                warn!("ignoring deletion of untracked file {from}");
+                                log::warn!("ignoring deletion of untracked file {from}");
                                 Self::send_new_unstructured_change(
                                     &self.watch,
                                     &self.cur,
@@ -231,7 +230,7 @@ impl Maildir {
                                 .await
                                 .expect("change sender should still be open");
                         } else {
-                            warn!("ignoring removal of untracked file {filename}");
+                            log::warn!("ignoring removal of untracked file {filename}");
                         }
                     }
                 }
@@ -287,7 +286,7 @@ impl Maildir {
         let new_local_metadata = LocalMailMetadata::from(mail.metadata());
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
-        trace!("writing to {}", file_path.display());
+        log::trace!("writing to {}", file_path.display());
         let mut file = OpenOptions::new()
             .mode(0o400)
             .write(true)
@@ -397,7 +396,7 @@ impl Maildir {
 
     pub fn read_content(&self, metadata: &impl MaildirFile) -> io::Result<Vec<u8>> {
         let mailpath = self.get_path_of(metadata);
-        trace!("Getting content of {}", mailpath.display());
+        log::trace!("Getting content of {}", mailpath.display());
         fs::read(mailpath)
     }
 
@@ -416,7 +415,7 @@ impl Maildir {
             self.delete(new).await?;
         } else {
             let tmp_path = self.tmp.join(new.filename());
-            warn!(
+            log::warn!(
                 "Found already existing mail with uid {} and different content. Moving new mail to {}",
                 new.uid(),
                 tmp_path.display()
@@ -436,7 +435,7 @@ impl Maildir {
         match (current.try_exists()?, new.try_exists()?) {
             (true, true) => {
                 if Self::is_content_identical(current.as_path(), new.as_path())? {
-                    warn!(
+                    log::warn!(
                         "Removing {} during rename to {}: target name is already present with identical content",
                         current.display(),
                         new.display()
@@ -453,7 +452,7 @@ impl Maildir {
                 }
             }
             (true, false) => {
-                trace!("renaming {:} to {:}", current.display(), new.display());
+                log::trace!("renaming {:} to {:}", current.display(), new.display());
                 if let Some(watch) = watch {
                     watch.ignore_next_update_for_file(&new).await;
                 }
@@ -462,7 +461,7 @@ impl Maildir {
                 Ok(())
             }
             (false, true) => {
-                warn!(
+                log::warn!(
                     "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
                     current.to_string_lossy(),
                     new.to_string_lossy()
@@ -475,7 +474,7 @@ impl Maildir {
     }
 
     fn is_content_identical(current: &Path, new: &Path) -> io::Result<bool> {
-        trace!(
+        log::trace!(
             "checking if content of {} and {} is identical",
             current.display(),
             new.display()
@@ -520,7 +519,7 @@ impl Maildir {
         entry: &mut impl MaildirFile,
         new_flags: BitFlags<Flag>,
     ) -> Result<(), Error> {
-        debug!("updating mail {} flags: {}", entry.filename(), new_flags);
+        log::debug!("updating mail {} flags: {}", entry.filename(), new_flags);
         let current_mail = self.get_path_of(entry);
         entry.set_flags(new_flags);
         let new_mail = self.get_path_of(entry);
@@ -533,10 +532,10 @@ impl Maildir {
         if let Some(watch) = &self.watch.lock().await.as_ref() {
             watch.ignore_next_update_for_file(&file_path).await;
         }
-        trace!("deleting {}", file_path.display());
+        log::trace!("deleting {}", file_path.display());
         fs::remove_file(&file_path).or_else(|e| {
             if let std::io::ErrorKind::NotFound = e.kind() {
-                trace!("{} already gone", &file_path.display());
+                log::trace!("{} already gone", &file_path.display());
                 Ok(())
             } else {
                 Err(e)

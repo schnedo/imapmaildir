@@ -1,7 +1,6 @@
 use std::{borrow::Cow, fs, io, path::PathBuf};
 
 use futures::{SinkExt, StreamExt};
-use log::{debug, trace};
 use thiserror::Error;
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_native_tls::{
@@ -37,7 +36,7 @@ impl Connection {
         connection_config: &config::Connection,
         untagged_response_sender: mpsc::Sender<ResponseData>,
     ) -> Result<Self, Error> {
-        debug!("Connecting to server");
+        log::debug!("Connecting to server");
         let mut tls = native_tls::TlsConnector::builder();
         if let Some(cert_file) = connection_config.server_certificate_file() {
             let cert =
@@ -69,7 +68,7 @@ impl Connection {
             loop {
                 tokio::select! {
                     Some((tag, command)) = outbound_rx.recv() => {
-                        trace!("{tag:?}: sending");
+                        log::trace!("{tag:?}: sending");
                         let request = imap_proto::Request(
                             Cow::Borrowed(tag.as_bytes()),
                             Cow::Borrowed(&command),
@@ -83,9 +82,9 @@ impl Connection {
                         let response = response.expect("response should be receivable");
                         match response.parsed() {
                             imap_proto::Response::Done { tag, status, code, information } => {
-                                trace!("{tag:?} {status:?} {code:?}");
+                                log::trace!("{tag:?} {status:?} {code:?}");
                                 if let Some(information) = information {
-                                    debug!("Done response information: {information}");
+                                    log::debug!("Done response information: {information}");
                                 }
                                 match status {
                                     imap_proto::Status::Ok => {
@@ -108,7 +107,7 @@ impl Connection {
                                 }
                             } ,
                             imap_proto::Response::Continue { code, information } => {
-                                trace!("+ {code:?} {information:?}");
+                                log::trace!("+ {code:?} {information:?}");
                                 inbound_tx.send(Ok(response))
                                     .await
                                     .expect("sending response out of network task should succeed");

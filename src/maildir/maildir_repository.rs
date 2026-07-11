@@ -3,8 +3,6 @@ use std::{collections::HashMap, io, path::Path, time::Duration};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use log::{debug, info, trace, warn};
-
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
@@ -52,7 +50,7 @@ impl MaildirRepository {
             }
             (Ok(_), Err(maildir_error)) => match maildir_error {
                 maildir::LoadError::Missing(_) => {
-                    warn!(
+                    log::warn!(
                         "encountered missing maildir for existing state. Reinitilizing state and maildir..."
                     );
                     State::remove_from(state_dir)?;
@@ -82,7 +80,7 @@ impl MaildirRepository {
     }
 
     pub async fn watch(self) -> mpsc::Receiver<LocalChanges> {
-        debug!("listening for maildir mail changes");
+        log::debug!("listening for maildir mail changes");
         let (changes_tx, changes_rx) = mpsc::channel(1);
         let size = 32;
         let this = self.clone();
@@ -153,7 +151,7 @@ impl MaildirRepository {
 
     pub async fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
         let uid = mail.metadata().uid();
-        info!("storing mail {uid} with flags {}", mail.metadata().flags());
+        log::info!("storing mail {uid} with flags {}", mail.metadata().flags());
         let metadata = self.maildir.store(mail).await?;
         if let Err(state::Error::Db(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error {
@@ -186,7 +184,7 @@ impl MaildirRepository {
 
         // todo: should this be transactional?
         if let Some(mut entry) = self.state.get_by_id(uid)? {
-            info!(
+            log::info!(
                 "update flags of mail {uid}: {} -> {}",
                 entry.flags(),
                 mail_metadata.flags()
@@ -208,7 +206,7 @@ impl MaildirRepository {
     pub async fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
         if let Some(mut entry) = self.state.get_by_id(uid)? {
             if !entry.has_flag(flag) {
-                info!("adding flag {flag} to mail {uid}");
+                log::info!("adding flag {flag} to mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.insert(flag);
                 self.handle_flags(&mut entry, new_flags).await?;
@@ -223,7 +221,7 @@ impl MaildirRepository {
     pub async fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
         if let Some(mut entry) = self.state.get_by_id(uid)? {
             if entry.has_flag(flag) {
-                info!("removing flag {flag} of mail {uid}");
+                log::info!("removing flag {flag} of mail {uid}");
                 let mut new_flags = entry.flags();
                 new_flags.remove(flag);
                 self.handle_flags(&mut entry, new_flags).await?;
@@ -260,7 +258,7 @@ impl MaildirRepository {
         mail_metadata: NewLocalMailMetadata,
         uid: Uid,
     ) -> Result<(), Error> {
-        info!(
+        log::info!(
             "adding {uid} to newly synced mail {}",
             mail_metadata.filename()
         );
@@ -271,12 +269,12 @@ impl MaildirRepository {
     }
 
     pub async fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
-        info!("deleting mail {uid}");
+        log::info!("deleting mail {uid}");
         if let Some(entry) = self.state.get_by_id(uid)? {
             self.maildir.delete(&entry).await?;
             self.state.delete_by_id(uid)?;
         } else {
-            trace!("mail {uid:?} already gone");
+            log::trace!("mail {uid:?} already gone");
         }
 
         Ok(())
@@ -320,7 +318,7 @@ impl MaildirRepository {
         }
 
         let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
-        trace!("{changes:?}");
+        log::trace!("{changes:?}");
 
         Ok(changes)
     }

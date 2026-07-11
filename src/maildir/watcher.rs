@@ -8,7 +8,6 @@ use std::{
 
 use futures::StreamExt;
 use inotify::{EventMask, Inotify, WatchMask};
-use log::trace;
 use tokio::sync::{Mutex, mpsc};
 
 #[derive(Debug, Clone)]
@@ -40,7 +39,7 @@ impl Watch {
             loop {
                 tokio::select! {
                     Some((cookie, mask)) = timedout_rx.recv() => {
-                        trace!("file {cookie:?} timed out");
+                        log::trace!("file {cookie:?} timed out");
                         if let Some(filename) = move_matches.remove(&cookie) {
                             let mut ignored = ignored.lock().await;
                             if !ignored.remove(&filename) {
@@ -63,7 +62,7 @@ impl Watch {
                     },
                     Some(event) = stream.next() => {
                         let event = event.expect("inotify event should be ok");
-                        trace!("{event:?}");
+                        log::trace!("{event:?}");
                         match event.mask {
                             EventMask::MOVED_FROM | EventMask::MOVED_TO => Self::handle_move_event(event, &mut move_matches,&change_tx,&timedout_tx, &ignored).await,
                             EventMask::DELETE => {
@@ -108,7 +107,7 @@ impl Watch {
 
     pub async fn ignore_next_update_for_file(&self, file: &Path) {
         let mut ignored = self.ignore_files.lock().await;
-        trace!("ignoring next update of {}", file.display());
+        log::trace!("ignoring next update of {}", file.display());
         ignored.insert(
             file.file_name()
                 .expect("ignored file should have a name")

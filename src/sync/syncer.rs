@@ -6,7 +6,6 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path, time::Duration};
 
-use log::{debug, info, trace};
 use tokio::sync::mpsc;
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
@@ -44,11 +43,11 @@ impl Syncer {
         let repo = maildir_repository.clone();
         let stop_tx = client.idle_stop_tx();
 
-        info!("listening for mail changes...");
+        log::info!("listening for mail changes...");
         let mut local_change_rx = repo.watch().await;
         tokio::spawn(async move {
             while let Some(changes) = local_change_rx.recv().await {
-                trace!("detected local changes {changes:?}");
+                log::trace!("detected local changes {changes:?}");
                 stop_tx
                     .send(IdleStopReason::Local { changes })
                     .await
@@ -59,19 +58,19 @@ impl Syncer {
         loop {
             match client.idle(idle_timeout).await {
                 IdleStopReason::Remote => {
-                    info!("handling new remote changes");
+                    log::info!("handling new remote changes");
                     let current_highest_modseq = maildir_repository
                         .highest_modseq()
                         .expect("getting highest modseq should succeed");
                     client.fetch_since(current_highest_modseq).await;
                 }
                 IdleStopReason::Local { changes } => {
-                    info!("handling new local changes");
+                    log::info!("handling new local changes");
                     Self::handle_local_changes(&mut client, changes, mailbox, &maildir_repository)
                         .await;
                 }
                 IdleStopReason::Timeout => {
-                    info!(
+                    log::info!(
                         "idle timed out after {} seconds. Reissuing...",
                         idle_timeout.as_secs()
                     );
@@ -98,7 +97,7 @@ impl Syncer {
                 maildir_repository,
             )
         } else {
-            info!("no existing maildir found. Running inital sync");
+            log::info!("no existing maildir found. Running inital sync");
 
             Self::sync_new(
                 client,
@@ -280,7 +279,7 @@ impl Syncer {
         mut on_local_change: impl FnMut() + Send + 'static,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            debug!("Listening to incoming mail...");
+            log::debug!("Listening to incoming mail...");
             while let Some(task) = task_rx.recv().await {
                 match task {
                     Task::NewMail(remote_mail) => {
@@ -303,14 +302,14 @@ impl Syncer {
                         task_rx.close();
                     }
                     Task::UpdateModseq(uid, mod_seq) => {
-                        debug!("Setting modseq of mail {uid} to {mod_seq}");
+                        log::debug!("Setting modseq of mail {uid} to {mod_seq}");
                         maildir_repository
                             .update_highest_modseq(mod_seq)
                             .expect("setting highest_modseq should succeed");
                         on_local_change();
                     }
                     Task::UpdateFlags(remote_mail_metadata) => {
-                        debug!(
+                        log::debug!(
                             "Setting flags of mail {} to {}",
                             remote_mail_metadata.uid(),
                             remote_mail_metadata.flags()

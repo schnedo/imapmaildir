@@ -1,4 +1,3 @@
-use log::{debug, trace, warn};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -59,7 +58,7 @@ impl AuthenticatedClient {
         highest_modseq: ModSeq,
     ) -> Selection {
         let command = "ENABLE QRESYNC";
-        debug!("{command}");
+        log::debug!("{command}");
         self.connection
             .send(command.into())
             .await
@@ -76,11 +75,11 @@ impl AuthenticatedClient {
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {
-        debug!("{command}");
+        log::debug!("{command}");
 
         let (send_done_tx, mut send_done_rx) = mpsc::channel::<()>(1);
         let receive_handle = tokio::spawn(async move {
-            trace!("running receive task for select response");
+            log::trace!("running receive task for select response");
             let mut new_mailbox = MailboxMetadataBuilder::default();
 
             let mut updates: Vec<RemoteMailMetadata> = Vec::new();
@@ -89,33 +88,35 @@ impl AuthenticatedClient {
             let mut handle_response = |response: ResponseData| match response.parsed() {
                 imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
                     imap_proto::MailboxDatum::Exists(exists) => {
-                        trace!("not handling MailboxData response Exists {exists:?}");
+                        log::trace!("not handling MailboxData response Exists {exists:?}");
                     }
                     imap_proto::MailboxDatum::Flags(flags) => {
-                        trace!("not handling MailboxData response Flags {flags:?}");
+                        log::trace!("not handling MailboxData response Flags {flags:?}");
                     }
                     imap_proto::MailboxDatum::Recent(recent) => {
-                        trace!("not handling MailboxData response Recent {recent:?}");
+                        log::trace!("not handling MailboxData response Recent {recent:?}");
                     }
                     _ => {
-                        warn!("ignoring unknown mailbox data response to SELECT {mailbox_datum:?}");
+                        log::warn!(
+                            "ignoring unknown mailbox data response to SELECT {mailbox_datum:?}"
+                        );
                     }
                 },
                 imap_proto::Response::Capabilities(caps) => {
                     for cap in caps {
                         match cap {
                             imap_proto::Capability::Atom(_) => self.capabilities.insert(cap),
-                            _ => warn!("unexpected capability respone {cap:?}"),
+                            _ => log::warn!("unexpected capability respone {cap:?}"),
                         }
                     }
-                    trace!("updated capabilities to {:?}", self.capabilities);
+                    log::trace!("updated capabilities to {:?}", self.capabilities);
                 }
                 imap_proto::Response::Data {
                     status: imap_proto::Status::Ok,
                     code: None,
                     information: Some(information),
                 } => {
-                    debug!("{information}");
+                    log::debug!("{information}");
                 }
                 imap_proto::Response::Data {
                     status: imap_proto::Status::Ok,
@@ -139,24 +140,24 @@ impl AuthenticatedClient {
                         );
                     }
                     imap_proto::ResponseCode::PermanentFlags(flags) => {
-                        trace!("not handling Data response PermanentFlags {flags:?}");
+                        log::trace!("not handling Data response PermanentFlags {flags:?}");
                     }
                     imap_proto::ResponseCode::UidNext(uid_next) => {
-                        trace!("not handling Data response UidNext {uid_next:?}");
+                        log::trace!("not handling Data response UidNext {uid_next:?}");
                     }
                     imap_proto::ResponseCode::Unseen(unseen) => {
-                        trace!("not handling Data response Unseen {unseen:?}");
+                        log::trace!("not handling Data response Unseen {unseen:?}");
                     }
                     _ => {
-                        warn!("ignoring unknown data response to SELECT");
+                        log::warn!("ignoring unknown data response to SELECT");
                         if let Some(information) = information {
-                            warn!("{information}");
+                            log::warn!("{information}");
                         }
-                        trace!("{code:?}");
+                        log::trace!("{code:?}");
                     }
                 },
                 imap_proto::Response::Fetch(msg_num, attributes) => {
-                    trace!("handling fetch with attributes {attributes:?}");
+                    log::trace!("handling fetch with attributes {attributes:?}");
                     let mut metadata_builder = RemoteMailMetadataBuilder::default();
                     for attribute in attributes {
                         match attribute {
@@ -175,7 +176,7 @@ impl AuthenticatedClient {
                                     .uid(uid.try_into().expect("received uid should be nonzero"));
                             }
                             _ => {
-                                warn!("msg {msg_num} unhandled attribute {attribute:?}");
+                                log::warn!("msg {msg_num} unhandled attribute {attribute:?}");
                             }
                         }
                     }
@@ -196,8 +197,8 @@ impl AuthenticatedClient {
                     );
                 }
                 _ => {
-                    warn!("ignoring unknown response to SELECT");
-                    trace!("{:?}", response.parsed());
+                    log::warn!("ignoring unknown response to SELECT");
+                    log::trace!("{:?}", response.parsed());
                 }
             };
             loop {
@@ -219,9 +220,9 @@ impl AuthenticatedClient {
             let mailbox_data = new_mailbox
                 .build()
                 .expect("mailbox data should be all available at this point");
-            trace!("selected_mailbox = {mailbox_data:?}");
-            trace!("mail updates = {updates:?}");
-            trace!("mail deletions = {deletions:?}");
+            log::trace!("selected_mailbox = {mailbox_data:?}");
+            log::trace!("mail updates = {updates:?}");
+            log::trace!("mail deletions = {deletions:?}");
 
             (
                 updates,
