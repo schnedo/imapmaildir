@@ -2,7 +2,6 @@ use std::mem::transmute;
 use std::time::Duration;
 use std::{io::Write as _, sync::Arc};
 
-use log::{debug, trace};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::maildir::LocalChanges;
@@ -66,7 +65,7 @@ impl SelectedClient {
                                     data: content,
                                 },
                             ] => {
-                                trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
+                                log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
                                 let mail_flags = Flag::into_bitflags(flags);
                                 let metadata = RemoteMailMetadata::new(
                                     Uid::try_from(uid).expect("remote uid should be valid"),
@@ -93,7 +92,7 @@ impl SelectedClient {
                                 imap_proto::AttributeValue::Uid(uid),
                                 imap_proto::AttributeValue::ModSeq(modseq),
                             ] => {
-                                trace!("FETCH uid {uid:?} modseq {modseq:?}");
+                                log::trace!("FETCH uid {uid:?} modseq {modseq:?}");
                                 task_tx
                                     .send(Task::UpdateModseq(
                                         uid.try_into().expect("uid should be nonzero"),
@@ -107,7 +106,7 @@ impl SelectedClient {
                                 imap_proto::AttributeValue::ModSeq(modseq),
                                 imap_proto::AttributeValue::Flags(flags),
                             ] => {
-                                trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
+                                log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
                                 task_tx
                                     .send(Task::UpdateFlags(RemoteMailMetadata::new(
                                         uid.try_into().expect("uid should be nonzero"),
@@ -118,7 +117,7 @@ impl SelectedClient {
                                     .expect("task channel should still be open");
                             }
                             _ => {
-                                trace!("attributes {attributes:?}");
+                                log::trace!("attributes {attributes:?}");
                                 panic!(
                                     "wrong format of FETCH response. check order of attributes in command"
                                 );
@@ -126,7 +125,7 @@ impl SelectedClient {
                         }
                     }
                     imap_proto::Response::Vanished { earlier, uids } => {
-                        trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
+                        log::trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
                         task_tx
                             .send(Task::Delete(
                                 uids.try_into()
@@ -138,14 +137,14 @@ impl SelectedClient {
                     imap_proto::Response::Expunge(_) => {
                         let mut is_idling = is_idling.lock().await;
                         if *is_idling {
-                            trace!("stopping idle");
+                            log::trace!("stopping idle");
                             *is_idling = false;
                             stop_tx
                                 .send(IdleStopReason::Remote)
                                 .await
                                 .expect("idle stop channel should still be open");
                         } else {
-                            trace!("ignoring response due to not idling");
+                            log::trace!("ignoring response due to not idling");
                         }
                     }
                     imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
@@ -155,23 +154,23 @@ impl SelectedClient {
                         | imap_proto::MailboxDatum::Recent(_) => {
                             let mut is_idling = is_idling.lock().await;
                             if *is_idling {
-                                trace!("stopping idle");
+                                log::trace!("stopping idle");
                                 *is_idling = false;
                                 stop_tx
                                     .send(IdleStopReason::Remote)
                                     .await
                                     .expect("idle stop channel should still be open");
                             } else {
-                                trace!("ignoring response due to not idling");
+                                log::trace!("ignoring response due to not idling");
                             }
                         }
-                        _ => trace!(
+                        _ => log::trace!(
                             "ignoring unhandled mailbox data response {:?}",
                             response.parsed()
                         ),
                     },
                     _ => {
-                        trace!(
+                        log::trace!(
                             "ignoring unhandled untagged response {:?}",
                             response.parsed()
                         );
@@ -190,7 +189,7 @@ impl SelectedClient {
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
         let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, BODY.PEEK[])");
-        debug!("{command}");
+        log::debug!("{command}");
         self.connection
             .send(command.into())
             .await
@@ -199,7 +198,7 @@ impl SelectedClient {
 
     pub async fn fetch_all(&mut self) {
         let command = "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[])";
-        debug!("{command}");
+        log::debug!("{command}");
         self.connection
             .send(command.into())
             .await
@@ -209,7 +208,7 @@ impl SelectedClient {
     pub async fn fetch_since(&mut self, modseq: ModSeq) {
         let command =
             format!("UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[]) (CHANGEDSINCE {modseq})");
-        debug!("{command}");
+        log::debug!("{command}");
         self.connection
             .send(command.into())
             .await
@@ -224,7 +223,7 @@ impl SelectedClient {
         let (info_tx, mut info_rx) = mpsc::channel(32);
         if let Some(mail) = mails.next() {
             let command = format!("APPEND {mailbox}");
-            debug!("{command}");
+            log::debug!("{command}");
             let mut command = command.into_bytes();
 
             let size_hint = mails.size_hint();
@@ -282,7 +281,7 @@ impl SelectedClient {
         let command = format!(
             "UID STORE {sequence_set} (UNCHANGEDSINCE {highest_modseq}) -FLAGS.SILENT ({flag})"
         );
-        debug!("{command}");
+        log::debug!("{command}");
 
         self.connection
             .send(command.into_bytes())
@@ -300,7 +299,7 @@ impl SelectedClient {
         let command = format!(
             "UID STORE {sequence_set} (UNCHANGEDSINCE {highest_modseq}) +FLAGS.SILENT ({flag})"
         );
-        debug!("{command}");
+        log::debug!("{command}");
 
         self.connection
             .send(command.into_bytes())
@@ -312,7 +311,7 @@ impl SelectedClient {
         self.add_flag(highest_modseq, Flag::Deleted, sequence_set)
             .await;
         let command = format!("UID EXPUNGE {sequence_set}");
-        debug!("{command}");
+        log::debug!("{command}");
         self.connection
             .send(command.into_bytes())
             .await
@@ -325,7 +324,7 @@ impl SelectedClient {
 
     pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
         let command = "IDLE";
-        debug!("{command}");
+        log::debug!("{command}");
         *self.idling.lock().await = true;
         let timeout_handle = tokio::spawn(tokio::time::sleep(timeout));
         let response = self
@@ -337,7 +336,7 @@ impl SelectedClient {
             imap_proto::Response::Continue {
                 code: _,
                 information: _,
-            } => trace!("idling for up to {} seconds", timeout.as_secs()),
+            } => log::trace!("idling for up to {} seconds", timeout.as_secs()),
             _ => todo!("handle idle no continuation"),
         }
         let stop_reason = tokio::select! {
@@ -346,13 +345,13 @@ impl SelectedClient {
             }
             timeout = timeout_handle => {
                 timeout.expect("idle timeout should not fail");
-                debug!("idle timed out");
+                log::debug!("idle timed out");
 
                 IdleStopReason::Timeout
             }
         };
         let command = "DONE";
-        debug!("{command}");
+        log::debug!("{command}");
         self.connection
             .send_continuation(command.into())
             .await

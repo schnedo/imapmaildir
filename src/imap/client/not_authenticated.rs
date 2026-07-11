@@ -1,4 +1,3 @@
-use log::{debug, trace};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -49,13 +48,13 @@ impl Client {
                 information,
             } => {
                 if let Some(information) = information {
-                    trace!("greeting information: {information}");
+                    log::trace!("greeting information: {information}");
                 }
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
                     update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
                 } else {
                     let command = "CAPABILITY";
-                    debug!("{command}");
+                    log::debug!("{command}");
                     connection
                         .send(command.into())
                         .await
@@ -105,7 +104,7 @@ impl Client {
                     self.auth_capabilities.contains(AuthCapability::Plain),
                     "server should support PLAIN auth capability"
                 );
-                debug!("LOGIN <user> <password>");
+                log::debug!("LOGIN <user> <password>");
                 let response = self
                     .connection
                     // todo: this will block if server sends untagged response
@@ -153,5 +152,5 @@ fn update_capabilities(
             }
         }
     }
-    trace!("updated capabilities to {capabilities:?}");
+    log::trace!("updated capabilities to {capabilities:?}");
 }

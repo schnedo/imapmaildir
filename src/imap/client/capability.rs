@@ -1,5 +1,4 @@
 use enumflags2::{BitFlags, bitflags};
-use log::trace;
 
 #[bitflags]
 #[repr(u8)]
@@ -54,7 +53,7 @@ impl Capabilities {
                     self.capabilities.insert(Capability::UidPlus);
                 }
                 _ => {
-                    trace!("unknown capability {cow}");
+                    log::trace!("unknown capability {cow}");
                 }
             },
         }
@@ -84,7 +83,7 @@ impl AuthCapabilities {
                     self.capabilities.insert(AuthCapability::Plain);
                 }
                 _ => {
-                    trace!("unknown auth capability {cow}");
+                    log::trace!("unknown auth capability {cow}");
                 }
             },
             _ => {

@@ -6,7 +6,6 @@ use std::{
 };
 
 use enumflags2::{BitFlags, bitflags};
-use log::trace;
 use thiserror::Error;
 
 #[bitflags]
@@ -97,13 +96,13 @@ impl FromStr for Flag {
             r"\Deleted" => Ok(Flag::Deleted),
             r"\Draft" => Ok(Flag::Draft),
             r"\Recent" => {
-                trace!(r"\Recent flag handled by server. skipping...");
+                log::trace!(r"\Recent flag handled by server. skipping...");
                 Err(Self::Err {
                     flag: value.to_string(),
                 })
             }
             _ => {
-                trace!("Encountered unhandled Flag {value}");
+                log::trace!("Encountered unhandled Flag {value}");
                 Err(Self::Err {
                     flag: value.to_string(),
                 })

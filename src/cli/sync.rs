@@ -4,8 +4,6 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use log::{error, info, warn};
-
 use imapmaildir::{Client, Syncer, config::Account, on_local_change};
 
 pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
@@ -55,7 +53,7 @@ pub fn sync_all(config: Account, idle: bool) {
             thread_builder
                 .spawn(move || {
                     sync_mailbox(&config, &mailbox_clone, idle);
-                    info!("finished syncing {mailbox_clone}");
+                    log::info!("finished syncing {mailbox_clone}");
                 })
                 .expect("spawning sync thread should succeed")
         })
@@ -70,12 +68,12 @@ pub fn sync_all(config: Account, idle: bool) {
             .to_string();
         let sync_result = handle.join();
         if sync_result.is_err() {
-            error!("syncing mailbox {mailbox} failed");
+            log::error!("syncing mailbox {mailbox} failed");
             error_happened = true;
         }
     }
     if error_happened {
-        warn!("error happened during syncing mailboxes");
+        log::warn!("error happened during syncing mailboxes");
         process::exit(18);
     }
 }

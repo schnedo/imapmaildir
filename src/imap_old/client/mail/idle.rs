@@ -1,12 +1,11 @@
 use futures::StreamExt;
 use imap_proto::{MailboxDatum, Status};
-use log::{debug, trace, warn};
 
 use crate::imap::connection::{ContinuationCommand as _, SendCommand};
 
 pub async fn idle(connection: &mut impl SendCommand) -> IdleData {
     let command = "IDLE";
-    debug!("{command}");
+    log::debug!("{command}");
     let mut responses = connection.send(command.into());
     let mut idle_data = IdleData::default();
     while let Some(response) = responses.next().await {
@@ -15,14 +14,14 @@ pub async fn idle(connection: &mut impl SendCommand) -> IdleData {
             imap_proto::Response::Done {
                 status: Status::Ok, ..
             } => {
-                trace!("IDLE stopped");
+                log::trace!("IDLE stopped");
             }
             imap_proto::Response::Expunge(expunge) => {
                 idle_data.expunge = *expunge;
             }
             imap_proto::Response::MailboxData(MailboxDatum::Exists(exists)) => {
                 idle_data.exists = *exists;
-                debug!("Number of mails on server changed. Quitting IDLE for fetch");
+                log::debug!("Number of mails on server changed. Quitting IDLE for fetch");
                 responses.send("DONE").await;
             }
             imap_proto::Response::MailboxData(MailboxDatum::Recent(recent)) => {
@@ -33,10 +32,10 @@ pub async fn idle(connection: &mut impl SendCommand) -> IdleData {
                 code: None,
                 information,
             } => {
-                trace!("Received ok with information: {information:?}");
+                log::trace!("Received ok with information: {information:?}");
             }
             response => {
-                warn!("unhandled response to idle: {response:?}");
+                log::warn!("unhandled response to idle: {response:?}");
             }
         }
     }
