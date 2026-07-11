@@ -149,6 +149,8 @@ impl SelectedClient {
                         }
                     }
                     imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
+                        // todo: do not interrupt idle, if mails only got deleted (but handle
+                        // highest modseq then)
                         imap_proto::MailboxDatum::Exists(_)
                         | imap_proto::MailboxDatum::Recent(_) => {
                             let mut is_idling = is_idling.lock().await;
