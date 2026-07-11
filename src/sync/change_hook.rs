@@ -5,7 +5,7 @@ use tokio::{process::Command, sync::mpsc};
 fn debounce(
     duration: Duration,
     mut fun: impl FnMut() + Send + 'static,
-) -> impl FnMut() + Send + 'static {
+) -> impl FnMut() + Clone + Send + 'static {
     let (call_tx, mut call_rx) = mpsc::channel(1);
     tokio::spawn(async move {
         while let Some(()) = call_rx.recv().await {
@@ -43,7 +43,7 @@ fn subprocess_call(cmd: &[impl AsRef<OsStr>]) -> Box<dyn FnMut() + Send> {
         Box::new(|| {})
     }
 }
-pub fn on_local_change(cmd: &[impl AsRef<OsStr>]) -> impl FnMut() + Send + 'static {
+pub fn on_local_change(cmd: &[impl AsRef<OsStr>]) -> impl FnMut() + Clone + Send + 'static {
     log::info!("calling on_change hook");
     let mut cmd = subprocess_call(cmd);
     debounce(Duration::from_millis(100), move || {
