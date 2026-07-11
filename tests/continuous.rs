@@ -22,11 +22,13 @@ async fn test_recieve_new_remote_mail(#[future] mail_setup: MailSetup) {
     let content = b"flksajflkajf";
     server_mailbox.add_mail(content);
     assert_some!(call_rx.recv().await);
+    server_mailbox.add_mail(content);
+    assert_some!(call_rx.recv().await);
     handle.abort();
     assert_none!(call_rx.recv().await);
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let new_mails: Vec<_> = client_mails.difference(&initial_client_mails).collect();
-    assert_len_eq_x!(&new_mails, 1);
+    assert_len_eq_x!(&new_mails, 2);
     for mail in new_mails {
         assert_eq!(content, mail.content());
     }
