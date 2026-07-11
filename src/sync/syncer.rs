@@ -36,10 +36,16 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
         idle_timeout: Duration,
-        on_local_change: impl FnMut() + Send + 'static,
+        mut on_local_change: impl FnMut() + Clone + Send + 'static,
     ) -> ! {
-        let ((mut client, _), maildir_repository) =
-            Self::sync(mailbox, mail_dir, state_dir, client, on_local_change).await;
+        let ((mut client, _), maildir_repository) = Self::sync(
+            mailbox,
+            mail_dir,
+            state_dir,
+            client,
+            on_local_change.clone(),
+        )
+        .await;
         let repo = maildir_repository.clone();
         let stop_tx = client.idle_stop_tx();
 
@@ -68,6 +74,7 @@ impl Syncer {
                     log::info!("handling new local changes");
                     Self::handle_local_changes(&mut client, changes, mailbox, &maildir_repository)
                         .await;
+                    on_local_change();
                 }
                 IdleStopReason::Timeout => {
                     log::info!(
