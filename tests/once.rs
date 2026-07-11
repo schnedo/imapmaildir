@@ -3,8 +3,6 @@ pub mod fixtures;
 use std::collections::HashSet;
 
 use assertables::*;
-use imapmaildir::Client;
-use imapmaildir::Syncer;
 use rstest::*;
 
 use crate::fixtures::*;
@@ -13,22 +11,13 @@ use crate::fixtures::*;
 #[tokio::test]
 #[awt]
 async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let initial_client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
     let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mails = client_mailbox.mails().await.into_iter().collect();
     assert_eq!(initial_client_mails, client_mails);
@@ -41,21 +30,12 @@ async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_initial_sync_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     client_mail.wipe();
     let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
     let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mailbox = client_mail.mailbox("INBOX");
     let client_mails = client_mailbox.mails().await.into_iter().collect();
@@ -68,7 +48,6 @@ async fn test_initial_sync_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let mut client_mails = client_mailbox.mails().await;
@@ -77,15 +56,7 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
     assert!(mail.add_flag('D'));
     assert!(mail.has_flag('D'));
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mails = client_mailbox.mails().await;
     let mail = assert_some!(client_mails.first());
@@ -100,7 +71,6 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let server_mail = mail_setup.server_mail();
     let server_mailbox = server_mail.mailbox("INBOX");
     let mut server_mails = server_mailbox.mails().await;
@@ -109,15 +79,7 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     assert!(mail.add_flag('D'));
     assert!(mail.has_flag('D'));
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
@@ -133,7 +95,6 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let mut mail = assert_some!(client_mailbox.mail_with_flag().await);
@@ -141,15 +102,7 @@ async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
     assert!(mail.remove_flag('S'));
     assert!(!mail.has_flag('S'));
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     assert_none!(client_mailbox.mail_with_flag().await);
     let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
@@ -162,7 +115,6 @@ async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let server_mail = mail_setup.server_mail();
     let server_mailbox = server_mail.mailbox("INBOX");
     let mut mail = assert_some!(server_mailbox.mail_with_flag().await);
@@ -170,15 +122,7 @@ async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
     assert!(mail.remove_flag('S'));
     assert!(!mail.has_flag('S'));
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
@@ -192,7 +136,6 @@ async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
@@ -202,15 +145,7 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
     let content = String::from("new");
     client_mailbox.add_mail(content.as_bytes());
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
@@ -222,7 +157,6 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let initial_client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
@@ -232,15 +166,7 @@ async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
     let content = String::from("new");
     server_mailbox.add_mail(content.as_bytes());
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
@@ -251,7 +177,6 @@ async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
@@ -261,15 +186,7 @@ async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
     let mut client_mails = client_mails.into_iter();
     assert_some!(client_mails.next()).delete();
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
@@ -281,7 +198,6 @@ async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
 #[tokio::test]
 #[awt]
 async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
-    let config = mail_setup.config();
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");
     let initial_client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
@@ -291,15 +207,7 @@ async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
     let mut server_mails = server_mails.into_iter();
     assert_some!(server_mails.next()).delete();
 
-    let client = Client::login(config.connection(), config.auth()).await;
-    Syncer::sync_once(
-        "INBOX",
-        config.maildir_base_path(),
-        config.state_dir(),
-        client,
-        || {},
-    )
-    .await;
+    mail_setup.sync("INBOX").await;
 
     let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
     let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
