@@ -82,22 +82,37 @@
         lib.filterAttrs isEnabled accounts;
       enable = (builtins.length (builtins.attrNames accounts)) > 0;
 
-      mkService = name: account: {
-        "${account.imapmaildir.service.name}" = lib.mkMerge [
-          account.imapmaildir.service.extraConfig
-          {
-            Unit = {
-              Description = "mail sync via imapmaildir for account ${name}";
-            };
-            Service = {
-              Type = "exec";
-              ExecStart = "${
-                lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
-              } --account ${name} sync${lib.optionalString account.imapmaildir.idle.enable " --idle"}";
-            };
-          }
-        ];
-      };
+      mkService =
+        name: account:
+        let
+          inherit (account.imapmaildir) idle service;
+        in
+        {
+          "${service.name}" = lib.mkMerge [
+            (lib.mkIf
+              (idle.enable && !(service.extraConfig ? Install && service.extraConfig.Install ? WantedBy))
+              {
+                Install = {
+                  WantedBy = [
+                    "default.target"
+                  ];
+                };
+              }
+            )
+            service.extraConfig
+            {
+              Unit = {
+                Description = "mail sync via imapmaildir for account ${name}";
+              };
+              Service = {
+                Type = "exec";
+                ExecStart = "${
+                  lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
+                } --account ${name} sync${lib.optionalString idle.enable " --idle"}";
+              };
+            }
+          ];
+        };
 
       mkTimer =
         name: account:
