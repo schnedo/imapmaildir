@@ -270,7 +270,7 @@ impl<'a> ServerMaildir<'a> {
             storage,
             cur,
             new,
-            file_counter: RefCell::new(0),
+            file_counter: RefCell::new(100),
         }
     }
 }
