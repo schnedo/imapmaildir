@@ -2,6 +2,12 @@
 name = "imapmaildir"
 version = "0.1.0"
 edition = "2024"
+description = "Receive mail by syncing remote imap mailboxes with local maildir directories."
+license = "GPL-3.0-or-later"
+license-file = "LICENSE"
+repository = "https://github.com/schnedo/imapmaildir"
+keywords = ["idle", "mutt", "aerc"]
+categories = ["command-line-utilities", "email"]
 
 [dependencies]
 anstyle = "1.0.13"
