@@ -8,6 +8,7 @@ license-file = "LICENSE"
 repository = "https://github.com/schnedo/imapmaildir"
 keywords = ["idle", "mutt", "aerc"]
 categories = ["command-line-utilities", "email"]
+include = ["/src/**/*.rs", "/migrations/*", "/build.rs"]
 
 [dependencies]
 anstyle = "1.0.13"
