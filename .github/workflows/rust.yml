@@ -5,14 +5,8 @@ on:
   pull_request:
     branches:
       - "main"
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/rust.yml"
-      - "src/**"
-      - "tests/**"
-      - "build.rs"
-      - "clippy.toml"
+  push:
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,7 +14,27 @@ env:
   SKIP_SHELL_HOOK: 1
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            rust:
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - ".github/workflows/rust.yml"
+              - "src/**"
+              - "tests/**"
+              - "build.rs"
+              - "clippy.toml"
+
   build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -45,3 +59,18 @@ jobs:
         run: nix develop -c cargo nextest run --profile ci
       - name: Lint
         run: nix develop -c cargo clippy --all-targets --all-features
+
+  required-checks-passed:
+    needs: [detect-changes, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check status
+        run: |-
+          if [ "${{ needs.detect-changes.outputs.rust }}" == "true" ] \
+          && [ "${{ needs.build.result }}" != "success" ]; then
+            echo "Rust build failed"
+            exit 1
+          fi
+          echo "All required checks passed"
+          exit 0
