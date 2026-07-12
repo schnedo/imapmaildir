@@ -1,5 +1,7 @@
 # imapmaildir
 
+![maintenance-status](https://img.shields.io/badge/maintenance-experimental-blue.svg)
+
 `imapmaildir` is a mail client, that uses IMAP to pull the mail from your mail
 server to your local maildir directory.
 
