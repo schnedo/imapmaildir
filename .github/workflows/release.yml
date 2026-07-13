@@ -21,9 +21,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - &install-rust
-        name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - &install-nix
+        uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - &enable-cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: "${{ vars.CACHIX_CACHE }}"
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+      - &enable-devshell
+        run: nix develop
       - name: Run release-plz
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5
         with:
@@ -42,7 +50,9 @@ jobs:
       cancel-in-progress: false
     steps:
       - *checkout
-      - *install-rust
+      - *install-nix
+      - *enable-cachix
+      - *enable-devshell
       - name: Run release-plz
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5
         with:
