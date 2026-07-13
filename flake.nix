@@ -124,15 +124,15 @@
             check.enable = true;
             settings = {
               package = pkgs.prek;
-              enabledPackages = with pkgs; [
-                gitleaks
-              ];
               hooks = {
                 # keep-sorted start block=yes
                 cargo-check.enable = true;
                 clippy.enable = true;
                 gitleaks = {
                   enable = true;
+                  extraPackages = [
+                    pkgs.gitleaks
+                  ];
                   name = "Detect hardcoded secrets";
                   entry = "${lib.getExe pkgs.gitleaks} git --pre-commit --redact --staged --verbose";
                   pass_filenames = false;
