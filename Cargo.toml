@@ -1,6 +1,6 @@
 [package]
 name = "imapmaildir"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Receive mail by syncing remote imap mailboxes with local maildir directories."
 license = "GPL-3.0-or-later"
