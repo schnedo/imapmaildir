@@ -128,6 +128,17 @@
                 # keep-sorted start block=yes
                 cargo-check.enable = true;
                 clippy.enable = true;
+                commitlint = {
+                  enable = true;
+                  extraPackages = [
+                    pkgs.commitlint
+                  ];
+                  name = "Lint commit messages";
+                  entry = "${lib.getExe pkgs.commitlint} --edit";
+                  stages = [ "commit-msg" ];
+                  pass_filenames = false;
+                  always_run = true;
+                };
                 gitleaks = {
                   enable = true;
                   extraPackages = [
