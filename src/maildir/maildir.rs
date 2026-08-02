@@ -535,7 +535,7 @@ impl Maildir {
         log::trace!("deleting {}", file_path.display());
         fs::remove_file(&file_path).or_else(|e| {
             if let std::io::ErrorKind::NotFound = e.kind() {
-                log::trace!("{} already gone", &file_path.display());
+                log::trace!("{} already gone", file_path.display());
                 Ok(())
             } else {
                 Err(e)
