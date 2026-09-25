@@ -315,6 +315,7 @@ mod tests {
         "1:4",
         assert_ok!(
             SequenceSet::try_from(
+                #[expect(clippy::single_range_in_vec_init)]
                 &vec![
                     (1u32..=4u32),
                 ]
