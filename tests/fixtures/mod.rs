@@ -222,15 +222,17 @@ pub trait Maildir {
 }
 
 impl Maildir for ClientMaildir<'_> {
-    async fn mails(&'_ self) -> Vec<MailFile<'_>> {
+    fn mails(&'_ self) -> impl Future<Output = Vec<MailFile<'_>>> {
         let read_dir = assert_ok!(self.cur.read_dir());
         let mut all_mails: Vec<_> = read_dir.map(|entry| assert_ok!(entry).path()).collect();
         all_mails.sort();
 
-        all_mails
-            .into_iter()
-            .map(|mail| MailFile::new(self, None, mail))
-            .collect()
+        std::future::ready(
+            all_mails
+                .into_iter()
+                .map(|mail| MailFile::new(self, None, mail))
+                .collect(),
+        )
     }
 
     async fn mail_with_flag(&self) -> Option<MailFile<'_>> {
