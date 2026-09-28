@@ -44,8 +44,7 @@ impl Client {
         match greeting.parsed() {
             imap_proto::Response::Data {
                 status: imap_proto::Status::Ok,
-                code,
-                information,
+                outcome: imap_proto::Outcome { code, information },
             } => {
                 if let Some(information) = information {
                     log::trace!("greeting information: {information}");
@@ -72,15 +71,13 @@ impl Client {
             }
             imap_proto::Response::Data {
                 status: imap_proto::Status::Bad,
-                code: _,
-                information: _,
+                outcome: _,
             } => {
                 todo!("handle server rejecting connection");
             }
             imap_proto::Response::Data {
                 status: imap_proto::Status::PreAuth,
-                code: _,
-                information: _,
+                outcome: _,
             } => {
                 todo!("handle pre-authenticated state");
             }

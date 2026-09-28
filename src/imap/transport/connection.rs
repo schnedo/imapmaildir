@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fs, io, path::PathBuf};
+use std::{fs, io, path::PathBuf};
 
 use futures::{SinkExt, StreamExt};
 use thiserror::Error;
@@ -69,19 +69,15 @@ impl Connection {
                 tokio::select! {
                     Some((tag, command)) = outbound_rx.recv() => {
                         log::trace!("{tag:?}: sending");
-                        let request = imap_proto::Request(
-                            Cow::Borrowed(tag.as_bytes()),
-                            Cow::Borrowed(&command),
-                        );
                         stream
-                            .send(&request)
+                            .send((tag.as_bytes(), &command))
                             .await
                             .expect("sending command should succeed");
                     }
                     Some(response) = stream.next() => {
                         let response = response.expect("response should be receivable");
                         match response.parsed() {
-                            imap_proto::Response::Done { tag, status, code, information } => {
+                            imap_proto::Response::Done { tag, status, outcome: imap_proto::Outcome { code, information }} => {
                                 log::trace!("{tag:?} {status:?} {code:?}");
                                 if let Some(information) = information {
                                     log::debug!("Done response information: {information}");
@@ -106,7 +102,7 @@ impl Connection {
                                     imap_proto::Status::Bye => unreachable!("receiving tagged Bye response is not possible per specification"),
                                 }
                             } ,
-                            imap_proto::Response::Continue { code, information } => {
+                            imap_proto::Response::Continue (imap_proto::Outcome { code, information } ) => {
                                 log::trace!("+ {code:?} {information:?}");
                                 inbound_tx.send(Ok(response))
                                     .await

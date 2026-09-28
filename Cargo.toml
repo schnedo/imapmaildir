@@ -22,7 +22,7 @@ env_logger = "0.11.8"
 futures = "0.3.31"
 futures-util = "0.3.31"
 humantime-serde = "1.1.1"
-imap-proto = "0.16.5"
+imap-proto = "0.17.0"
 include_dir = "0.7.4"
 inotify = "0.11.2"
 jiff = "0.2.17"
@@ -31,7 +31,7 @@ log = { version = "0.4.27", features = [
   "release_max_level_debug",
   "std",
 ] }
-nom = "7"
+nom = "8"
 rusqlite = { version = "0.40.0", features = ["bundled"] }
 rusqlite_migration = { version = "2.4.1", features = ["from-directory"] }
 rustix = { version = "1.0.5", features = [

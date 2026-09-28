@@ -333,10 +333,10 @@ impl SelectedClient {
             .await
             .expect("sending idle should succeed");
         match response.parsed() {
-            imap_proto::Response::Continue {
+            imap_proto::Response::Continue(imap_proto::Outcome {
                 code: _,
                 information: _,
-            } => log::trace!("idling for up to {} seconds", timeout.as_secs()),
+            }) => log::trace!("idling for up to {} seconds", timeout.as_secs()),
             _ => todo!("handle idle no continuation"),
         }
         let stop_reason = tokio::select! {

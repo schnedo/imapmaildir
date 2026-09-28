@@ -36,7 +36,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use nom::{self, Needed};
 use tokio_util::codec::{Decoder, Encoder};
 
-use imap_proto::types::{Request, Response};
+use imap_proto::Response;
 
 #[derive(Default)]
 pub struct ImapCodec {
@@ -50,7 +50,7 @@ impl Decoder for ImapCodec {
         if self.decode_need_message_bytes > buf.len() {
             return Ok(None);
         }
-        let (response, rsp_len) = match imap_proto::Response::from_bytes(buf) {
+        let (response, rsp_len) = match imap_proto::Response::parse(buf) {
             Ok((remaining, response)) => {
                 // This SHOULD be acceptable/safe: BytesMut storage memory is
                 // allocated on the heap and should not move. It will not be
@@ -82,14 +82,14 @@ impl Decoder for ImapCodec {
     }
 }
 
-impl<'a> Encoder<&'a Request<'a>> for ImapCodec {
+impl<'a> Encoder<(&'a [u8], &'a [u8])> for ImapCodec {
     type Error = io::Error;
-    fn encode(&mut self, msg: &Request, dst: &mut BytesMut) -> Result<(), io::Error> {
+    fn encode(&mut self, msg: (&[u8], &[u8]), dst: &mut BytesMut) -> Result<(), io::Error> {
         if !msg.0.is_empty() {
-            dst.put(&*msg.0);
+            dst.put(msg.0);
             dst.put_u8(b' ');
         }
-        dst.put_slice(&msg.1);
+        dst.put_slice(msg.1);
         dst.put_slice(b"\r\n");
         Ok(())
     }
@@ -115,7 +115,11 @@ impl ResponseData {
     }
 
     pub fn unsafe_get_tagged_response_code(&self) -> Option<&imap_proto::ResponseCode<'_>> {
-        if let Response::Done { code, .. } = self.parsed() {
+        if let Response::Done {
+            outcome: imap_proto::Outcome { code, .. },
+            ..
+        } = self.parsed()
+        {
             code.as_ref()
         } else {
             unreachable!("response is no tagged response")
