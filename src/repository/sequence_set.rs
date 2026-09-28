@@ -73,13 +73,17 @@ impl TryFrom<&RangeInclusive<u32>> for SequenceRange {
     }
 }
 
-impl TryFrom<&imap_proto::UidSetMember> for SequenceRange {
+impl TryFrom<&imap_proto::rfc4315::UidSetMember> for SequenceRange {
     type Error = <Uid as TryFrom<u32>>::Error;
 
-    fn try_from(value: &imap_proto::UidSetMember) -> std::result::Result<Self, Self::Error> {
+    fn try_from(
+        value: &imap_proto::rfc4315::UidSetMember,
+    ) -> std::result::Result<Self, Self::Error> {
         match value {
-            imap_proto::UidSetMember::UidRange(range_inclusive) => range_inclusive.try_into(),
-            imap_proto::UidSetMember::Uid(uid) => Ok(Self::single(uid.try_into()?)),
+            imap_proto::rfc4315::UidSetMember::UidRange(range_inclusive) => {
+                range_inclusive.try_into()
+            }
+            imap_proto::rfc4315::UidSetMember::Uid(uid) => Ok(Self::single(uid.try_into()?)),
         }
     }
 }
@@ -274,11 +278,11 @@ mod tests {
 
     #[rstest]
     fn test_sequence_range_from_uid_set_member_is_correct() {
-        let member = imap_proto::UidSetMember::Uid(3);
+        let member = imap_proto::rfc4315::UidSetMember::Uid(3);
         let result = assert_ok!(SequenceRange::try_from(&member));
         assert_eq!(assert_ok!(Uid::try_from(3)), result.start);
         assert_none!(result.end);
-        let member = imap_proto::UidSetMember::UidRange(3..=5);
+        let member = imap_proto::rfc4315::UidSetMember::UidRange(3..=5);
         let result = assert_ok!(SequenceRange::try_from(&member));
         assert_eq!(assert_ok!(Uid::try_from(3)), result.start);
         assert_eq!(Some(assert_ok!(Uid::try_from(5))), result.end);

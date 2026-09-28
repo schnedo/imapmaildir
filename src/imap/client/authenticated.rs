@@ -113,15 +113,21 @@ impl AuthenticatedClient {
                 }
                 imap_proto::Response::Data {
                     status: imap_proto::Status::Ok,
-                    code: None,
-                    information: Some(information),
+                    outcome:
+                        imap_proto::Outcome {
+                            code: None,
+                            information: Some(information),
+                        },
                 } => {
                     log::debug!("{information}");
                 }
                 imap_proto::Response::Data {
                     status: imap_proto::Status::Ok,
-                    code: Some(code),
-                    information,
+                    outcome:
+                        imap_proto::Outcome {
+                            code: Some(code),
+                            information,
+                        },
                 } => match code {
                     imap_proto::ResponseCode::UidValidity(validity) => {
                         let validity = validity
