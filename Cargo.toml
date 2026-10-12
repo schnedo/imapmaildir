@@ -52,12 +52,21 @@ tokio-native-tls = "0.3.1"
 tokio-util = { version = "0.7.14", features = ["codec"] }
 toml = "1.0.0"
 
+[features]
+bench = []
+
+[[bench]]
+name = "imapmaildir"
+harness = false
+required-features = ["bench"]
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -2 }
 allow_attributes = "warn"
 
 [dev-dependencies]
 assertables = "=10.1.0"
+criterion = "=0.8.2"
 derivative = "=2.2.0"
 rstest = "=0.27.0"
 tempfile = "=3.27.0"

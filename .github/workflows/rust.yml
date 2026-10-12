@@ -32,8 +32,8 @@ jobs:
       - name: Build
         run: nix develop -c cargo build --verbose
       - name: Run tests
-        # todo: have a look at criterion.rs
         # todo: have a look at cargo mutants
         run: nix develop -c cargo nextest run --profile ci
       - name: Lint
         run: nix develop -c cargo clippy --all-targets --all-features
+

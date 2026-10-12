@@ -280,7 +280,7 @@ impl Syncer {
         ((selection.client, task_tx), maildir_repository)
     }
 
-    fn setup_task_processing(
+    pub(crate) fn setup_task_processing(
         maildir_repository: MaildirRepository,
         mut task_rx: mpsc::Receiver<Task>,
         mut on_local_change: impl FnMut() + Send + 'static,

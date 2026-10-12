@@ -1,3 +1,6 @@
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench;
 pub mod config;
 mod imap;
 pub mod logging;
