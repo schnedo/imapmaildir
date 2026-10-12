@@ -54,8 +54,16 @@ jobs:
       - *enable-cachix
       - *enable-devshell
       - name: Run release-plz
+        id: release-plz
         uses: release-plz/action@f393a7b38aca9d9b4c58447b291dbac963901df6 # v0.5
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - name: Enable auto-merge on release PR
+        if: steps.release-plz.outputs.prs_created == 'true'
+        run: gh pr merge --auto --squash "$PR_NUMBER"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ fromJSON(steps.release-plz.outputs.pr).number }}
