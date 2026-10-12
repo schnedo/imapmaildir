@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "email"]
 include = ["/src/**/*.rs", "/migrations/*", "/build.rs"]
 
 [dependencies]
-anstyle = "1.0.13"
+anstyle = "1.0.14"
 anyhow = "1.0.98"
 bytes = "1.10.1"
 clap = { version = "4.5.45", features = ["derive"] }
