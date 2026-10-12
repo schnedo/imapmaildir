@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/schnedo/imapmaildir/compare/v0.1.9...v0.1.10)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate rustix to 1.1.5 - ([4bea182](https://github.com/schnedo/imapmaildir/commit/4bea182906807b7c4d9b65d0b8b189c54c79782f) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.9](https://github.com/schnedo/imapmaildir/compare/v0.1.8...v0.1.9)
 
 ### Bug Fixes
