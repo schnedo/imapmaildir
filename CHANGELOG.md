@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/schnedo/imapmaildir/compare/v0.1.3...v0.1.4)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate clap to 4.6.7 - ([ca48778](https://github.com/schnedo/imapmaildir/commit/ca487786f1c9cc04284d26fedb82a992c7400dcf) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.3](https://github.com/schnedo/imapmaildir/compare/v0.1.2...v0.1.3)
 
 ### Bug Fixes
