@@ -10,16 +10,20 @@ use std::{
 };
 
 use assertables::*;
+use compio::runtime::JoinHandle;
+use crossfire::{
+    AsyncRx,
+    mpsc::{self, Array},
+};
 use derivative::Derivative;
 use imapmaildir::{Client, Syncer, config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
-    ContainerAsync, GenericImage, ImageExt,
+    Container, GenericImage, ImageExt,
     core::{AccessMode, ContainerPort, ExecCommand, Mount, WaitFor},
-    runners::AsyncRunner,
+    runners::SyncRunner,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
 
 const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
 
@@ -279,39 +283,38 @@ impl<'a> ServerMaildir<'a> {
 }
 
 impl Maildir for ServerMaildir<'_> {
-    async fn mails(&'_ self) -> Vec<MailFile<'_>> {
+    fn mails(&'_ self) -> impl Future<Output = Vec<MailFile<'_>>> {
         let read_dir = assert_ok!(self.cur.read_dir());
         let mut all_mails: Vec<_> = read_dir.map(|entry| assert_ok!(entry).path()).collect();
         all_mails.sort();
         let index_location = assert_some!(self.cur.parent());
-        assert_ok!(
-            self.storage
-                .container
-                .exec(ExecCommand::new([
-                    "rm",
-                    assert_some!(index_location.join("dovecot-uidlist*").to_str()),
-                    assert_some!(index_location.join("dovecot.index*").to_str()),
-                    "&&",
-                    "doveadm",
-                    "index",
-                    "-u",
-                    "user",
-                    "'*'"
-                ]))
-                .await
-        );
+        assert_ok!(self.storage.container.exec(ExecCommand::new([
+            "rm",
+            assert_some!(index_location.join("dovecot-uidlist*").to_str()),
+            assert_some!(index_location.join("dovecot.index*").to_str()),
+            "&&",
+            "doveadm",
+            "index",
+            "-u",
+            "user",
+            "'*'"
+        ])));
         let uidlist = UidList::new(&self.storage.dir().join("dovecot-uidlist"));
 
-        all_mails
-            .into_iter()
-            .map(|mail| {
-                MailFile::new(
-                    self,
-                    Some(uidlist.get_uid(assert_some!(assert_some!(mail.file_name()).to_str()))),
-                    mail,
-                )
-            })
-            .collect()
+        std::future::ready(
+            all_mails
+                .into_iter()
+                .map(|mail| {
+                    MailFile::new(
+                        self,
+                        Some(
+                            uidlist.get_uid(assert_some!(assert_some!(mail.file_name()).to_str())),
+                        ),
+                        mail,
+                    )
+                })
+                .collect(),
+        )
     }
 
     async fn mail_with_flag(&self) -> Option<MailFile<'_>> {
@@ -346,7 +349,7 @@ impl MailStorage for ClientMailStorage<'_> {
 
 pub struct ServerMailStorage {
     dir: PathBuf,
-    container: ContainerAsync<GenericImage>,
+    container: Container<GenericImage>,
 }
 
 impl MailStorage for ServerMailStorage {
@@ -413,15 +416,15 @@ impl MailSetup {
         .await;
     }
 
-    pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, mpsc::Receiver<()>) {
-        let (call_tx, call_rx) = mpsc::channel(1);
+    pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
+        let (call_tx, call_rx) = mpsc::bounded_async(1);
         let config = self.config();
         let maildir_base_path = config.maildir_base_path().clone();
         let state_dir = config.state_dir().clone();
         let idle_timout = config.idle_timout();
         let client = Client::login(config.connection(), config.auth()).await;
         let mailbox = mailbox.to_string();
-        let handle = tokio::spawn(async move {
+        let handle = compio::runtime::spawn(async move {
             Syncer::sync_continuously(
                 &mailbox,
                 &maildir_base_path,
@@ -431,9 +434,10 @@ impl MailSetup {
                 move || {
                     eprintln!("calling onchange");
                     let call = call_tx.clone();
-                    tokio::spawn(async move {
+                    compio::runtime::spawn(async move {
                         assert_ok!(call.send(()).await);
-                    });
+                    })
+                    .detach();
                 },
             )
             .await;
@@ -494,7 +498,6 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             ))
             .with_env_var("USER_PASSWORD", &password)
             .start()
-            .await
     );
 
     MailSetup {
@@ -503,8 +506,8 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
                 "user".to_string(),
                 vec!["echo".to_string(), password],
             )),
-            assert_ok!(container.get_host().await).to_string(),
-            assert_ok!(container.get_host_port_ipv4(IMAPS_PORT).await),
+            assert_ok!(container.get_host()).to_string(),
+            assert_ok!(container.get_host_port_ipv4(IMAPS_PORT)),
             Some(PathBuf::from(CERTIFICATE_PATH)),
             vec!["INBOX".to_string(), "DRAFT".to_string()],
             client_base_path.clone(),

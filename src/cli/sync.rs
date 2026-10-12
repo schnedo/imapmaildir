@@ -7,11 +7,7 @@ use std::{
 use imapmaildir::{Client, Syncer, config::Account, on_local_change};
 
 pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .expect("tokio runtime should be buildable");
+    let rt = compio::runtime::Runtime::new().expect("compio runtime should be buildable");
 
     rt.block_on(async {
         let client = Client::login(config.connection(), config.auth()).await;

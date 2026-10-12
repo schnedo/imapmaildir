@@ -32,9 +32,9 @@
 use std::io;
 use std::mem;
 
+use asynchronous_codec::{Decoder, Encoder};
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{self, Needed};
-use tokio_util::codec::{Decoder, Encoder};
 
 use imap_proto::Response;
 
@@ -82,7 +82,8 @@ impl Decoder for ImapCodec {
     }
 }
 
-impl<'a> Encoder<(&'a [u8], &'a [u8])> for ImapCodec {
+impl Encoder for ImapCodec {
+    type Item<'a> = (&'a [u8], &'a [u8]);
     type Error = io::Error;
     fn encode(&mut self, msg: (&[u8], &[u8]), dst: &mut BytesMut) -> Result<(), io::Error> {
         if !msg.0.is_empty() {

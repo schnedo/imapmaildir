@@ -1,7 +1,10 @@
+use crossfire::{
+    AsyncRx,
+    mpsc::{self, Array},
+};
 use enumflags2::BitFlags;
 use std::{collections::HashMap, io, path::Path, time::Duration};
 use thiserror::Error;
-use tokio::sync::mpsc;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
@@ -79,14 +82,14 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn watch(self) -> mpsc::Receiver<LocalChanges> {
+    pub async fn watch(self) -> AsyncRx<Array<LocalChanges>> {
         log::debug!("listening for maildir mail changes");
-        let (changes_tx, changes_rx) = mpsc::channel(1);
+        let (changes_tx, changes_rx) = mpsc::bounded_async(1);
         let size = 32;
         let this = self.clone();
-        let mut rx = self.maildir.watch(size).await;
+        let rx = self.maildir.watch(size).await;
 
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             loop {
                 let mut deletions = Vec::new();
                 let mut news = Vec::new();
@@ -108,15 +111,10 @@ impl MaildirRepository {
                     .expect("getting highest modseq should succeed");
                 handle_change(change);
 
-                loop {
-                    tokio::select! {
-                        () = tokio::time::sleep(Duration::from_millis(100)) => {
-                        break;
-                    }
-                        Some(change) = rx.recv() => {
-                            handle_change(change);
-                        }
-                    }
+                while let Ok(Ok(change)) =
+                    compio::time::timeout(Duration::from_millis(100), rx.recv()).await
+                {
+                    handle_change(change);
                 }
                 changes_tx
                     .send(LocalChanges {
@@ -128,7 +126,8 @@ impl MaildirRepository {
                     .await
                     .expect("changes_tx should still be open");
             }
-        });
+        })
+        .detach();
 
         changes_rx
     }
@@ -282,12 +281,12 @@ impl MaildirRepository {
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
         let mut news: Vec<LocalMail> = Vec::new();
-        let mut maildir_metadata = self.maildir.list_cur()?;
+        let maildir_metadata = self.maildir.list_cur()?;
 
         // todo: use Set instead of Map
         let mut maildir_mails = HashMap::new();
 
-        while let Some(metadata) = maildir_metadata.recv().await {
+        while let Ok(metadata) = maildir_metadata.recv().await {
             let metadata = metadata?;
             match metadata {
                 maildir::MaildirEntry::New(new_local_mail_metadata) => {
@@ -649,7 +648,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_uid_validity_returns_uid_validity(
         repo: TestMaildirRepository,
         uid_validity: UidValidity,
@@ -660,7 +659,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_highest_modseq_returns_highest_modseq(
         repo: TestMaildirRepository,
         highest_modseq: ModSeq,
@@ -671,7 +670,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_set_highest_modseq_sets_highes_modseq(repo: TestMaildirRepository) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(1));
@@ -682,7 +681,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_update_highest_modseq_updates_highest_modseq(repo: TestMaildirRepository) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(999));
@@ -693,44 +692,44 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_store_stores_new_mail(repo: TestMaildirRepository, mail: RemoteMail) {
         let uid = mail.metadata().uid();
-        assert_none!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
+        assert_err!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
 
         assert_ok!(repo.repo.store(&mail).await);
 
-        let mut list_rx = assert_ok!(repo.repo.maildir.list_cur());
-        assert_ok!(assert_some!(list_rx.recv().await));
-        assert_none!(list_rx.recv().await);
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_ok!(list_rx.recv().await));
+        assert_err!(list_rx.recv().await);
 
         assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_store_does_not_store_new_mail_if_mail_with_same_uid_already_present(
         #[future] repo_with_mail: RepoWithMail,
     ) {
         let RepoWithMail { repo, mail, .. } = repo_with_mail;
         let uid = mail.metadata().uid();
-        let mut list_rx = assert_ok!(repo.repo.maildir.list_cur());
-        assert_ok!(assert_some!(list_rx.recv().await));
-        assert_none!(list_rx.recv().await);
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_ok!(list_rx.recv().await));
+        assert_err!(list_rx.recv().await);
         assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
 
         assert_ok!(repo.repo.store(&mail).await);
 
-        let mut list_rx = assert_ok!(repo.repo.maildir.list_cur());
-        assert_ok!(assert_some!(list_rx.recv().await));
-        assert_none!(list_rx.recv().await);
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_ok!(list_rx.recv().await));
+        assert_err!(list_rx.recv().await);
 
         assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_store_propagaters_maildir_error(repo: TestMaildirRepository, mail: RemoteMail) {
         assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
 
@@ -740,7 +739,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_update_flags_updates_flags(#[future] repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
@@ -752,7 +751,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_update_flags_errors_on_non_existent_mail(
         repo: TestMaildirRepository,
         mail: RemoteMail,
@@ -765,7 +764,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_add_flag_adds_flag(#[future] repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
@@ -782,7 +781,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_add_flag_does_nothing_if_flag_is_already_present(
         #[future] repo_with_mail: RepoWithMail,
@@ -801,7 +800,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_add_flag_errors_on_non_existent_mail(
         repo: TestMaildirRepository,
         mail: RemoteMail,
@@ -813,7 +812,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_add_flag_removes_mail_state_if_mail_is_not_in_maildir(
         #[future] repo_with_mail: RepoWithMail,
@@ -837,7 +836,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_remove_flag_removes_flag(#[future] repo_with_mail: RepoWithMail) {
         let metadata = repo_with_mail.mail.metadata();
@@ -854,7 +853,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_remove_flag_does_nothing_if_flag_is_not_present(
         #[future] repo_with_mail: RepoWithMail,
@@ -873,7 +872,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_remove_flag_errors_on_non_existent_mail(
         repo: TestMaildirRepository,
         mail: RemoteMail,
@@ -885,12 +884,12 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_delete_deletes_mail(#[future] repo_with_mail: RepoWithMail) {
         let uid = repo_with_mail.mail.metadata().uid();
         assert_ok!(repo_with_mail.repo.repo.delete(uid).await);
-        assert_none!(
+        assert_err!(
             assert_ok!(repo_with_mail.repo.repo.maildir.list_cur())
                 .recv()
                 .await
@@ -899,13 +898,13 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_delete_does_nothing_on_mail_missing_in_state(repo: TestMaildirRepository) {
         assert_ok!(repo.repo.delete(Uid::MAX).await);
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_add_synced_adds_synced_mail(repo: TestMaildirRepository) {
         let filename = "foo:2,S";
         let metadata = assert_ok!(NewLocalMailMetadata::from_str(filename));
@@ -928,7 +927,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_detect_changes_has_nothing_on_no_changes(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
@@ -944,7 +943,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_detect_changes_detects_new_mail(#[future] repo_with_mail: RepoWithMail) {
         let expected_content = "1";
@@ -979,7 +978,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_detect_changes_detects_new_mail_without_uid(
         #[future] repo_with_mail: RepoWithMail,
@@ -1004,7 +1003,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_detect_changes_detects_flag_changes(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
@@ -1041,7 +1040,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     #[awt]
     async fn test_detect_changes_detects_deleted_mail(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;

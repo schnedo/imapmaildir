@@ -1,8 +1,12 @@
 use std::mem::transmute;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{io::Write as _, sync::Arc};
 
-use tokio::sync::{Mutex, mpsc};
+use crossfire::{
+    AsyncRx, MAsyncTx,
+    mpsc::{self, Array},
+};
+use futures::lock::Mutex;
 
 use crate::maildir::LocalChanges;
 use crate::{
@@ -26,16 +30,16 @@ pub enum IdleStopReason {
 pub struct SelectedClient {
     connection: Connection,
     idling: Arc<Mutex<bool>>,
-    idle_stop_rx: mpsc::Receiver<IdleStopReason>,
-    idle_stop_tx: mpsc::Sender<IdleStopReason>,
+    idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
+    idle_stop_tx: MAsyncTx<Array<IdleStopReason>>,
 }
 impl SelectedClient {
     #[expect(clippy::too_many_lines)]
     pub fn new(
         connection: Connection,
         capabilities: &Capabilities,
-        mut untagged_response_receiver: mpsc::Receiver<ResponseData>,
-        task_tx: mpsc::Sender<Task>,
+        untagged_response_receiver: AsyncRx<Array<ResponseData>>,
+        task_tx: MAsyncTx<Array<Task>>,
     ) -> Self {
         assert!(
             capabilities.contains(Capability::LiteralPlus),
@@ -47,11 +51,11 @@ impl SelectedClient {
         );
         let idling = Arc::new(Mutex::new(false));
         let is_idling = idling.clone();
-        let (stop_tx, idle_stop_rx) = mpsc::channel(1);
+        let (stop_tx, idle_stop_rx) = mpsc::bounded_async(1);
         let idle_stop_tx = stop_tx.clone();
 
-        tokio::spawn(async move {
-            while let Some(response) = untagged_response_receiver.recv().await {
+        compio::runtime::spawn(async move {
+            while let Ok(response) = untagged_response_receiver.recv().await {
                 match response.parsed() {
                     imap_proto::Response::Fetch(_, attributes) => {
                         match attributes.as_slice() {
@@ -177,7 +181,7 @@ impl SelectedClient {
                     }
                 }
             }
-        });
+        }).detach();
 
         Self {
             connection,
@@ -219,8 +223,8 @@ impl SelectedClient {
         &mut self,
         mailbox: &str,
         mut mails: impl Iterator<Item = LocalMail>,
-    ) -> mpsc::Receiver<(Uid, NewLocalMailMetadata)> {
-        let (info_tx, mut info_rx) = mpsc::channel(32);
+    ) -> AsyncRx<Array<(Uid, NewLocalMailMetadata)>> {
+        let (info_tx, info_rx) = mpsc::bounded_async(32);
         if let Some(mail) = mails.next() {
             let command = format!("APPEND {mailbox}");
             log::debug!("{command}");
@@ -249,7 +253,7 @@ impl SelectedClient {
                         .collect();
                     let uid_ranges = uid_ranges.expect("received uids should be valid");
 
-                    tokio::spawn(async move {
+                    compio::runtime::spawn(async move {
                         futures::future::join_all(
                             uid_ranges
                                 .into_iter()
@@ -258,7 +262,8 @@ impl SelectedClient {
                                 .map(|info| info_tx.send(info)),
                         )
                         .await
-                    });
+                    })
+                    .detach();
                 } else {
                     unreachable!("response code of APPEND should be AppendUid");
                 }
@@ -266,7 +271,7 @@ impl SelectedClient {
                 unreachable!("response to APPEND should have a response code");
             }
         } else {
-            info_rx.close();
+            drop(info_tx);
         }
 
         info_rx
@@ -318,7 +323,7 @@ impl SelectedClient {
             .expect("sending uid expunge should succeed");
     }
 
-    pub fn idle_stop_tx(&self) -> mpsc::Sender<IdleStopReason> {
+    pub fn idle_stop_tx(&self) -> MAsyncTx<Array<IdleStopReason>> {
         self.idle_stop_tx.clone()
     }
 
@@ -326,7 +331,7 @@ impl SelectedClient {
         let command = "IDLE";
         log::debug!("{command}");
         *self.idling.lock().await = true;
-        let timeout_handle = tokio::spawn(tokio::time::sleep(timeout));
+        let deadline = Instant::now() + timeout;
         let response = self
             .connection
             .send(command.into())
@@ -339,17 +344,14 @@ impl SelectedClient {
             }) => log::trace!("idling for up to {} seconds", timeout.as_secs()),
             _ => todo!("handle idle no continuation"),
         }
-        let stop_reason = tokio::select! {
-            stop = self.idle_stop_rx.recv() => {
+        let stop_reason =
+            if let Ok(stop) = compio::time::timeout_at(deadline, self.idle_stop_rx.recv()).await {
                 stop.expect("idle stop channel should still be open")
-            }
-            timeout = timeout_handle => {
-                timeout.expect("idle timeout should not fail");
+            } else {
                 log::debug!("idle timed out");
 
                 IdleStopReason::Timeout
-            }
-        };
+            };
         let command = "DONE";
         log::debug!("{command}");
         self.connection

@@ -1,4 +1,8 @@
-use tokio::sync::mpsc;
+use crossfire::{
+    AsyncRx, MAsyncTx,
+    mpsc::{self, Array},
+};
+use futures::FutureExt as _;
 
 use crate::{
     imap::{
@@ -15,7 +19,7 @@ use crate::{
 
 pub struct AuthenticatedClient {
     connection: Connection,
-    untagged_response_receiver: mpsc::Receiver<ResponseData>,
+    untagged_response_receiver: AsyncRx<Array<ResponseData>>,
     capabilities: Capabilities,
 }
 
@@ -23,7 +27,7 @@ impl AuthenticatedClient {
     pub fn new(
         connection: Connection,
         capabilities: Capabilities,
-        untagged_response_receiver: mpsc::Receiver<ResponseData>,
+        untagged_response_receiver: AsyncRx<Array<ResponseData>>,
     ) -> Self {
         assert!(
             capabilities.contains(Capability::Condstore),
@@ -44,7 +48,7 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(self, task_tx: mpsc::Sender<Task>, mailbox: &str) -> Selection {
+    pub async fn select(self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
         self.do_select(task_tx, &command, None).await
@@ -52,7 +56,7 @@ impl AuthenticatedClient {
 
     pub async fn qresync_select(
         mut self,
-        task_tx: mpsc::Sender<Task>,
+        task_tx: MAsyncTx<Array<Task>>,
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
@@ -71,14 +75,14 @@ impl AuthenticatedClient {
     #[expect(clippy::too_many_lines)]
     async fn do_select(
         mut self,
-        task_tx: mpsc::Sender<Task>,
+        task_tx: MAsyncTx<Array<Task>>,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {
         log::debug!("{command}");
 
-        let (send_done_tx, mut send_done_rx) = mpsc::channel::<()>(1);
-        let receive_handle = tokio::spawn(async move {
+        let (send_done_tx, send_done_rx) = mpsc::bounded_async::<()>(1);
+        let receive_handle = compio::runtime::spawn(async move {
             log::trace!("running receive task for select response");
             let mut new_mailbox = MailboxMetadataBuilder::default();
 
@@ -208,18 +212,16 @@ impl AuthenticatedClient {
                 }
             };
             loop {
-                tokio::select! {
-                    None = send_done_rx.recv() => {
-                        break;
+                futures::select_biased! {
+                    response = self.untagged_response_receiver.recv().fuse() => {
+                        handle_response(response.expect("untagged response channel should still be open"));
                     }
-                    Some(response) = self.untagged_response_receiver.recv() => {
-                        handle_response(response);
+                    _ = send_done_rx.recv().fuse() => {
+                        break;
                     }
                 }
             }
-            while !self.untagged_response_receiver.is_empty()
-                && let Some(response) = self.untagged_response_receiver.recv().await
-            {
+            while let Ok(response) = self.untagged_response_receiver.try_recv() {
                 handle_response(response);
             }
 

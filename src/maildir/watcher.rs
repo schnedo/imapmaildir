@@ -1,25 +1,36 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
+    io,
+    os::fd::AsFd as _,
     path::Path,
     sync::Arc,
     time::Duration,
 };
 
-use futures::StreamExt;
+use compio::runtime::fd::PollFd;
+use crossfire::{
+    AsyncRx, MAsyncTx,
+    mpsc::{self, Array},
+};
+use futures::lock::Mutex;
 use inotify::{EventMask, Inotify, WatchMask};
-use tokio::sync::{Mutex, mpsc};
+
+enum WatchEvent {
+    Inotify(inotify::Event<OsString>),
+    MoveTimeout(u32, EventMask),
+}
 
 #[derive(Debug, Clone)]
 pub struct Watch {
     ignore_files: Arc<Mutex<HashSet<OsString>>>,
 }
 impl Watch {
-    pub fn new(path: &Path, buffer_size: usize) -> (Self, mpsc::Receiver<Change>) {
-        let (change_tx, change_rx) = mpsc::channel(buffer_size);
+    pub fn new(path: &Path, buffer_size: usize) -> (Self, AsyncRx<Array<Change>>) {
+        let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
         let ignore_files = Arc::new(Mutex::new(HashSet::new()));
-        let inotfy = Inotify::init().expect("initializing inotify should succeed");
-        inotfy
+        let inotify = Inotify::init().expect("initializing inotify should succeed");
+        inotify
             .watches()
             .add(
                 path,
@@ -27,18 +38,15 @@ impl Watch {
             )
             .expect("adding cur watch should succeed");
 
-        let ignored = ignore_files.clone();
-        tokio::spawn(async move {
-            let mut buf = [0; 1024];
-            let mut stream = inotfy
-                .into_event_stream(&mut buf)
-                .expect("creating inotfy event stream should succeed");
+        let (event_tx, event_rx) = mpsc::bounded_async(32);
+        Self::spawn_inotify_reader(inotify, event_tx.clone());
 
+        let ignored = ignore_files.clone();
+        compio::runtime::spawn(async move {
             let mut move_matches: HashMap<u32, OsString> = HashMap::new();
-            let (timedout_tx, mut timedout_rx) = mpsc::channel(32);
-            loop {
-                tokio::select! {
-                    Some((cookie, mask)) = timedout_rx.recv() => {
+            while let Ok(watch_event) = event_rx.recv().await {
+                match watch_event {
+                    WatchEvent::MoveTimeout(cookie, mask) => {
                         log::trace!("file {cookie:?} timed out");
                         if let Some(filename) = move_matches.remove(&cookie) {
                             let mut ignored = ignored.lock().await;
@@ -55,16 +63,24 @@ impl Watch {
                                         .send(Change::Deletion(filename))
                                         .await
                                         .expect("change channel should still be open"),
-                                    _ => unreachable!("mask should only be defined values")
+                                    _ => unreachable!("mask should only be defined values"),
                                 }
                             }
                         }
-                    },
-                    Some(event) = stream.next() => {
-                        let event = event.expect("inotify event should be ok");
+                    }
+                    WatchEvent::Inotify(event) => {
                         log::trace!("{event:?}");
                         match event.mask {
-                            EventMask::MOVED_FROM | EventMask::MOVED_TO => Self::handle_move_event(event, &mut move_matches,&change_tx,&timedout_tx, &ignored).await,
+                            EventMask::MOVED_FROM | EventMask::MOVED_TO => {
+                                Self::handle_move_event(
+                                    event,
+                                    &mut move_matches,
+                                    &change_tx,
+                                    &event_tx,
+                                    &ignored,
+                                )
+                                .await;
+                            }
                             EventMask::DELETE => {
                                 let filename = event
                                     .name
@@ -95,14 +111,51 @@ impl Watch {
                                         .expect("change channel should still be open");
                                 }
                             }
-                            _ => unreachable!("should never recieve unregistered inotify event {event:?}"),
+                            _ => unreachable!(
+                                "should never recieve unregistered inotify event {event:?}"
+                            ),
                         }
-                    },
+                    }
                 }
             }
-        });
+        })
+        .detach();
 
         (Self { ignore_files }, change_rx)
+    }
+
+    fn spawn_inotify_reader(mut inotify: Inotify, event_tx: MAsyncTx<Array<WatchEvent>>) {
+        let inotify_fd = PollFd::new(
+            inotify
+                .as_fd()
+                .try_clone_to_owned()
+                .expect("duplicating inotify fd should succeed"),
+        )
+        .expect("polling inotify fd should be possible");
+        compio::runtime::spawn(async move {
+            let mut buf = [0; 1024];
+            loop {
+                inotify_fd
+                    .read_ready()
+                    .await
+                    .expect("waiting for inotify events should succeed");
+                let events = match inotify.read_events(&mut buf) {
+                    Ok(events) => events,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                    Err(e) => panic!("reading inotify events should succeed: {e}"),
+                };
+                for event in events {
+                    if event_tx
+                        .send(WatchEvent::Inotify(event.to_owned()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     pub async fn ignore_next_update_for_file(&self, file: &Path) {
@@ -118,8 +171,8 @@ impl Watch {
     async fn handle_move_event(
         event: inotify::Event<OsString>,
         move_matches: &mut HashMap<u32, OsString>,
-        change_tx: &mpsc::Sender<Change>,
-        timedout_tx: &mpsc::Sender<(u32, EventMask)>,
+        change_tx: &MAsyncTx<Array<Change>>,
+        event_tx: &MAsyncTx<Array<WatchEvent>>,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
     ) {
         let filename = event
@@ -152,14 +205,15 @@ impl Watch {
             }
         } else {
             move_matches.insert(event.cookie, filename);
-            let timedout_tx = timedout_tx.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                timedout_tx
-                    .send((event.cookie, event.mask))
+            let event_tx = event_tx.clone();
+            compio::runtime::spawn(async move {
+                compio::time::sleep(Duration::from_millis(50)).await;
+                event_tx
+                    .send(WatchEvent::MoveTimeout(event.cookie, event.mask))
                     .await
-                    .expect("timedout channel should still be open");
-            });
+                    .expect("watch event channel should still be open");
+            })
+            .detach();
         }
     }
 }

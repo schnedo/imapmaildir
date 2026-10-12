@@ -1,13 +1,17 @@
 use std::{fs, io, path::PathBuf};
 
-use futures::{SinkExt, StreamExt};
-use thiserror::Error;
-use tokio::{net::TcpStream, sync::mpsc};
-use tokio_native_tls::{
-    TlsConnector,
+use asynchronous_codec::{FramedRead, FramedWrite};
+use compio::{
     native_tls::{self, Certificate},
+    net::TcpStream,
+    tls::TlsConnector,
 };
-use tokio_util::codec::Framed;
+use crossfire::{
+    AsyncRx, MAsyncTx,
+    mpsc::{self, Array},
+};
+use futures::{AsyncReadExt as _, SinkExt, StreamExt};
+use thiserror::Error;
 
 use crate::{
     config,
@@ -27,14 +31,14 @@ pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
 pub struct Connection {
     tag_generator: TagGenerator,
     // todo: use impl Iterator<u8> instead of Vec<u8>
-    outbound_tx: mpsc::Sender<(String, Vec<u8>)>,
-    inbound_rx: mpsc::Receiver<SendReturnValue>,
+    outbound_tx: MAsyncTx<Array<(String, Vec<u8>)>>,
+    inbound_rx: AsyncRx<Array<SendReturnValue>>,
 }
 
 impl Connection {
     pub async fn start(
         connection_config: &config::Connection,
-        untagged_response_sender: mpsc::Sender<ResponseData>,
+        untagged_response_sender: MAsyncTx<Array<ResponseData>>,
     ) -> Result<Self, Error> {
         log::debug!("Connecting to server");
         let mut tls = native_tls::TlsConnector::builder();
@@ -60,66 +64,67 @@ impl Connection {
         let stream = (tls.connect(host, stream).await)
             .map_err(|e| Error::TlsError(TlsError::Validation(e)))?;
 
-        let mut stream = Framed::new(stream, ImapCodec::default());
-        let (outbound_tx, mut outbound_rx) = mpsc::channel::<(String, Vec<u8>)>(30);
-        let (inbound_tx, inbound_rx) = mpsc::channel::<SendReturnValue>(30);
+        let (reader, writer) = stream.split();
+        let mut reader = FramedRead::new(reader, ImapCodec::default());
+        let mut writer = FramedWrite::new(writer, ImapCodec::default());
+        let (outbound_tx, outbound_rx) = mpsc::bounded_async::<(String, Vec<u8>)>(30);
+        let (inbound_tx, inbound_rx) = mpsc::bounded_async::<SendReturnValue>(30);
 
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    Some((tag, command)) = outbound_rx.recv() => {
-                        log::trace!("{tag:?}: sending");
-                        stream
-                            .send((tag.as_bytes(), &command))
-                            .await
-                            .expect("sending command should succeed");
-                    }
-                    Some(response) = stream.next() => {
-                        let response = response.expect("response should be receivable");
-                        match response.parsed() {
-                            imap_proto::Response::Done { tag, status, outcome: imap_proto::Outcome { code, information }} => {
-                                log::trace!("{tag:?} {status:?} {code:?}");
-                                if let Some(information) = information {
-                                    log::debug!("Done response information: {information}");
-                                }
-                                match status {
-                                    imap_proto::Status::Ok => {
-                                        inbound_tx.send(Ok(response))
-                                            .await
-                                            .expect("sending response out of network task should succeed");
-                                    }
-                                    imap_proto::Status::No => {
-                                        inbound_tx.send(Err(TaggedResponseError::No{}))
-                                            .await
-                                            .expect("sending response out of network task should succeed");
-                                    },
-                                    imap_proto::Status::Bad => {
-                                        inbound_tx.send(Err(TaggedResponseError::Bad{}))
-                                            .await
-                                            .expect("sending response out of network task should succeed");
-                                    },
-                                    imap_proto::Status::PreAuth => unreachable!("receiving tagged PreAuth response is not possible per specification"),
-                                    imap_proto::Status::Bye => unreachable!("receiving tagged Bye response is not possible per specification"),
-                                }
-                            } ,
-                            imap_proto::Response::Continue (imap_proto::Outcome { code, information } ) => {
-                                log::trace!("+ {code:?} {information:?}");
+        compio::runtime::spawn(async move {
+            while let Ok((tag, command)) = outbound_rx.recv().await {
+                log::trace!("{tag:?}: sending");
+                writer
+                    .send((tag.as_bytes(), &command))
+                    .await
+                    .expect("sending command should succeed");
+            }
+            log::debug!("Command channel closed. Stopping request handling");
+        })
+        .detach();
+
+        compio::runtime::spawn(async move {
+            while let Some(response) = reader.next().await {
+                let response = response.expect("response should be receivable");
+                match response.parsed() {
+                    imap_proto::Response::Done { tag, status, outcome: imap_proto::Outcome { code, information }} => {
+                        log::trace!("{tag:?} {status:?} {code:?}");
+                        if let Some(information) = information {
+                            log::debug!("Done response information: {information}");
+                        }
+                        match status {
+                            imap_proto::Status::Ok => {
                                 inbound_tx.send(Ok(response))
                                     .await
                                     .expect("sending response out of network task should succeed");
+                            }
+                            imap_proto::Status::No => {
+                                inbound_tx.send(Err(TaggedResponseError::No{}))
+                                    .await
+                                    .expect("sending response out of network task should succeed");
                             },
-                            _ => {
-                                untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
+                            imap_proto::Status::Bad => {
+                                inbound_tx.send(Err(TaggedResponseError::Bad{}))
+                                    .await
+                                    .expect("sending response out of network task should succeed");
                             },
+                            imap_proto::Status::PreAuth => unreachable!("receiving tagged PreAuth response is not possible per specification"),
+                            imap_proto::Status::Bye => unreachable!("receiving tagged Bye response is not possible per specification"),
                         }
-                    }
-                    else => {
-                        log::debug!("Connection to server has shut down. Stopping response handling");
-                        break;
-                    }
+                    } ,
+                    imap_proto::Response::Continue (imap_proto::Outcome { code, information } ) => {
+                        log::trace!("+ {code:?} {information:?}");
+                        inbound_tx.send(Ok(response))
+                            .await
+                            .expect("sending response out of network task should succeed");
+                    },
+                    _ => {
+                        untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
+                    },
                 }
             }
-        });
+            log::debug!("Connection to server has shut down. Stopping response handling");
+        })
+        .detach();
 
         Ok(Self {
             tag_generator: TagGenerator::default(),
@@ -160,7 +165,7 @@ pub enum TlsError {
     )]
     NativeTls,
     #[error("Server certificate could not be validated: {0}")]
-    Validation(native_tls::Error),
+    Validation(io::Error),
 }
 
 #[derive(Debug, Error)]
@@ -188,9 +193,9 @@ mod tests {
 
     use super::*;
     use testcontainers::{
-        ContainerAsync, GenericImage, ImageExt,
+        Container, GenericImage, ImageExt,
         core::{AccessMode, ContainerPort, Mount, WaitFor},
-        runners::AsyncRunner,
+        runners::SyncRunner,
     };
 
     macro_rules! mock_path {
@@ -202,16 +207,16 @@ mod tests {
     const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
     pub struct MockServer {
-        server: ContainerAsync<GenericImage>,
+        server: Container<GenericImage>,
     }
 
     impl MockServer {
-        pub async fn hostname(&self) -> String {
-            assert_ok!(self.server.get_host().await).to_string()
+        pub fn hostname(&self) -> String {
+            assert_ok!(self.server.get_host()).to_string()
         }
 
-        pub async fn port(&self) -> u16 {
-            assert_ok!(self.server.get_host_port_ipv4(31993).await)
+        pub fn port(&self) -> u16 {
+            assert_ok!(self.server.get_host_port_ipv4(31993))
         }
     }
 
@@ -280,19 +285,18 @@ mod tests {
                     ))
                     .with_env_var("USER_PASSWORD", &password)
                     .start()
-                    .await
             ),
         }
     }
 
     #[rstest]
     #[awt]
-    #[tokio::test]
+    #[compio::test]
     async fn test_connecting_to_server_should_succeed(#[future] server: MockServer) {
-        let (tx, _) = mpsc::channel(1);
+        let (tx, _rx) = mpsc::bounded_async(1);
         let config = config::Connection::new(
-            server.hostname().await,
-            server.port().await,
+            server.hostname(),
+            server.port(),
             Some(PathBuf::from(CERTIFICATE_PATH)),
         );
         let _connection = assert_ok!(Connection::start(&config, tx,).await);
