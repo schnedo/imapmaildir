@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/schnedo/imapmaildir/compare/v0.1.8...v0.1.9)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate rusqlite_migration to 2.6.0 - ([6d251d4](https://github.com/schnedo/imapmaildir/commit/6d251d4c6fa56e7a0d4a3ce9083247b9bbcfeb13) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.8](https://github.com/schnedo/imapmaildir/compare/v0.1.7...v0.1.8)
 
 ### Bug Fixes
