@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/schnedo/imapmaildir/compare/v0.1.2...v0.1.3)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate bytes to 1.12.1 - ([9a5cf48](https://github.com/schnedo/imapmaildir/commit/9a5cf483205a9875bd4853d35e8aabaa325f6418) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.2](https://github.com/schnedo/imapmaildir/compare/v0.1.1...v0.1.2)
 
 ### Bug Fixes
