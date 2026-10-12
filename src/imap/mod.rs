@@ -13,5 +13,3 @@ pub use remote_mail::RemoteContent;
 pub use remote_mail::RemoteMail;
 pub use remote_mail::RemoteMailMetadata;
 pub use remote_mail::RemoteMailMetadataBuilder;
-#[cfg(feature = "bench")]
-pub(crate) use transport::ImapCodec;

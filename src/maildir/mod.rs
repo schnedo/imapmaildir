@@ -14,5 +14,3 @@ pub use maildir::Maildir;
 pub use maildir::MaildirFile;
 pub use maildir_repository::Error;
 pub use maildir_repository::MaildirRepository;
-#[cfg(feature = "bench")]
-pub(crate) use state::State;
