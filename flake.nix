@@ -64,6 +64,33 @@
               '';
             };
 
+            bench-check = pkgs.writeShellApplication {
+              name = "bench-check";
+              runtimeInputs = with pkgs; [
+                git
+                jq
+              ];
+              text = builtins.readFile ./scripts/bench-check.sh;
+            };
+
+            bench-compare = pkgs.writeShellApplication {
+              name = "bench-compare";
+              runtimeInputs = [
+                pkgs.git
+                self'.packages.bench-check
+              ];
+              text = builtins.readFile ./scripts/bench-compare.sh;
+            };
+
+            bench-calibrate = pkgs.writeShellApplication {
+              name = "bench-calibrate";
+              runtimeInputs = [
+                pkgs.git
+                self'.packages.bench-check
+              ];
+              text = builtins.readFile ./scripts/bench-calibrate.sh;
+            };
+
             watchCoverage = pkgs.writeShellApplication {
               name = "watchCoverage";
               runtimeInputs = with pkgs; [
@@ -95,6 +122,9 @@
                 rust-analyzer
                 rustc
                 rustfmt
+                self'.packages.bench-calibrate
+                self'.packages.bench-check
+                self'.packages.bench-compare
                 self'.packages.showDependencyGraph
                 self'.packages.watchCoverage
                 sqlitebrowser

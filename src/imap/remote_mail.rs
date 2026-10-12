@@ -49,7 +49,11 @@ impl RemoteContent {
 
     #[cfg(test)]
     pub fn from_string(value: String) -> Self {
-        let raw: Bytes = value.into();
+        Self::from_bytes(value.into())
+    }
+
+    #[cfg(any(test, feature = "bench"))]
+    pub fn from_bytes(raw: Bytes) -> Self {
         let content = unsafe {
             use std::mem::transmute;
             transmute::<&[u8], &[u8]>(raw.as_ref())
