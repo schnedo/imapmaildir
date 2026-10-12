@@ -62,7 +62,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
       - name: Enable auto-merge on release PR
         if: steps.release-plz.outputs.prs_created == 'true'
-        run: gh pr merge --auto --squash "$PR_NUMBER"
+        run: gh pr merge --auto --rebase "$PR_NUMBER"
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
           GH_REPO: ${{ github.repository }}
