@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/schnedo/imapmaildir/compare/v0.1.4...v0.1.5)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate env_logger to 0.11.11 - ([a25e4b4](https://github.com/schnedo/imapmaildir/commit/a25e4b4fd224b05720fa808361121835761822c0) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.4](https://github.com/schnedo/imapmaildir/compare/v0.1.3...v0.1.4)
 
 ### Bug Fixes
