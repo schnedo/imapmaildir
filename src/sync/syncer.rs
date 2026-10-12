@@ -6,7 +6,11 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path, time::Duration};
 
-use tokio::sync::mpsc;
+use compio::runtime::JoinHandle;
+use crossfire::{
+    AsyncRx, MAsyncTx,
+    mpsc::{self, Array},
+};
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
 
@@ -50,16 +54,17 @@ impl Syncer {
         let stop_tx = client.idle_stop_tx();
 
         log::info!("listening for mail changes...");
-        let mut local_change_rx = repo.watch().await;
-        tokio::spawn(async move {
-            while let Some(changes) = local_change_rx.recv().await {
+        let local_change_rx = repo.watch().await;
+        compio::runtime::spawn(async move {
+            while let Ok(changes) = local_change_rx.recv().await {
                 log::trace!("detected local changes {changes:?}");
                 stop_tx
                     .send(IdleStopReason::Local { changes })
                     .await
                     .expect("stop idle channel should still be open");
             }
-        });
+        })
+        .detach();
 
         loop {
             match client.idle(idle_timeout).await {
@@ -93,7 +98,7 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
         on_local_change: impl FnMut() + Send + 'static,
-    ) -> ((SelectedClient, mpsc::Sender<Task>), MaildirRepository) {
+    ) -> ((SelectedClient, MAsyncTx<Array<Task>>), MaildirRepository) {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
@@ -122,7 +127,7 @@ impl Syncer {
         client: AuthenticatedClient,
         mailbox: &str,
         on_local_change: impl FnMut() + Send + 'static,
-    ) -> (SelectedClient, mpsc::Sender<Task>) {
+    ) -> (SelectedClient, MAsyncTx<Array<Task>>) {
         let uid_validity = maildir_repository
             .uid_validity()
             .expect("getting uid_validity should succeed");
@@ -133,8 +138,8 @@ impl Syncer {
             .detect_changes()
             .await
             .expect("detecting local changes should succeed");
-        let (task_tx, task_rx) = mpsc::channel(32);
-        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
+        let (task_tx, task_rx) = mpsc::bounded_async(32);
+        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change).detach();
 
         let Selection {
             mut client,
@@ -174,9 +179,9 @@ impl Syncer {
             deletions,
             news,
         } = local_changes;
-        let mut mailinfos = client.store(mailbox, news.into_iter()).await;
+        let mailinfos = client.store(mailbox, news.into_iter()).await;
         // todo: parallelize these
-        while let Some((uid, metadata)) = mailinfos.recv().await {
+        while let Ok((uid, metadata)) = mailinfos.recv().await {
             maildir_repository
                 .add_synced(metadata, uid)
                 .await
@@ -267,14 +272,14 @@ impl Syncer {
         state_dir: &Path,
         mailbox: &str,
         on_local_change: impl FnMut() + Send + 'static,
-    ) -> ((SelectedClient, mpsc::Sender<Task>), MaildirRepository) {
-        let (task_tx, task_rx) = mpsc::channel(32);
+    ) -> ((SelectedClient, MAsyncTx<Array<Task>>), MaildirRepository) {
+        let (task_tx, task_rx) = mpsc::bounded_async(32);
         let mut selection = client.select(task_tx.clone(), mailbox).await;
 
         let maildir_repository =
             MaildirRepository::try_init(&selection.mailbox_data, mail_dir, state_dir)
                 .expect("initializing maildir repository should succeed");
-        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
+        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change).detach();
         selection.client.fetch_all().await;
 
         ((selection.client, task_tx), maildir_repository)
@@ -282,12 +287,12 @@ impl Syncer {
 
     pub(crate) fn setup_task_processing(
         maildir_repository: MaildirRepository,
-        mut task_rx: mpsc::Receiver<Task>,
+        task_rx: AsyncRx<Array<Task>>,
         mut on_local_change: impl FnMut() + Send + 'static,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
+    ) -> JoinHandle<()> {
+        compio::runtime::spawn(async move {
             log::debug!("Listening to incoming mail...");
-            while let Some(task) = task_rx.recv().await {
+            while let Ok(task) = task_rx.recv().await {
                 match task {
                     Task::NewMail(remote_mail) => {
                         maildir_repository
@@ -306,7 +311,7 @@ impl Syncer {
                         on_local_change();
                     }
                     Task::Shutdown => {
-                        task_rx.close();
+                        break;
                     }
                     Task::UpdateModseq(uid, mod_seq) => {
                         log::debug!("Setting modseq of mail {uid} to {mod_seq}");

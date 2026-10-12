@@ -1,4 +1,7 @@
-use tokio::sync::mpsc;
+use crossfire::{
+    AsyncRx,
+    mpsc::{self, Array},
+};
 
 use crate::{
     config::{self, Auth},
@@ -13,7 +16,7 @@ use crate::{
 
 pub struct Client {
     connection: Connection,
-    untagged_response_receiver: mpsc::Receiver<ResponseData>,
+    untagged_response_receiver: AsyncRx<Array<ResponseData>>,
     capabilities: Capabilities,
     auth_capabilities: AuthCapabilities,
 }
@@ -28,7 +31,7 @@ impl Client {
     }
 
     async fn connect(connection_config: &config::Connection) -> Self {
-        let (untagged_response_sender, mut untagged_response_receiver) = mpsc::channel(32);
+        let (untagged_response_sender, untagged_response_receiver) = mpsc::bounded_async(32);
         // todo: pass configured server cert file
         let mut connection = Connection::start(connection_config, untagged_response_sender)
             .await

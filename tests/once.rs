@@ -8,7 +8,7 @@ use rstest::*;
 use crate::fixtures::*;
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -27,7 +27,7 @@ async fn test_no_updates_does_nothing(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_initial_sync_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -45,7 +45,7 @@ async fn test_initial_sync_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -68,7 +68,7 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     let server_mail = mail_setup.server_mail();
@@ -92,7 +92,7 @@ async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -112,7 +112,7 @@ async fn test_removing_flag_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
     let server_mail = mail_setup.server_mail();
@@ -133,7 +133,7 @@ async fn test_syncing_removed_flag_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -154,7 +154,7 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -174,7 +174,7 @@ async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
     assert_ne!(initial_client_mails, client_mails);
 }
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
@@ -195,7 +195,7 @@ async fn test_removing_mail_works(#[future] mail_setup: MailSetup) {
 }
 
 #[rstest]
-#[tokio::test]
+#[compio::test]
 #[awt]
 async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();

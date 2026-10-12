@@ -8,13 +8,14 @@ use std::{
     sync::Arc,
 };
 
+use crossfire::{
+    AsyncRx, MAsyncTx, SendError,
+    mpsc::{self, Array},
+};
 use enumflags2::BitFlags;
+use futures::lock::Mutex;
 use rustix::path::Arg;
 use thiserror::Error;
-use tokio::sync::{
-    Mutex,
-    mpsc::{self, error::SendError},
-};
 
 use crate::{
     imap::RemoteMail,
@@ -126,14 +127,14 @@ impl Maildir {
     }
 
     #[expect(clippy::too_many_lines)]
-    pub async fn watch(self, buffer_size: usize) -> mpsc::Receiver<Change> {
-        let (change_tx, change_rx) = mpsc::channel(buffer_size);
-        let (watch, mut rx) = Watch::new(&self.cur, buffer_size);
+    pub async fn watch(self, buffer_size: usize) -> AsyncRx<Array<Change>> {
+        let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
+        let (watch, rx) = Watch::new(&self.cur, buffer_size);
         let mut my_watch = self.watch.lock().await;
         *my_watch = Some(watch);
         drop(my_watch);
-        tokio::spawn(async move {
-            while let Some(change) = rx.recv().await {
+        compio::runtime::spawn(async move {
+            while let Ok(change) = rx.recv().await {
                 log::trace!("handling filechange {change:?}");
                 match change {
                     watcher::Change::Rename { from, to } => {
@@ -235,14 +236,15 @@ impl Maildir {
                     }
                 }
             }
-        });
+        })
+        .detach();
 
         change_rx
     }
 
     async fn send_new_structured_change(
         &self,
-        change_tx: &mpsc::Sender<Change>,
+        change_tx: &MAsyncTx<Array<Change>>,
         entry: MaildirEntry,
     ) {
         let to = match entry {
@@ -263,7 +265,7 @@ impl Maildir {
     async fn send_new_unstructured_change(
         watch: &Arc<Mutex<Option<Watch>>>,
         cur: &Path,
-        change_tx: &mpsc::Sender<Change>,
+        change_tx: &MAsyncTx<Array<Change>>,
         filename: String,
     ) {
         let metadata = Self::handle_new_unstructured_file(watch, cur, filename)
@@ -306,12 +308,12 @@ impl Maildir {
         Ok(new_local_metadata)
     }
 
-    pub fn list_cur(&self) -> io::Result<mpsc::Receiver<Result<MaildirEntry, MaildirListError>>> {
+    pub fn list_cur(&self) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {
         let dir_contents = fs::read_dir(self.cur.as_path())?;
         let watch = self.watch.clone();
         let cur = self.cur.clone();
-        let (list_tx, list_rx) = mpsc::channel(32);
-        tokio::spawn(async move {
+        let (list_tx, list_rx) = mpsc::bounded_async(32);
+        compio::runtime::spawn(async move {
             for entry in dir_contents {
                 match entry {
                     Ok(entry) => {
@@ -361,7 +363,8 @@ impl Maildir {
             }
 
             Ok::<(), SendError<_>>(())
-        });
+        })
+        .detach();
 
         Ok(list_rx)
     }
@@ -785,7 +788,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_store_stores_mail(maildir: TestMaildir, new_mail: RemoteMail) {
         let maildir = maildir.maildir;
 
@@ -801,7 +804,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_store_errors_on_missing_dir(
         maildir: TestMaildir,
         new_mail: RemoteMail,
@@ -818,7 +821,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_list_cur_lists_all_mails(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let mail1 = LocalMailMetadata::new(
@@ -844,9 +847,9 @@ mod tests {
             MaildirEntry::MaybeTracked(mail2),
             MaildirEntry::New(mail3),
         ]);
-        let mut list_rx = assert_ok!(maildir.list_cur());
+        let list_rx = assert_ok!(maildir.list_cur());
         let mut result: HashSet<_> = HashSet::new();
-        while let Some(entry) = list_rx.recv().await {
+        while let Ok(entry) = list_rx.recv().await {
             let entry = assert_ok!(entry);
             result.insert(entry);
         }
@@ -855,7 +858,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_list_cur_errors_on_unreadable_cur_dir(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         assert_ok!(fs::remove_dir(&maildir.cur));
@@ -867,20 +870,20 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_list_cur_errors_on_non_utf8_filename(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let filename = OsString::from_vec(vec![255]);
         assert_ok!(fs::write(maildir.cur.join(filename), ""));
 
-        let mut result = assert_ok!(maildir.list_cur());
-        let file_read = assert_some!(result.recv().await);
+        let result = assert_ok!(maildir.list_cur());
+        let file_read = assert_ok!(result.recv().await);
         let read_error = assert_err!(file_read);
         assert_matches!(read_error, MaildirListError::InvalidFilename(_));
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_list_cur_renames_file_according_to_new_local_metadata(maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let fileprefix = "f";
@@ -888,15 +891,15 @@ mod tests {
         let metadata = NewLocalMailMetadata::new(Flag::Seen.into(), fileprefix.to_string());
         assert_ok!(fs::File::create_new(&mail));
 
-        let mut list_rx = assert_ok!(maildir.list_cur());
-        while list_rx.recv().await.is_some() {}
+        let list_rx = assert_ok!(maildir.list_cur());
+        while list_rx.recv().await.is_ok() {}
 
         assert!(!mail.exists());
         assert!(maildir.get_path_of(&metadata).exists());
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_list_cur_renames_file_with_additional_prefix_if_new_name_exists_with_different_content(
         maildir: TestMaildir,
     ) {
@@ -912,8 +915,8 @@ mod tests {
             "1".to_string() + fileprefix,
         ));
 
-        let mut list_rx = assert_ok!(maildir.list_cur());
-        while list_rx.recv().await.is_some() {}
+        let list_rx = assert_ok!(maildir.list_cur());
+        while list_rx.recv().await.is_ok() {}
 
         assert!(!mail.exists());
         assert!(existing_mail.exists());
@@ -921,7 +924,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_new_mail_errors_io_error(temp_dir: TempDir) {
         let non_existent = temp_dir.path().join("foo");
         let new = temp_dir.path().join("bar");
@@ -956,7 +959,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_renames_file(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert_ok!(fs::write(&current, ""));
@@ -971,7 +974,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_succeeds_on_missing_source_but_existing_target(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert!(!current.exists());
@@ -986,7 +989,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_succeeds_if_target_with_same_content_exists(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert_ok!(fs::write(&current, "foo"));
@@ -1001,7 +1004,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_errors_if_target_with_different_content_exists(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert_ok!(fs::write(&current, "foo"));
@@ -1023,7 +1026,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_errors_on_unwritable_target(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert_ok!(fs::write(&current, "foo"));
@@ -1044,7 +1047,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_rename_errors_on_missing_source_and_missing_target(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert!(!current.exists());
@@ -1065,7 +1068,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_update_uid_updates_uid(maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
         let (entry, content) = local_mail.unpack();
@@ -1080,7 +1083,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
         let (mut entry, content) = local_mail.unpack();
@@ -1094,7 +1097,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_delete_deletes_existing_mail(maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
         let (entry, content) = local_mail.unpack();
@@ -1105,7 +1108,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_delete_succeeds_on_already_gone_mail(
         maildir: TestMaildir,
         local_mail: LocalMail,
@@ -1118,7 +1121,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_delete_propagates_deletion_error(maildir: TestMaildir, local_mail: LocalMail) {
         let (entry, ..) = local_mail.unpack();
         let mut permissions = assert_ok!(maildir.dir.path().metadata()).permissions();
@@ -1130,7 +1133,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_remove_uid_removes_uid(maildir: TestMaildir, metadata: LocalMailMetadata) {
         let maildir = maildir.maildir;
         assert_ok!(fs::File::create_new(maildir.get_path_of(&metadata)));
@@ -1142,7 +1145,7 @@ mod tests {
     }
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_remove_uid_errors_if_new_file_with_different_content_exists(
         maildir: TestMaildir,
         metadata: LocalMailMetadata,

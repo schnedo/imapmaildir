@@ -1,43 +1,45 @@
 use std::{ffi::OsStr, time::Duration};
 
-use tokio::{process::Command, sync::mpsc};
+use compio::process::Command;
+use crossfire::mpsc;
 
 fn debounce(
     duration: Duration,
     mut fun: impl FnMut() + Send + 'static,
 ) -> impl FnMut() + Clone + Send + 'static {
-    let (call_tx, mut call_rx) = mpsc::channel(1);
-    tokio::spawn(async move {
-        while let Some(()) = call_rx.recv().await {
-            loop {
-                let called = call_rx.recv();
-                tokio::select! {
-                    Some(()) = called => {},
-                    () = tokio::time::sleep(duration) => break,
-                    else => break
-                }
-            }
+    let (call_tx, call_rx) = mpsc::bounded_async(1);
+    compio::runtime::spawn(async move {
+        while let Ok(()) = call_rx.recv().await {
+            while let Ok(Ok(())) = compio::time::timeout(duration, call_rx.recv()).await {}
             fun();
         }
-    });
+    })
+    .detach();
     move || {
         let call = call_tx.clone();
-        tokio::spawn(async move {
+        compio::runtime::spawn(async move {
             call.send(())
                 .await
                 .expect("debounce channel should still be open");
-        });
+        })
+        .detach();
     }
 }
 
 fn subprocess_call(cmd: &[impl AsRef<OsStr>]) -> Box<dyn FnMut() + Send> {
-    let mut args = cmd.iter();
+    let mut args = cmd.iter().map(|arg| arg.as_ref().to_os_string());
     if let Some(executable) = args.next() {
-        let mut cmd = Command::new(executable);
-        cmd.args(args);
+        let args: Vec<_> = args.collect();
 
         Box::new(move || {
-            tokio::spawn(cmd.status());
+            let mut cmd = Command::new(&executable);
+            cmd.args(&args);
+            compio::runtime::spawn(async move {
+                if let Err(e) = cmd.status().await {
+                    log::warn!("calling on_change hook failed: {e}");
+                }
+            })
+            .detach();
         })
     } else {
         Box::new(|| {})
@@ -59,21 +61,22 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[tokio::test]
+    #[compio::test]
     async fn test_debounce_debounces() {
-        let (called_tx, mut called_rx) = mpsc::channel(1);
+        let (called_tx, called_rx) = mpsc::bounded_async(1);
         let mut debounced = debounce(Duration::from_micros(50), move || {
             let call = called_tx.clone();
-            tokio::spawn(async move {
+            compio::runtime::spawn(async move {
                 call.send(()).await.expect("channel should be open");
-            });
+            })
+            .detach();
         });
 
         debounced();
         debounced();
         drop(debounced);
 
-        assert_some!(called_rx.recv().await);
-        assert_none!(called_rx.recv().await);
+        assert_ok!(called_rx.recv().await);
+        assert_err!(called_rx.recv().await);
     }
 }

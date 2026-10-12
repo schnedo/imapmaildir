@@ -8,11 +8,9 @@
 use std::path::Path;
 
 use bytes::Bytes;
+use compio::runtime::Runtime;
+use crossfire::mpsc;
 use enumflags2::BitFlags;
-use tokio::{
-    runtime::{Builder, Runtime},
-    sync::mpsc,
-};
 
 use crate::{
     imap::{RemoteContent, RemoteMail, RemoteMailMetadata},
@@ -22,16 +20,21 @@ use crate::{
 };
 
 #[must_use]
-pub fn runtime_info() -> &'static str {
-    "tokio:current_thread"
+pub fn runtime_info() -> String {
+    let driver = runtime().driver_type();
+    let driver = if driver.is_iouring() {
+        "io_uring"
+    } else if driver.is_polling() {
+        "poll"
+    } else {
+        "other"
+    };
+
+    format!("compio:{driver}")
 }
 
 fn runtime() -> Runtime {
-    Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .expect("runtime should be buildable")
+    Runtime::new().expect("runtime should be buildable")
 }
 
 fn uid(uid: u32) -> Uid {
@@ -135,7 +138,7 @@ impl Repo {
 
     pub fn process_new_mails(&self, mails: Vec<Mail>) {
         self.rt.block_on(async {
-            let (task_tx, task_rx) = mpsc::channel(32);
+            let (task_tx, task_rx) = mpsc::bounded_async(32);
             let processing = Syncer::setup_task_processing(self.repo.clone(), task_rx, || {});
             for mail in mails {
                 task_tx
