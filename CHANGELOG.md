@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/schnedo/imapmaildir/compare/v0.1.5...v0.1.6)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate inotify to 0.11.5 - ([0fe06a4](https://github.com/schnedo/imapmaildir/commit/0fe06a4086456a53f3ad3fba9486f5ac6070cb24) (by @renovate[bot]))
+
+### Chore
+
+
+- Add performance tests - ([1b1865b](https://github.com/schnedo/imapmaildir/commit/1b1865bba14c01c99217f015293c00ed1ab31c24) (by @schnedo))
+
+### Contributors
+
+* @schnedo
+* @renovate[bot]
+
 ## [0.1.5](https://github.com/schnedo/imapmaildir/compare/v0.1.4...v0.1.5)
 
 ### Bug Fixes
