@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/schnedo/imapmaildir/compare/v0.1.6...v0.1.7)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate jiff to 0.2.38 - ([3e4eecf](https://github.com/schnedo/imapmaildir/commit/3e4eecf502effa6134d42de43208cf302841edb8) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.6](https://github.com/schnedo/imapmaildir/compare/v0.1.5...v0.1.6)
 
 ### Bug Fixes
