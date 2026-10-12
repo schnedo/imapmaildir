@@ -1,26 +1,23 @@
 //! Facade over crate internals for `benches/imapmaildir.rs`.
 //!
-//! Rules to keep benchmark baselines comparable across an async runtime switch (tokio -> compio):
-//! - no runtime types (tokio, `tokio_util`, compio) in signatures
-//! - inputs are owned buffers (`Bytes`, `BytesMut`), as required by completion based io
+//! Rules to keep benchmark baselines comparable across async runtime changes:
+//! - no runtime types in signatures
+//! - inputs are owned buffers (`Bytes`), as required by completion based io
 //! - runtime is owned by the facade types and created outside of measured code
 
-use std::{path::Path, str::FromStr};
+use std::path::Path;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use enumflags2::BitFlags;
 use tokio::{
     runtime::{Builder, Runtime},
     sync::mpsc,
 };
-use tokio_util::codec::Decoder as _;
 
 use crate::{
-    imap::{ImapCodec, RemoteContent, RemoteMail, RemoteMailMetadata},
-    maildir::{
-        LocalMailMetadata, MaildirFile as _, MaildirRepository, NewLocalMailMetadata, State,
-    },
-    repository::{Flag, MailboxMetadata, MailboxMetadataBuilder, ModSeq, SequenceSetBuilder, Uid},
+    imap::{RemoteContent, RemoteMail, RemoteMailMetadata},
+    maildir::MaildirRepository,
+    repository::{Flag, MailboxMetadata, MailboxMetadataBuilder, ModSeq, Uid},
     sync::{Syncer, Task},
 };
 
@@ -57,49 +54,6 @@ fn mailbox_metadata() -> MailboxMetadata {
         .expect("mailbox metadata should be complete")
 }
 
-#[must_use]
-pub fn decode_all(mut buf: BytesMut) -> usize {
-    let mut codec = ImapCodec::default();
-    let mut count = 0;
-    while codec
-        .decode(&mut buf)
-        .expect("buffer should contain valid imap responses")
-        .is_some()
-    {
-        count += 1;
-    }
-
-    count
-}
-
-#[must_use]
-pub fn parse_maildir_filename(filename: &str) -> Option<u32> {
-    if let Ok(metadata) = LocalMailMetadata::from_str(filename) {
-        Some(metadata.uid().into())
-    } else {
-        NewLocalMailMetadata::from_str(filename).expect("filename should be a maildir file");
-        None
-    }
-}
-
-#[must_use]
-pub fn format_maildir_filename(uid_: u32, flags_: &str, fileprefix: String) -> String {
-    LocalMailMetadata::new(uid(uid_), flags(flags_), Some(fileprefix)).filename()
-}
-
-#[must_use]
-pub fn build_sequence_set(uids: &[u32]) -> String {
-    let mut builder = SequenceSetBuilder::default();
-    for &id in uids {
-        builder.add(uid(id));
-    }
-
-    builder
-        .build()
-        .expect("sequence set should not be empty")
-        .to_string()
-}
-
 pub struct Mail(RemoteMail);
 
 impl Mail {
@@ -113,54 +67,6 @@ impl Mail {
             ),
             RemoteContent::from_bytes(content),
         ))
-    }
-}
-
-pub struct Entry(LocalMailMetadata);
-
-impl Entry {
-    #[must_use]
-    pub fn new(uid_: u32, flags_: &str, fileprefix: String) -> Self {
-        Self(LocalMailMetadata::new(
-            uid(uid_),
-            flags(flags_),
-            Some(fileprefix),
-        ))
-    }
-}
-
-pub struct StateDb(State);
-
-impl StateDb {
-    #[must_use]
-    pub fn init(state_dir: &Path) -> Self {
-        Self(State::init(state_dir, &mailbox_metadata()).expect("state should be creatable"))
-    }
-
-    pub fn store_all(&self, entries: &[Entry]) {
-        for entry in entries {
-            self.0
-                .store(&entry.0)
-                .expect("storing entry should succeed");
-        }
-    }
-
-    pub fn update_all(&self, entries: &[Entry]) {
-        for entry in entries {
-            self.0
-                .update(&entry.0)
-                .expect("updating entry should succeed");
-        }
-    }
-
-    #[must_use]
-    pub fn count(&self) -> usize {
-        let mut count = 0;
-        self.0
-            .fore_each(|_| count += 1)
-            .expect("iterating entries should succeed");
-
-        count
     }
 }
 

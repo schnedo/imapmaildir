@@ -4,7 +4,7 @@
 # usage: bench-calibrate.sh [runs (default: 5)]
 #
 # Saves a baseline, then compares the same code against it `runs` times. The largest lower bound
-# of the 99% confidence interval per class is pure noise; suggested threshold is 1.5 times that.
+# of the 99% confidence interval is pure noise; suggested threshold is 1.5 times that.
 # Copy the suggestion into the matching profile of benches/thresholds.toml.
 set -euo pipefail
 
@@ -29,15 +29,13 @@ for run in $(seq "$runs"); do
 done
 
 summary=$(awk -F '\t' '
-  { if (!($1 in max) || $3 > max[$1]) { max[$1] = $3; bench[$1] = $2 } }
+  !seen++ || $2 > max { max = $2; bench = $1 }
   END {
-    print "| class | max noise (lower bound) | bench | suggested threshold |"
-    print "|---|---:|---|---:|"
-    for (class in max) {
-      suggestion = max[class] * 1.5
-      if (suggestion < 0.01) suggestion = 0.01
-      printf "| %s | %+.1f%% | %s | %s = %.2f |\n", class, max[class] * 100, bench[class], class, int(suggestion * 100 + 0.999) / 100
-    }
+    suggestion = max * 1.5
+    if (suggestion < 0.01) suggestion = 0.01
+    print "| max noise (lower bound) | bench | suggested threshold |"
+    print "|---:|---|---:|"
+    printf "| %+.1f%% | %s | threshold = %.2f |\n", max * 100, bench, int(suggestion * 100 + 0.999) / 100
   }
 ' "$results")
 

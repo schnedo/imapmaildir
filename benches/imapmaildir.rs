@@ -1,25 +1,18 @@
-//! Benchmarks for regression detection, see `scripts/bench-compare.sh`.
+//! Benchmarks of code paths affected by the async runtime, see `scripts/bench-compare.sh`.
 //!
 //! Bench ids are compared against baselines of other commits. Renaming a bench drops its history.
-//! Group prefixes `state/`, `repo/` and `pipeline/` are classified as io benches by
-//! `scripts/check-bench-regression.sh`, everything else as cpu benches.
 
 use std::{
-    hint::black_box,
     path::PathBuf,
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use criterion::{BatchSize, Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
-use imapmaildir::bench::{
-    Entry, Mail, Repo, StateDb, build_sequence_set, decode_all, format_maildir_filename,
-    parse_maildir_filename, runtime_info,
-};
+use imapmaildir::bench::{Mail, Repo, runtime_info};
 use tempfile::TempDir;
 
-const FILEPREFIX: &str = "1760000000.P12345N123456789.hostname";
 const IO_MAILS: u32 = 100;
 const DETECT_MAILS: u32 = 5000;
 const SLOW_MEASUREMENT_TIME: Duration = Duration::from_secs(20);
@@ -73,140 +66,8 @@ fn init_repo_with_mails(count: u32) -> (TempDir, Repo) {
     (dir, repo)
 }
 
-fn cpu(c: &mut Criterion) {
-    let mut group = c.benchmark_group("codec");
-    let mut fetch_batch = Vec::new();
-    for i in 1..=1000 {
-        fetch_batch.extend_from_slice(
-            format!("* {i} FETCH (UID {i} FLAGS (\\Seen \\Answered) MODSEQ ({i}))\r\n").as_bytes(),
-        );
-    }
-    group.throughput(Throughput::Bytes(fetch_batch.len() as u64));
-    group.bench_function("fetch_batch", |b| {
-        b.iter_batched(
-            || BytesMut::from(fetch_batch.as_slice()),
-            |buf| assert_eq!(decode_all(buf), 1000),
-            BatchSize::SmallInput,
-        );
-    });
-
-    let content = mail_content(100 * 1024);
-    let mut body = format!(
-        "* 1 FETCH (UID 1 MODSEQ (5) FLAGS (\\Seen) BODY[] {{{}}}\r\n",
-        content.len()
-    )
-    .into_bytes();
-    body.extend_from_slice(&content);
-    body.extend_from_slice(b")\r\n");
-    group.throughput(Throughput::Bytes(body.len() as u64));
-    group.bench_function("body_100KiB", |b| {
-        b.iter_batched(
-            || BytesMut::from(body.as_slice()),
-            |buf| assert_eq!(decode_all(buf), 1),
-            BatchSize::SmallInput,
-        );
-    });
-    group.finish();
-
-    let mut group = c.benchmark_group("maildir");
-    let tracked = format!("{FILEPREFIX},U=4711:2,FS");
-    let new = format!("{FILEPREFIX}:2,S");
-    group.bench_function("parse_filename", |b| {
-        b.iter(|| {
-            (
-                parse_maildir_filename(black_box(&tracked)),
-                parse_maildir_filename(black_box(&new)),
-            )
-        });
-    });
-    group.bench_function("format_filename", |b| {
-        b.iter_batched(
-            || FILEPREFIX.to_string(),
-            |prefix| format_maildir_filename(black_box(4711), black_box("FS"), prefix),
-            BatchSize::SmallInput,
-        );
-    });
-    group.finish();
-
-    let mut group = c.benchmark_group("sequence_set");
-    let contiguous: Vec<u32> = (1..=10_000).collect();
-    let sparse: Vec<u32> = (1..=10_000).filter(|uid| uid % 3 != 0).collect();
-    group.bench_function("build_contiguous_10k", |b| {
-        b.iter(|| build_sequence_set(black_box(&contiguous)));
-    });
-    group.bench_function("build_sparse_10k", |b| {
-        b.iter(|| build_sequence_set(black_box(&sparse)));
-    });
-    group.finish();
-}
-
-fn state(c: &mut Criterion) {
-    let mut group = c.benchmark_group("state");
-    group
-        .sample_size(20)
-        .sampling_mode(SamplingMode::Flat)
-        .throughput(Throughput::Elements(u64::from(IO_MAILS)));
-    let entries = |flags: &str| -> Vec<Entry> {
-        (1..=IO_MAILS)
-            .map(|uid| Entry::new(uid, flags, format!("{FILEPREFIX}{uid}")))
-            .collect()
-    };
-    group.bench_function("store", |b| {
-        b.iter_batched(
-            || {
-                let dir = temp_dir();
-                let db = StateDb::init(dir.path());
-                (dir, db, entries("S"))
-            },
-            |(dir, db, entries)| {
-                db.store_all(&entries);
-                (dir, db)
-            },
-            BatchSize::PerIteration,
-        );
-    });
-    let dir = temp_dir();
-    let db = StateDb::init(dir.path());
-    db.store_all(&entries("S"));
-    let toggled = [entries("FS"), entries("S")];
-    let iteration = AtomicU32::new(0);
-    group.bench_function("update", |b| {
-        b.iter(|| {
-            let i = iteration.fetch_add(1, Ordering::Relaxed) as usize % 2;
-            db.update_all(&toggled[i]);
-        });
-    });
-    group.bench_function("for_each", |b| {
-        b.iter(|| assert_eq!(db.count(), IO_MAILS as usize));
-    });
-    drop(db);
-    drop(dir);
-    group.finish();
-}
-
 fn repo(c: &mut Criterion) {
     println!("runtime: {}", runtime_info());
-
-    for (name, size) in [("4KiB", 4 * 1024), ("100KiB", 100 * 1024)] {
-        let mut group = c.benchmark_group("repo");
-        group
-            .sample_size(20)
-            .sampling_mode(SamplingMode::Flat)
-            .measurement_time(SLOW_MEASUREMENT_TIME)
-            .throughput(Throughput::Elements(u64::from(IO_MAILS)));
-        let content = mail_content(size);
-        group.bench_function(format!("store_{name}"), |b| {
-            b.iter_batched(
-                || (init_repo(), mails(1..=IO_MAILS, &content)),
-                |((dir, repo), mails)| {
-                    repo.store_all(mails);
-                    (dir, repo)
-                },
-                BatchSize::PerIteration,
-            );
-        });
-        group.finish();
-    }
 
     let mut group = c.benchmark_group("repo");
     group
@@ -214,6 +75,18 @@ fn repo(c: &mut Criterion) {
         .sampling_mode(SamplingMode::Flat)
         .measurement_time(SLOW_MEASUREMENT_TIME)
         .throughput(Throughput::Elements(u64::from(IO_MAILS)));
+    let content = mail_content(4 * 1024);
+    group.bench_function("store_4KiB", |b| {
+        b.iter_batched(
+            || (init_repo(), mails(1..=IO_MAILS, &content)),
+            |((dir, repo), mails)| {
+                repo.store_all(mails);
+                (dir, repo)
+            },
+            BatchSize::PerIteration,
+        );
+    });
+
     let uids: Vec<u32> = (1..=IO_MAILS).collect();
     let (dir, repo) = init_repo_with_mails(IO_MAILS);
     let modseq = AtomicU32::new(IO_MAILS + 2);
@@ -277,6 +150,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = cpu, state, repo, pipeline
+    targets = repo, pipeline
 }
 criterion_main!(benches);

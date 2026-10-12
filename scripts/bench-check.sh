@@ -3,7 +3,7 @@
 #
 # usage: bench-check.sh [--profile ci|local] [--tsv]
 #   --profile  threshold profile of benches/thresholds.toml (default: local)
-#   --tsv      print "class<TAB>bench<TAB>lower_bound" lines only, never fail (used by bench-calibrate)
+#   --tsv      print "bench<TAB>lower_bound" lines only, never fail (used by bench-calibrate)
 set -euo pipefail
 
 profile=local
@@ -28,28 +28,13 @@ done
 root=$(git rev-parse --show-toplevel)
 criterion_home=${CRITERION_HOME:-${CARGO_TARGET_DIR:-$root/target}/criterion}
 
-threshold() {
-  awk -v section="[$profile]" -v key="$1" '
-    /^\[/ { in_section = ($0 == section) }
-    in_section && $1 == key { print $3; found = 1 }
-    END { if (!found) exit 1 }
-  ' "$root/benches/thresholds.toml"
-}
-
-class() {
-  case $1 in
-  state/* | repo/* | pipeline/*) echo io ;;
-  *) echo cpu ;;
-  esac
-}
-
 if [[ $tsv == false ]]; then
-  cpu_threshold=$(threshold cpu) || {
-    echo "no cpu threshold for profile $profile" >&2
-    exit 2
-  }
-  io_threshold=$(threshold io) || {
-    echo "no io threshold for profile $profile" >&2
+  limit=$(awk -v section="[$profile]" '
+    /^\[/ { in_section = ($0 == section) }
+    in_section && $1 == "threshold" { print $3; found = 1 }
+    END { if (!found) exit 1 }
+  ' "$root/benches/thresholds.toml") || {
+    echo "no threshold for profile $profile" >&2
     exit 2
   }
 fi
@@ -67,12 +52,10 @@ for estimate in "${estimates[@]}"; do
   bench_dir=${estimate%/change/estimates.json}
   bench=$(jq -r .full_id "$bench_dir/new/benchmark.json")
   read -r mean lower upper < <(jq -r '.mean | "\(.point_estimate) \(.confidence_interval.lower_bound) \(.confidence_interval.upper_bound)"' "$estimate")
-  bench_class=$(class "$bench")
   if [[ $tsv == true ]]; then
-    printf '%s\t%s\t%s\n' "$bench_class" "$bench" "$lower"
+    printf '%s\t%s\n' "$bench" "$lower"
     continue
   fi
-  if [[ $bench_class == io ]]; then limit=$io_threshold; else limit=$cpu_threshold; fi
   if awk -v lower="$lower" -v limit="$limit" 'BEGIN { exit !(lower > limit) }'; then
     status="❌ regressed"
     regressions=$((regressions + 1))
