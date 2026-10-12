@@ -33,7 +33,7 @@ log = { version = "0.4.34", features = [
 ] }
 nom = "8"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-rusqlite_migration = { version = "2.4.1", features = ["from-directory"] }
+rusqlite_migration = { version = "2.6.0", features = ["from-directory"] }
 rustix = { version = "1.0.5", features = [
   "fs",
   "std",
