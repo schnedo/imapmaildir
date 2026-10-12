@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/schnedo/imapmaildir/compare/v0.1.1...v0.1.2)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate anstyle to 1.0.14 - ([07398e7](https://github.com/schnedo/imapmaildir/commit/07398e7d11d278b434dc16ad1aad4548c604a083) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.1](https://github.com/schnedo/imapmaildir/compare/v0.1.0...v0.1.1)
 
 ### Bug Fixes
