@@ -20,7 +20,8 @@
       "matchDepTypes": [
         "dependencies"
       ],
-      "semanticCommitType": "fix"
+      "semanticCommitType": "fix",
+      "rangeStrategy": "bump"
     }
   ]
 }
