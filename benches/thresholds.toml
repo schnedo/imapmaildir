@@ -1,9 +1,0 @@
-# Maximum tolerated slowdown, as fraction of the baseline mean.
-# A bench regresses if the lower bound of the 99% confidence interval of its change exceeds this.
-# Calibrate with `bench-calibrate` (A/A runs), see scripts/bench-calibrate.sh.
-
-[ci]
-threshold = 0.11
-
-[local]
-threshold = 0.10

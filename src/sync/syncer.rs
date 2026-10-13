@@ -6,7 +6,6 @@ use crate::{
 };
 use std::{collections::HashSet, path::Path, time::Duration};
 
-use compio::runtime::JoinHandle;
 use crossfire::{
     AsyncRx, MAsyncTx,
     mpsc::{self, Array},
@@ -139,7 +138,7 @@ impl Syncer {
             .await
             .expect("detecting local changes should succeed");
         let (task_tx, task_rx) = mpsc::bounded_async(32);
-        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change).detach();
+        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
 
         let Selection {
             mut client,
@@ -279,17 +278,17 @@ impl Syncer {
         let maildir_repository =
             MaildirRepository::try_init(&selection.mailbox_data, mail_dir, state_dir)
                 .expect("initializing maildir repository should succeed");
-        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change).detach();
+        Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
         selection.client.fetch_all().await;
 
         ((selection.client, task_tx), maildir_repository)
     }
 
-    pub(crate) fn setup_task_processing(
+    fn setup_task_processing(
         maildir_repository: MaildirRepository,
         task_rx: AsyncRx<Array<Task>>,
         mut on_local_change: impl FnMut() + Send + 'static,
-    ) -> JoinHandle<()> {
+    ) {
         compio::runtime::spawn(async move {
             log::debug!("Listening to incoming mail...");
             while let Ok(task) = task_rx.recv().await {
@@ -335,5 +334,6 @@ impl Syncer {
                 }
             }
         })
+        .detach();
     }
 }
