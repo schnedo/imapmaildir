@@ -52,21 +52,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
 toml = "1.1.8"
 
-[features]
-bench = []
-
-[[bench]]
-name = "imapmaildir"
-harness = false
-required-features = ["bench"]
-
 [lints.clippy]
 pedantic = { level = "warn", priority = -2 }
 allow_attributes = "warn"
 
 [dev-dependencies]
 assertables = "=10.1.0"
-criterion = "=0.8.2"
 derivative = "=2.2.0"
 rstest = "=0.27.0"
 tempfile = "=3.27.0"
