@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/schnedo/imapmaildir/compare/v0.1.10...v0.1.11)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate serde to 1.0.229 - ([b670905](https://github.com/schnedo/imapmaildir/commit/b67090550bea5e2578a6c437129065ed8e6dec52) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.10](https://github.com/schnedo/imapmaildir/compare/v0.1.9...v0.1.10)
 
 ### Bug Fixes
