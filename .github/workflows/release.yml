@@ -5,10 +5,14 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
 
 jobs:
   release-plz-release:
     name: Release-plz release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -41,6 +45,7 @@ jobs:
 
   release-plz-pr:
     name: Release-plz PR
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
