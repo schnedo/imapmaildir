@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/schnedo/imapmaildir/compare/v0.1.14...v0.1.15)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate tokio to 1.53.3 - ([f534f9e](https://github.com/schnedo/imapmaildir/commit/f534f9eda1fdce429c6c9ef6c45f5c9079119047) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.14](https://github.com/schnedo/imapmaildir/compare/v0.1.13...v0.1.14)
 
 ### Bug Fixes
