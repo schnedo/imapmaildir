@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/schnedo/imapmaildir/compare/v0.1.14...v0.1.15)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate tokio to 1.53.3 - ([f534f9e](https://github.com/schnedo/imapmaildir/commit/f534f9eda1fdce429c6c9ef6c45f5c9079119047) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
+## [0.1.14](https://github.com/schnedo/imapmaildir/compare/v0.1.13...v0.1.14)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust-futures monorepo to 0.3.34 - ([7030762](https://github.com/schnedo/imapmaildir/commit/703076207106cd02096187d6346c5a2aa7df9a0d) (by @renovate[bot]))
+- *(deps)* Update rust crate toml to 1.1.8 - ([dbfb51e](https://github.com/schnedo/imapmaildir/commit/dbfb51ec6bd8b4feb76e50c3ce1a9b1ecb559b63) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.1.13](https://github.com/schnedo/imapmaildir/compare/v0.1.12...v0.1.13)
 
 ### Bug Fixes

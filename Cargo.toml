@@ -1,6 +1,6 @@
 [package]
 name = "imapmaildir"
-version = "0.1.13"
+version = "0.1.15"
 edition = "2024"
 description = "Receive mail by syncing remote imap mailboxes with local maildir directories."
 license = "GPL-3.0-or-later"
@@ -19,8 +19,8 @@ derive-getters = { version = "0.5.0", features = ["auto_copy_getters"] }
 derive_builder = "0.20.2"
 enumflags2 = { version = "0.7.12", features = ["serde"] }
 env_logger = "0.11.11"
-futures = "0.3.31"
-futures-util = "0.3.31"
+futures = "0.3.34"
+futures-util = "0.3.34"
 humantime-serde = "1.1.1"
 imap-proto = "0.17.0"
 include_dir = "0.7.4"
@@ -41,7 +41,7 @@ rustix = { version = "1.1.5", features = [
 ], default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = [
+tokio = { version = "1.53.3", features = [
   "rt",
   "macros",
   "net",
@@ -50,7 +50,7 @@ tokio = { version = "1.53.2", features = [
 ] }
 tokio-native-tls = "0.3.1"
 tokio-util = { version = "0.7.20", features = ["codec"] }
-toml = "1.0.0"
+toml = "1.1.8"
 
 [features]
 bench = []
