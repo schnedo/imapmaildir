@@ -141,11 +141,7 @@ impl Connection {
                 imap_proto::Response::Continue(imap_proto::Outcome { code, information }) => {
                     log::warn!("ignoring unexpected continuation request {code:?} {information:?}");
                 }
-                _ => {
-                    if let Some(response) = handler.handle(response).await {
-                        log::trace!("unhandled untagged response {:?}", response.parsed());
-                    }
-                }
+                _ => handler.handle_or_log(response).await,
             }
         }
     }
