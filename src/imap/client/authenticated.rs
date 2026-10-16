@@ -2,14 +2,14 @@ use crossfire::{MAsyncTx, mpsc::Array};
 
 use crate::{
     imap::{
-        RemoteChanges, RemoteMailMetadata, RemoteMailMetadataBuilder, Selection,
+        RemoteChanges, RemoteMailMetadata, Selection,
         client::{
             SelectedClient,
             capability::{Capabilities, Capability},
         },
         transport::{Connection, ResponseData, ResponseHandler, Unhandled},
     },
-    repository::{Flag, MailboxMetadataBuilder, ModSeq, SequenceSet, UidValidity},
+    repository::{MailboxMetadataBuilder, ModSeq, SequenceSet, UidValidity},
     sync::Task,
 };
 
@@ -125,7 +125,6 @@ impl ResponseHandler for SelectHandler<'_> {
 }
 
 impl SelectHandler<'_> {
-    #[expect(clippy::too_many_lines)]
     fn handle_response(&mut self, response: ResponseData) -> Option<ResponseData> {
         match response.parsed() {
             imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
@@ -204,35 +203,10 @@ impl SelectHandler<'_> {
                     log::trace!("{code:?}");
                 }
             },
-            imap_proto::Response::Fetch(msg_num, attributes) => {
+            imap_proto::Response::Fetch(_, attributes) => {
                 log::trace!("handling fetch with attributes {attributes:?}");
-                let mut metadata_builder = RemoteMailMetadataBuilder::default();
-                for attribute in attributes {
-                    match attribute {
-                        imap_proto::AttributeValue::Flags(flags) => {
-                            metadata_builder.flags(Flag::into_bitflags(flags));
-                        }
-                        imap_proto::AttributeValue::ModSeq(modseq) => {
-                            metadata_builder.modseq(
-                                modseq
-                                    .try_into()
-                                    .expect("received modseq should be nonzero"),
-                            );
-                        }
-                        imap_proto::AttributeValue::Uid(uid) => {
-                            metadata_builder
-                                .uid(uid.try_into().expect("received uid should be nonzero"));
-                        }
-                        _ => {
-                            log::warn!("msg {msg_num} unhandled attribute {attribute:?}");
-                        }
-                    }
-                }
-                self.updates.push(
-                    metadata_builder
-                        .build()
-                        .expect("fetch metadata should be complete"),
-                );
+                self.updates
+                    .push(RemoteMailMetadata::from_fetch(attributes));
             }
             imap_proto::Response::Vanished { earlier, uids } => {
                 debug_assert!(

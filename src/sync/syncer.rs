@@ -1,7 +1,7 @@
 use crate::{
     imap::{IdleStopReason, RemoteChanges, RemoteMailMetadata, SelectedClient, Selection},
     maildir::LocalChanges,
-    repository::{MailboxMetadata, SequenceSet, SequenceSetBuilder, Uid},
+    repository::{SequenceSet, SequenceSetBuilder, Uid},
     sync::task::Task,
 };
 use std::{collections::HashSet, path::Path, time::Duration};
@@ -103,23 +103,42 @@ impl Syncer {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
-        if let Ok(maildir_repository) = MaildirRepository::load(&mailbox_maildir, &mailbox_statedir)
-        {
-            (
-                (Self::sync_existing(&maildir_repository, client, mailbox, on_local_change).await),
-                maildir_repository,
-            )
-        } else {
-            log::info!("no existing maildir found. Running inital sync");
-
-            Self::sync_new(
-                client,
-                &mailbox_maildir,
-                &mailbox_statedir,
-                mailbox,
-                on_local_change,
-            )
-            .await
+        match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir) {
+            Ok(maildir_repository)
+                if maildir_repository
+                    .is_initial_sync_complete()
+                    .expect("checking for completed initial sync should succeed") =>
+            {
+                (
+                    Self::sync_existing(&maildir_repository, client, mailbox, on_local_change)
+                        .await,
+                    maildir_repository,
+                )
+            }
+            Ok(maildir_repository) => {
+                log::info!("resuming interrupted initial sync");
+                Self::sync_initial(
+                    Some(maildir_repository),
+                    client,
+                    &mailbox_maildir,
+                    &mailbox_statedir,
+                    mailbox,
+                    on_local_change,
+                )
+                .await
+            }
+            Err(_) => {
+                log::info!("no existing maildir found. Running inital sync");
+                Self::sync_initial(
+                    None,
+                    client,
+                    &mailbox_maildir,
+                    &mailbox_statedir,
+                    mailbox,
+                    on_local_change,
+                )
+                .await
+            }
         }
     }
 
@@ -158,13 +177,10 @@ impl Syncer {
         );
 
         Self::handle_conflicts(&remote_changes, &mut local_changes);
-        Self::handle_remote_changes(
-            &mut client,
-            maildir_repository,
-            remote_changes,
-            &mailbox_data,
-        )
-        .await;
+        Self::handle_remote_changes(&mut client, maildir_repository, remote_changes).await;
+        client
+            .commit_highest_modseq(mailbox_data.highest_modseq())
+            .await;
         Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
         (client, task_handle)
     }
@@ -210,7 +226,6 @@ impl Syncer {
         client: &mut SelectedClient,
         maildir_repository: &MaildirRepository,
         remote_changes: RemoteChanges,
-        mailbox_data: &MailboxMetadata,
     ) {
         if let Some(set) = remote_changes.deletions {
             for uid in set.iter() {
@@ -234,9 +249,6 @@ impl Syncer {
         if let Ok(sequence_set) = refetch_mails.build() {
             client.fetch_mail(&sequence_set).await;
         }
-        client
-            .commit_highest_modseq(mailbox_data.highest_modseq())
-            .await;
     }
 
     fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
@@ -261,7 +273,8 @@ impl Syncer {
         }
     }
 
-    async fn sync_new(
+    async fn sync_initial(
+        maildir_repository: Option<MaildirRepository>,
         client: AuthenticatedClient,
         mail_dir: &Path,
         state_dir: &Path,
@@ -269,16 +282,48 @@ impl Syncer {
         on_local_change: impl FnMut() + Send + 'static,
     ) -> ((SelectedClient, JoinHandle<()>), MaildirRepository) {
         let (task_tx, task_rx) = mpsc::bounded_async(32);
-        let mut selection = client.select(task_tx, mailbox).await;
+        let Selection {
+            mut client,
+            mailbox_data,
+            ..
+        } = client.select(task_tx, mailbox).await;
 
-        let maildir_repository =
-            MaildirRepository::try_init(&selection.mailbox_data, mail_dir, state_dir)
-                .expect("initializing maildir repository should succeed");
+        let maildir_repository = if let Some(maildir_repository) = maildir_repository {
+            assert_eq!(
+                maildir_repository
+                    .uid_validity()
+                    .expect("getting uid_validity should succeed"),
+                mailbox_data.uid_validity(),
+                "remote uid validity should be the same as local"
+            );
+            maildir_repository
+        } else {
+            MaildirRepository::try_init(mailbox_data.uid_validity(), mail_dir, state_dir)
+                .expect("initializing maildir repository should succeed")
+        };
         let task_handle =
             Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
-        selection.client.fetch_all().await;
 
-        ((selection.client, task_handle), maildir_repository)
+        let local_uids = maildir_repository
+            .uids()
+            .expect("getting stored uids should succeed");
+        if local_uids.is_empty() {
+            client.fetch_all().await;
+        } else {
+            let updates = client.fetch_all_metadata().await;
+            let remote_uids: HashSet<Uid> = updates.iter().map(RemoteMailMetadata::uid).collect();
+            let deletions: Vec<Uid> = local_uids.difference(&remote_uids).copied().collect();
+            let remote_changes = RemoteChanges {
+                updates,
+                deletions: SequenceSet::try_from(&deletions).ok(),
+            };
+            Self::handle_remote_changes(&mut client, &maildir_repository, remote_changes).await;
+        }
+        client
+            .complete_initial_sync(mailbox_data.highest_modseq())
+            .await;
+
+        ((client, task_handle), maildir_repository)
     }
 
     fn setup_task_processing(
@@ -311,6 +356,13 @@ impl Syncer {
                         maildir_repository
                             .update_highest_modseq(modseq)
                             .expect("setting highest_modseq should succeed");
+                    }
+                    Task::CompleteInitialSync(modseq, done_tx) => {
+                        log::debug!("Completing initial sync with highest modseq {modseq}");
+                        maildir_repository
+                            .complete_initial_sync(modseq)
+                            .expect("completing initial sync should succeed");
+                        done_tx.send(());
                     }
                     Task::UpdateFlags(remote_mail_metadata) => {
                         log::debug!(

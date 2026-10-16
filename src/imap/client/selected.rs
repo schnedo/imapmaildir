@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use crossfire::{
     AsyncRx, MAsyncTx,
     mpsc::{self, Array},
+    oneshot::oneshot,
 };
 use enumflags2::BitFlags;
 use futures::FutureExt as _;
@@ -90,6 +91,30 @@ impl SelectedClient {
         if let Some(highest_modseq) = handler.0.highest_modseq {
             self.commit_highest_modseq(highest_modseq).await;
         }
+    }
+
+    pub async fn fetch_all_metadata(&mut self) -> Vec<RemoteMailMetadata> {
+        let command = "UID FETCH 1:* (UID, ModSeq, FLAGS)";
+        log::debug!("{command}");
+        let mut handler = Chain(MetadataCollector::default(), &mut self.mailbox_handler);
+        self.connection
+            .send(command.into(), &mut handler)
+            .await
+            .expect("fetching mail metadata should succeed");
+
+        handler.0.metadata
+    }
+
+    pub async fn complete_initial_sync(&mut self, modseq: ModSeq) {
+        let (done_tx, done_rx) = oneshot();
+        self.mailbox_handler
+            .task_tx
+            .send(Task::CompleteInitialSync(modseq, done_tx))
+            .await
+            .expect("task channel should still be open");
+        done_rx
+            .await
+            .expect("task processing should signal completion of initial sync");
     }
 
     pub async fn commit_highest_modseq(&mut self, modseq: ModSeq) {
@@ -331,6 +356,31 @@ impl ResponseHandler for IdleHandler {
             }
             _ => Some(response),
         })
+    }
+}
+
+#[derive(Default)]
+struct MetadataCollector {
+    metadata: Vec<RemoteMailMetadata>,
+}
+
+impl ResponseHandler for MetadataCollector {
+    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
+        std::future::ready(
+            if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
+                && let [
+                    imap_proto::AttributeValue::Uid(_),
+                    imap_proto::AttributeValue::ModSeq(_),
+                    imap_proto::AttributeValue::Flags(_),
+                ] = attributes.as_slice()
+            {
+                self.metadata
+                    .push(RemoteMailMetadata::from_fetch(attributes));
+                None
+            } else {
+                Some(response)
+            },
+        )
     }
 }
 

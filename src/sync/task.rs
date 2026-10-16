@@ -1,3 +1,5 @@
+use crossfire::oneshot::TxOneshot;
+
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     repository::{ModSeq, SequenceSet},
@@ -8,4 +10,5 @@ pub enum Task {
     Delete(SequenceSet),
     UpdateFlags(RemoteMailMetadata),
     SetHighestModseq(ModSeq),
+    CompleteInitialSync(ModSeq, TxOneshot<()>),
 }

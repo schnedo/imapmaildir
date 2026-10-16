@@ -27,6 +27,34 @@ impl RemoteMailMetadata {
         self.uid
     }
 
+    pub fn from_fetch(attributes: &[imap_proto::AttributeValue]) -> Self {
+        let mut metadata_builder = RemoteMailMetadataBuilder::default();
+        for attribute in attributes {
+            match attribute {
+                imap_proto::AttributeValue::Flags(flags) => {
+                    metadata_builder.flags(Flag::into_bitflags(flags));
+                }
+                imap_proto::AttributeValue::ModSeq(modseq) => {
+                    metadata_builder.modseq(
+                        modseq
+                            .try_into()
+                            .expect("received modseq should be nonzero"),
+                    );
+                }
+                imap_proto::AttributeValue::Uid(uid) => {
+                    metadata_builder.uid(uid.try_into().expect("received uid should be nonzero"));
+                }
+                _ => {
+                    log::warn!("unhandled attribute {attribute:?}");
+                }
+            }
+        }
+
+        metadata_builder
+            .build()
+            .expect("fetch metadata should be complete")
+    }
+
     pub fn flags(&self) -> BitFlags<Flag> {
         self.flags
     }
