@@ -1,6 +1,10 @@
 mod codec;
 mod connection;
+mod handler;
 mod tag_generator;
 
 pub use codec::ResponseData;
 pub use connection::Connection;
+pub use handler::Chain;
+pub use handler::ResponseHandler;
+pub use handler::Unhandled;

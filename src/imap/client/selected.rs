@@ -1,19 +1,19 @@
+use std::io::Write as _;
 use std::mem::transmute;
 use std::time::{Duration, Instant};
-use std::{io::Write as _, sync::Arc};
 
 use crossfire::{
     AsyncRx, MAsyncTx,
     mpsc::{self, Array},
 };
-use futures::lock::Mutex;
+use futures::FutureExt as _;
 
 use crate::maildir::LocalChanges;
 use crate::{
     imap::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
         client::capability::{Capabilities, Capability},
-        transport::{Connection, ResponseData},
+        transport::{Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
@@ -29,16 +29,14 @@ pub enum IdleStopReason {
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
-    idling: Arc<Mutex<bool>>,
+    mailbox_handler: MailboxHandler,
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
     idle_stop_tx: MAsyncTx<Array<IdleStopReason>>,
 }
 impl SelectedClient {
-    #[expect(clippy::too_many_lines)]
     pub fn new(
         connection: Connection,
         capabilities: &Capabilities,
-        untagged_response_receiver: AsyncRx<Array<ResponseData>>,
         task_tx: MAsyncTx<Array<Task>>,
     ) -> Self {
         assert!(
@@ -49,143 +47,11 @@ impl SelectedClient {
             capabilities.contains(Capability::UidPlus),
             "server should support UIDPLUS capability"
         );
-        let idling = Arc::new(Mutex::new(false));
-        let is_idling = idling.clone();
-        let (stop_tx, idle_stop_rx) = mpsc::bounded_async(1);
-        let idle_stop_tx = stop_tx.clone();
-
-        compio::runtime::spawn(async move {
-            while let Ok(response) = untagged_response_receiver.recv().await {
-                match response.parsed() {
-                    imap_proto::Response::Fetch(_, attributes) => {
-                        match attributes.as_slice() {
-                            [
-                                imap_proto::AttributeValue::Uid(uid),
-                                imap_proto::AttributeValue::ModSeq(modseq),
-                                imap_proto::AttributeValue::Flags(flags),
-                                imap_proto::AttributeValue::BodySection {
-                                    section: _,
-                                    index: _,
-                                    data: content,
-                                },
-                            ] => {
-                                log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
-                                let mail_flags = Flag::into_bitflags(flags);
-                                let metadata = RemoteMailMetadata::new(
-                                    Uid::try_from(uid).expect("remote uid should be valid"),
-                                    mail_flags,
-                                    modseq.try_into().expect("received modseq should be valid"),
-                                );
-
-                                if let Some(content) = content {
-                                    let content =
-                                // safe as long as the raw data is not dropped
-                                    unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
-                                    let content = RemoteContent::new(response.raw(), content);
-
-                                    let remote_mail = RemoteMail::new(metadata, content);
-                                    task_tx
-                                        .send(Task::NewMail(remote_mail))
-                                        .await
-                                        .expect("task channel should still be open");
-                                } else {
-                                    unreachable!("mail without content")
-                                }
-                            }
-                            [
-                                imap_proto::AttributeValue::Uid(uid),
-                                imap_proto::AttributeValue::ModSeq(modseq),
-                            ] => {
-                                log::trace!("FETCH uid {uid:?} modseq {modseq:?}");
-                                task_tx
-                                    .send(Task::UpdateModseq(
-                                        uid.try_into().expect("uid should be nonzero"),
-                                        modseq.try_into().expect("modseq shoud be nonzero"),
-                                    ))
-                                    .await
-                                    .expect("task channel should still be open");
-                            }
-                            [
-                                imap_proto::AttributeValue::Uid(uid),
-                                imap_proto::AttributeValue::ModSeq(modseq),
-                                imap_proto::AttributeValue::Flags(flags),
-                            ] => {
-                                log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
-                                task_tx
-                                    .send(Task::UpdateFlags(RemoteMailMetadata::new(
-                                        uid.try_into().expect("uid should be nonzero"),
-                                        Flag::into_bitflags(flags),
-                                        modseq.try_into().expect("modseq shoud be nonzero"),
-                                    )))
-                                    .await
-                                    .expect("task channel should still be open");
-                            }
-                            _ => {
-                                log::trace!("attributes {attributes:?}");
-                                panic!(
-                                    "wrong format of FETCH response. check order of attributes in command"
-                                );
-                            }
-                        }
-                    }
-                    imap_proto::Response::Vanished { earlier, uids } => {
-                        log::trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
-                        task_tx
-                            .send(Task::Delete(
-                                uids.try_into()
-                                    .expect("received uid ranges should start with valid uid"),
-                            ))
-                            .await
-                            .expect("deletion channel should still be open");
-                    }
-                    imap_proto::Response::Expunge(_) => {
-                        let mut is_idling = is_idling.lock().await;
-                        if *is_idling {
-                            log::trace!("stopping idle");
-                            *is_idling = false;
-                            stop_tx
-                                .send(IdleStopReason::Remote)
-                                .await
-                                .expect("idle stop channel should still be open");
-                        } else {
-                            log::trace!("ignoring response due to not idling");
-                        }
-                    }
-                    imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
-                        // todo: do not interrupt idle, if mails only got deleted (but handle
-                        // highest modseq then)
-                        imap_proto::MailboxDatum::Exists(_)
-                        | imap_proto::MailboxDatum::Recent(_) => {
-                            let mut is_idling = is_idling.lock().await;
-                            if *is_idling {
-                                log::trace!("stopping idle");
-                                *is_idling = false;
-                                stop_tx
-                                    .send(IdleStopReason::Remote)
-                                    .await
-                                    .expect("idle stop channel should still be open");
-                            } else {
-                                log::trace!("ignoring response due to not idling");
-                            }
-                        }
-                        _ => log::trace!(
-                            "ignoring unhandled mailbox data response {:?}",
-                            response.parsed()
-                        ),
-                    },
-                    _ => {
-                        log::trace!(
-                            "ignoring unhandled untagged response {:?}",
-                            response.parsed()
-                        );
-                    }
-                }
-            }
-        }).detach();
+        let (idle_stop_tx, idle_stop_rx) = mpsc::bounded_async(1);
 
         Self {
             connection,
-            idling,
+            mailbox_handler: MailboxHandler { task_tx },
             idle_stop_rx,
             idle_stop_tx,
         }
@@ -195,7 +61,7 @@ impl SelectedClient {
         let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, BODY.PEEK[])");
         log::debug!("{command}");
         self.connection
-            .send(command.into())
+            .send(command.into(), &mut self.mailbox_handler)
             .await
             .expect("fetching mails should succeed");
     }
@@ -204,7 +70,7 @@ impl SelectedClient {
         let command = "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[])";
         log::debug!("{command}");
         self.connection
-            .send(command.into())
+            .send(command.into(), &mut self.mailbox_handler)
             .await
             .expect("fetching mails should succeed");
     }
@@ -214,7 +80,7 @@ impl SelectedClient {
             format!("UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[]) (CHANGEDSINCE {modseq})");
         log::debug!("{command}");
         self.connection
-            .send(command.into())
+            .send(command.into(), &mut self.mailbox_handler)
             .await
             .expect("fetching mails should succeed");
     }
@@ -240,7 +106,7 @@ impl SelectedClient {
 
             let response = self
                 .connection
-                .send(command)
+                .send(command, &mut self.mailbox_handler)
                 .await
                 // todo: check reason and move failing mails out of cur
                 .expect("storing new mail should succeed");
@@ -289,7 +155,7 @@ impl SelectedClient {
         log::debug!("{command}");
 
         self.connection
-            .send(command.into_bytes())
+            .send(command.into_bytes(), &mut self.mailbox_handler)
             .await
             // todo: handle bad response when highest_modseq does not match
             .expect("sending of flag update should succeed");
@@ -307,7 +173,7 @@ impl SelectedClient {
         log::debug!("{command}");
 
         self.connection
-            .send(command.into_bytes())
+            .send(command.into_bytes(), &mut self.mailbox_handler)
             .await
             .expect("sending of flag update should succeed");
     }
@@ -318,7 +184,7 @@ impl SelectedClient {
         let command = format!("UID EXPUNGE {sequence_set}");
         log::debug!("{command}");
         self.connection
-            .send(command.into_bytes())
+            .send(command.into_bytes(), &mut self.mailbox_handler)
             .await
             .expect("sending uid expunge should succeed");
     }
@@ -327,7 +193,7 @@ impl SelectedClient {
         let command = "LOGOUT";
         log::debug!("{command}");
         self.connection
-            .send(command.into())
+            .send(command.into(), &mut self.mailbox_handler)
             .await
             .expect("logging out should succeed");
     }
@@ -339,37 +205,185 @@ impl SelectedClient {
     pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
         let command = "IDLE";
         log::debug!("{command}");
-        *self.idling.lock().await = true;
         let deadline = Instant::now() + timeout;
-        let response = self
-            .connection
-            .send(command.into())
-            .await
-            .expect("sending idle should succeed");
-        match response.parsed() {
-            imap_proto::Response::Continue(imap_proto::Outcome {
-                code: _,
-                information: _,
-            }) => log::trace!("idling for up to {} seconds", timeout.as_secs()),
-            _ => todo!("handle idle no continuation"),
-        }
-        let stop_reason =
-            if let Ok(stop) = compio::time::timeout_at(deadline, self.idle_stop_rx.recv()).await {
-                stop.expect("idle stop channel should still be open")
-            } else {
-                log::debug!("idle timed out");
+        let connection = &mut self.connection;
+        let idle_stop_rx = &self.idle_stop_rx;
+        let mut handler = Chain(IdleHandler::default(), &mut self.mailbox_handler);
 
-                IdleStopReason::Timeout
-            };
+        let tag = connection.write_command(command.into()).await;
+        loop {
+            let response = connection.next_response().await;
+            match response.parsed() {
+                imap_proto::Response::Continue(_) => {
+                    log::trace!("idling for up to {} seconds", timeout.as_secs());
+                    break;
+                }
+                imap_proto::Response::Done { .. } => todo!("handle idle no continuation"),
+                _ => handle_unsolicited(&mut handler, response).await,
+            }
+        }
+
+        let stop_reason = loop {
+            if handler.0.remote_changed {
+                break IdleStopReason::Remote;
+            }
+            let event = compio::time::timeout_at(deadline, async {
+                futures::select_biased! {
+                    stop = idle_stop_rx.recv().fuse() => {
+                        IdleEvent::Stop(stop.expect("idle stop channel should still be open"))
+                    }
+                    response = connection.next_response().fuse() => IdleEvent::Response(response),
+                }
+            })
+            .await;
+            match event {
+                Ok(IdleEvent::Stop(reason)) => break reason,
+                Ok(IdleEvent::Response(response)) => {
+                    handle_unsolicited(&mut handler, response).await;
+                }
+                Err(_) => {
+                    log::debug!("idle timed out");
+                    break IdleStopReason::Timeout;
+                }
+            }
+        };
+
         let command = "DONE";
         log::debug!("{command}");
-        self.connection
-            .send_continuation(command.into())
+        connection.write_continuation(command.into()).await;
+        connection
+            .receive_completion(&tag, &mut handler)
             .await
-            .expect("sending idle done should succeed");
-        *self.idling.lock().await = false;
+            .expect("idle should succeed");
 
         stop_reason
+    }
+}
+
+enum IdleEvent {
+    Stop(IdleStopReason),
+    Response(ResponseData),
+}
+
+async fn handle_unsolicited(handler: &mut impl ResponseHandler, response: ResponseData) {
+    if let Some(response) = handler.handle(response).await {
+        log::trace!("unhandled untagged response {:?}", response.parsed());
+    }
+}
+
+/// Detects remote changes that should stop IDLE
+#[derive(Default)]
+struct IdleHandler {
+    remote_changed: bool,
+}
+
+impl ResponseHandler for IdleHandler {
+    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
+        std::future::ready(match response.parsed() {
+            // todo: do not interrupt idle, if mails only got deleted (but handle
+            // highest modseq then)
+            imap_proto::Response::Expunge(_)
+            | imap_proto::Response::MailboxData(
+                imap_proto::MailboxDatum::Exists(_) | imap_proto::MailboxDatum::Recent(_),
+            ) => {
+                log::trace!("stopping idle");
+                self.remote_changed = true;
+                None
+            }
+            _ => Some(response),
+        })
+    }
+}
+
+/// Turns mail data received in the selected state into sync tasks, regardless of the command
+/// that triggered it
+#[derive(Debug)]
+struct MailboxHandler {
+    task_tx: MAsyncTx<Array<Task>>,
+}
+
+impl ResponseHandler for MailboxHandler {
+    async fn handle(&mut self, response: ResponseData) -> Option<ResponseData> {
+        match response.parsed() {
+            imap_proto::Response::Fetch(_, attributes) => {
+                let task = match attributes.as_slice() {
+                    [
+                        imap_proto::AttributeValue::Uid(uid),
+                        imap_proto::AttributeValue::ModSeq(modseq),
+                        imap_proto::AttributeValue::Flags(flags),
+                        imap_proto::AttributeValue::BodySection {
+                            section: _,
+                            index: _,
+                            data: content,
+                        },
+                    ] => {
+                        log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
+                        let mail_flags = Flag::into_bitflags(flags);
+                        let metadata = RemoteMailMetadata::new(
+                            Uid::try_from(uid).expect("remote uid should be valid"),
+                            mail_flags,
+                            modseq.try_into().expect("received modseq should be valid"),
+                        );
+
+                        if let Some(content) = content {
+                            let content =
+                                // safe as long as the raw data is not dropped
+                                unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
+                            let content = RemoteContent::new(response.raw(), content);
+
+                            Task::NewMail(RemoteMail::new(metadata, content))
+                        } else {
+                            unreachable!("mail without content")
+                        }
+                    }
+                    [
+                        imap_proto::AttributeValue::Uid(uid),
+                        imap_proto::AttributeValue::ModSeq(modseq),
+                    ] => {
+                        log::trace!("FETCH uid {uid:?} modseq {modseq:?}");
+                        Task::UpdateModseq(
+                            uid.try_into().expect("uid should be nonzero"),
+                            modseq.try_into().expect("modseq shoud be nonzero"),
+                        )
+                    }
+                    [
+                        imap_proto::AttributeValue::Uid(uid),
+                        imap_proto::AttributeValue::ModSeq(modseq),
+                        imap_proto::AttributeValue::Flags(flags),
+                    ] => {
+                        log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
+                        Task::UpdateFlags(RemoteMailMetadata::new(
+                            uid.try_into().expect("uid should be nonzero"),
+                            Flag::into_bitflags(flags),
+                            modseq.try_into().expect("modseq shoud be nonzero"),
+                        ))
+                    }
+                    _ => {
+                        log::trace!("attributes {attributes:?}");
+                        panic!(
+                            "wrong format of FETCH response. check order of attributes in command"
+                        );
+                    }
+                };
+                self.task_tx
+                    .send(task)
+                    .await
+                    .expect("task channel should still be open");
+                None
+            }
+            imap_proto::Response::Vanished { earlier, uids } => {
+                log::trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
+                self.task_tx
+                    .send(Task::Delete(
+                        uids.try_into()
+                            .expect("received uid ranges should start with valid uid"),
+                    ))
+                    .await
+                    .expect("task channel should still be open");
+                None
+            }
+            _ => Some(response),
+        }
     }
 }
 
