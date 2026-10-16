@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::io::Write as _;
-use std::mem::transmute;
 use std::time::{Duration, Instant};
 
 use crossfire::{
@@ -487,8 +486,7 @@ impl ResponseHandler for MailboxHandler {
                         );
 
                         if let Some(content) = content {
-                            let content = unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
-                            let content = RemoteContent::new(response.raw(), content);
+                            let content = RemoteContent::new(response.bytes_of(content));
 
                             Task::NewMail(RemoteMail::new(metadata, content))
                         } else {

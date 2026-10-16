@@ -130,4 +130,46 @@ impl ResponseData {
     pub fn raw(self) -> Bytes {
         self.raw
     }
+
+    pub fn bytes_of(&self, data: &[u8]) -> Bytes {
+        self.raw.slice_ref(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+
+    use super::*;
+
+    #[test]
+    fn test_bytes_of_shares_received_buffer() {
+        let mut buf = BytesMut::from(&b"* 1 FETCH (UID 1 BODY[] {5}\r\nhello)\r\n"[..]);
+        let response = assert_some!(assert_ok!(ImapCodec::default().decode(&mut buf)));
+        let imap_proto::Response::Fetch(_, attributes) = response.parsed() else {
+            panic!("response should be FETCH");
+        };
+        let Some(imap_proto::AttributeValue::BodySection {
+            data: Some(content),
+            ..
+        }) = attributes.last()
+        else {
+            panic!("FETCH should contain body");
+        };
+
+        let bytes = response.bytes_of(content);
+
+        assert_eq!(&bytes[..], b"hello");
+        assert_eq!(bytes.as_ptr(), content.as_ptr());
+    }
+
+    #[test]
+    #[should_panic(expected = "subset")]
+    fn test_bytes_of_panics_on_foreign_data() {
+        let mut buf = BytesMut::from(&b"* 1 EXISTS\r\n"[..]);
+        let response = assert_some!(assert_ok!(ImapCodec::default().decode(&mut buf)));
+        let foreign = b"hello".to_vec();
+
+        let _ = response.bytes_of(&foreign);
+    }
 }
