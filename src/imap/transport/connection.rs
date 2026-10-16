@@ -1,21 +1,18 @@
-use std::{fs, io, path::PathBuf};
+use std::{fmt::Debug, io, path::PathBuf};
 
-use asynchronous_codec::{FramedRead, FramedWrite};
+use asynchronous_codec::Framed;
 use compio::{
     native_tls::{self, Certificate},
     net::TcpStream,
-    tls::TlsConnector,
+    tls::{TlsConnector, TlsStream},
 };
-use crossfire::{
-    AsyncRx, MAsyncTx,
-    mpsc::{self, Array},
-};
-use futures::{AsyncReadExt as _, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use thiserror::Error;
 
 use crate::{
     config,
     imap::transport::{
+        ResponseHandler,
         codec::{ImapCodec, ResponseData},
         tag_generator::TagGenerator,
     },
@@ -27,24 +24,28 @@ pub enum TaggedResponseError {
     Bad {},
 }
 pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
-#[derive(Debug)]
+
 pub struct Connection {
     tag_generator: TagGenerator,
-    // todo: use impl Iterator<u8> instead of Vec<u8>
-    outbound_tx: MAsyncTx<Array<(String, Vec<u8>)>>,
-    inbound_rx: AsyncRx<Array<SendReturnValue>>,
+    stream: Framed<TlsStream<TcpStream>, ImapCodec>,
+}
+
+impl Debug for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connection")
+            .field("tag_generator", &self.tag_generator)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Connection {
-    pub async fn start(
-        connection_config: &config::Connection,
-        untagged_response_sender: MAsyncTx<Array<ResponseData>>,
-    ) -> Result<Self, Error> {
+    pub async fn start(connection_config: &config::Connection) -> Result<Self, Error> {
         log::debug!("Connecting to server");
         let mut tls = native_tls::TlsConnector::builder();
         if let Some(cert_file) = connection_config.server_certificate_file() {
-            let cert =
-                fs::read(cert_file).map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
+            let cert = compio::fs::read(cert_file)
+                .await
+                .map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
             tls.add_root_certificate(Certificate::from_pem(&cert).map_err(|_| {
                 Error::TlsError(TlsError::CertfileFormatInvalid(cert_file.clone()))
             })?);
@@ -64,99 +65,86 @@ impl Connection {
         let stream = (tls.connect(host, stream).await)
             .map_err(|e| Error::TlsError(TlsError::Validation(e)))?;
 
-        let (reader, writer) = stream.split();
-        let mut reader = FramedRead::new(reader, ImapCodec::default());
-        let mut writer = FramedWrite::new(writer, ImapCodec::default());
-        let (outbound_tx, outbound_rx) = mpsc::bounded_async::<(String, Vec<u8>)>(30);
-        let (inbound_tx, inbound_rx) = mpsc::bounded_async::<SendReturnValue>(30);
-
-        compio::runtime::spawn(async move {
-            while let Ok((tag, command)) = outbound_rx.recv().await {
-                log::trace!("{tag:?}: sending");
-                writer
-                    .send((tag.as_bytes(), &command))
-                    .await
-                    .expect("sending command should succeed");
-            }
-            log::debug!("Command channel closed. Stopping request handling");
-        })
-        .detach();
-
-        compio::runtime::spawn(async move {
-            while let Some(response) = reader.next().await {
-                let response = match response {
-                    Ok(response) => response,
-                    Err(error) => {
-                        log::debug!("Receiving response failed: {error}");
-                        break;
-                    }
-                };
-                match response.parsed() {
-                    imap_proto::Response::Done { tag, status, outcome: imap_proto::Outcome { code, information }} => {
-                        log::trace!("{tag:?} {status:?} {code:?}");
-                        if let Some(information) = information {
-                            log::debug!("Done response information: {information}");
-                        }
-                        match status {
-                            imap_proto::Status::Ok => {
-                                inbound_tx.send(Ok(response))
-                                    .await
-                                    .expect("sending response out of network task should succeed");
-                            }
-                            imap_proto::Status::No => {
-                                inbound_tx.send(Err(TaggedResponseError::No{}))
-                                    .await
-                                    .expect("sending response out of network task should succeed");
-                            },
-                            imap_proto::Status::Bad => {
-                                inbound_tx.send(Err(TaggedResponseError::Bad{}))
-                                    .await
-                                    .expect("sending response out of network task should succeed");
-                            },
-                            imap_proto::Status::PreAuth => unreachable!("receiving tagged PreAuth response is not possible per specification"),
-                            imap_proto::Status::Bye => unreachable!("receiving tagged Bye response is not possible per specification"),
-                        }
-                    } ,
-                    imap_proto::Response::Continue (imap_proto::Outcome { code, information } ) => {
-                        log::trace!("+ {code:?} {information:?}");
-                        inbound_tx.send(Ok(response))
-                            .await
-                            .expect("sending response out of network task should succeed");
-                    },
-                    _ => {
-                        untagged_response_sender.send(response).await.expect("untagged response channel should still be open");
-                    },
-                }
-            }
-            log::debug!("Connection to server has shut down. Stopping response handling");
-        })
-        .detach();
-
         Ok(Self {
             tag_generator: TagGenerator::default(),
-            outbound_tx,
-            inbound_rx,
+            stream: Framed::new(stream, ImapCodec::default()),
         })
     }
 
-    pub async fn send(&mut self, command: Vec<u8>) -> SendReturnValue {
+    pub async fn next_response(&mut self) -> ResponseData {
+        self.stream
+            .next()
+            .await
+            .expect("connection to server should still be open")
+            .expect("response should be receivable")
+    }
+
+    pub async fn send(
+        &mut self,
+        command: Vec<u8>,
+        handler: &mut impl ResponseHandler,
+    ) -> SendReturnValue {
+        let tag = self.write_command(command).await;
+        self.receive_completion(&tag, handler).await
+    }
+
+    pub async fn write_command(&mut self, command: Vec<u8>) -> String {
         let tag = self.tag_generator.next();
-        self.do_send(tag, command).await
+        self.write(&tag, &command).await;
+        tag
     }
 
-    pub async fn send_continuation(&mut self, data: Vec<u8>) -> SendReturnValue {
-        self.do_send(String::new(), data).await
+    pub async fn write_continuation(&mut self, data: Vec<u8>) {
+        self.write("", &data).await;
     }
 
-    async fn do_send(&mut self, tag: String, data: Vec<u8>) -> SendReturnValue {
-        self.outbound_tx
-            .send((tag, data))
+    async fn write(&mut self, tag: &str, data: &[u8]) {
+        log::trace!("{tag:?}: sending");
+        self.stream
+            .send((tag.as_bytes(), data))
             .await
-            .expect("sending request to io task should succeed");
-        self.inbound_rx
-            .recv()
-            .await
-            .expect("channel to network task should still be open")
+            .expect("sending command should succeed");
+    }
+
+    pub async fn receive_completion(
+        &mut self,
+        tag: &str,
+        handler: &mut impl ResponseHandler,
+    ) -> SendReturnValue {
+        loop {
+            let response = self.next_response().await;
+            match response.parsed() {
+                imap_proto::Response::Done {
+                    tag: response_tag,
+                    status,
+                    outcome: imap_proto::Outcome { code, information },
+                } => {
+                    log::trace!("{response_tag:?} {status:?} {code:?}");
+                    if let Some(information) = information {
+                        log::debug!("Done response information: {information}");
+                    }
+                    assert_eq!(
+                        response_tag.0, tag,
+                        "tagged response should belong to running command"
+                    );
+                    return match status {
+                        imap_proto::Status::Ok => Ok(response),
+                        imap_proto::Status::No => Err(TaggedResponseError::No {}),
+                        imap_proto::Status::Bad => Err(TaggedResponseError::Bad {}),
+                        imap_proto::Status::PreAuth => unreachable!(
+                            "receiving tagged PreAuth response is not possible per specification"
+                        ),
+                        imap_proto::Status::Bye => unreachable!(
+                            "receiving tagged Bye response is not possible per specification"
+                        ),
+                    };
+                }
+                imap_proto::Response::Continue(imap_proto::Outcome { code, information }) => {
+                    log::warn!("ignoring unexpected continuation request {code:?} {information:?}");
+                }
+                _ => handler.handle_or_log(response).await,
+            }
+        }
     }
 }
 
@@ -189,6 +177,7 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         os::unix::fs::PermissionsExt as _,
         path::{Path, PathBuf},
     };
@@ -299,12 +288,11 @@ mod tests {
     #[awt]
     #[compio::test]
     async fn test_connecting_to_server_should_succeed(#[future] server: MockServer) {
-        let (tx, _rx) = mpsc::bounded_async(1);
         let config = config::Connection::new(
             server.hostname(),
             server.port(),
             Some(PathBuf::from(CERTIFICATE_PATH)),
         );
-        let _connection = assert_ok!(Connection::start(&config, tx,).await);
+        let _connection = assert_ok!(Connection::start(&config).await);
     }
 }

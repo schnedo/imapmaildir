@@ -1,77 +1,68 @@
 use std::collections::HashMap;
 
+use enumflags2::BitFlags;
+
 use crate::{
     maildir::LocalMail,
     repository::{Flag, ModSeq, SequenceSet, SequenceSetBuilder, Uid},
 };
 
+#[derive(Debug, Default, PartialEq, Eq, Hash, Clone, Copy)]
+pub struct FlagChange {
+    pub added: BitFlags<Flag>,
+    pub removed: BitFlags<Flag>,
+}
+
+impl FlagChange {
+    fn then(self, next: Self) -> Self {
+        Self {
+            added: (self.added & !next.removed) | next.added,
+            removed: (self.removed & !next.added) | next.removed,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LocalFlagChanges {
-    additional_flags: HashMap<Flag, SequenceSet>,
-    removed_flags: HashMap<Flag, SequenceSet>,
+    changes: HashMap<FlagChange, SequenceSet>,
 }
 
 impl LocalFlagChanges {
-    // todo: use single unpack function and return owned SequenceSets?
-    pub fn additional_flags(&self) -> impl Iterator<Item = (Flag, &SequenceSet)> {
-        self.additional_flags.iter().map(|(flag, set)| (*flag, set))
-    }
-
-    pub fn removed_flags(&self) -> impl Iterator<Item = (Flag, &SequenceSet)> {
-        self.removed_flags.iter().map(|(flag, set)| (*flag, set))
+    pub fn iter(&self) -> impl Iterator<Item = (FlagChange, &SequenceSet)> {
+        self.changes.iter().map(|(change, set)| (*change, set))
     }
 }
 
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct LocalFlagChangesBuilder {
-    additional_flags: HashMap<Flag, SequenceSetBuilder>,
-    removed_flags: HashMap<Flag, SequenceSetBuilder>,
+    changes: HashMap<Uid, FlagChange>,
 }
 
 impl LocalFlagChangesBuilder {
-    pub fn build(mut self) -> LocalFlagChanges {
+    pub fn build(self) -> LocalFlagChanges {
+        let mut grouped: HashMap<FlagChange, SequenceSetBuilder> = HashMap::new();
+        for (uid, change) in self.changes {
+            if change != FlagChange::default() {
+                grouped.entry(change).or_default().add(uid);
+            }
+        }
+
         LocalFlagChanges {
-            additional_flags: self
-                .additional_flags
-                .drain()
-                .filter_map(|(flag, builder)| builder.build().ok().map(|set| (flag, set)))
-                .collect(),
-            removed_flags: self
-                .removed_flags
-                .drain()
-                .filter_map(|(flag, builder)| builder.build().ok().map(|set| (flag, set)))
+            changes: grouped
+                .into_iter()
+                .filter_map(|(change, builder)| builder.build().ok().map(|set| (change, set)))
                 .collect(),
         }
     }
 
-    fn insert_into(map: &mut HashMap<Flag, SequenceSetBuilder>, flag: Flag, uid: Uid) {
-        if let Some(set) = map.get_mut(&flag) {
-            set.add(uid);
-        } else {
-            let mut set = SequenceSetBuilder::default();
-            set.add(uid);
-            map.insert(flag, set);
-        }
-    }
-
-    pub fn insert_additional(&mut self, flag: Flag, uid: Uid) {
-        Self::insert_into(&mut self.additional_flags, flag, uid);
-    }
-
-    pub fn insert_removed(&mut self, flag: Flag, uid: Uid) {
-        Self::insert_into(&mut self.removed_flags, flag, uid);
+    pub fn insert(&mut self, uid: Uid, change: FlagChange) {
+        let entry = self.changes.entry(uid).or_default();
+        *entry = entry.then(change);
     }
 
     pub fn remove(&mut self, uid: Uid) {
-        Self::remove_from(&mut self.additional_flags, uid);
-        Self::remove_from(&mut self.removed_flags, uid);
-    }
-
-    fn remove_from(map: &mut HashMap<Flag, SequenceSetBuilder>, uid: Uid) {
-        for set in map.values_mut() {
-            if set.remove(uid) {
-                log::debug!("removed {uid} from local changes");
-            }
+        if self.changes.remove(&uid).is_some() {
+            log::debug!("removed {uid} from local changes");
         }
     }
 }
@@ -104,7 +95,6 @@ impl LocalChanges {
 mod tests {
 
     use assertables::*;
-    use enumflags2::BitFlags;
     use rstest::*;
 
     use crate::maildir::NewLocalMailMetadata;
@@ -128,62 +118,72 @@ mod tests {
         assert_ok!(builder.build())
     }
 
-    #[fixture]
-    fn flag() -> Flag {
-        Flag::Seen
+    fn change(added: BitFlags<Flag>, removed: BitFlags<Flag>) -> FlagChange {
+        FlagChange { added, removed }
     }
 
     #[rstest]
     fn test_builder_builds_empty_changes(builder: LocalFlagChangesBuilder) {
         let changes = builder.build();
-        assert_is_empty!(changes.additional_flags().collect::<HashMap<_, _>>());
-        assert_is_empty!(changes.removed_flags().collect::<HashMap<_, _>>());
+        assert_is_empty!(changes.iter().collect::<Vec<_>>());
     }
 
     #[rstest]
-    fn test_insert_additional_inserts_additional(
+    fn test_insert_inserts_change(
         mut builder: LocalFlagChangesBuilder,
-        flag: Flag,
         uid: Uid,
         set: SequenceSet,
     ) {
-        builder.insert_additional(flag, uid);
+        let expected = change(Flag::Seen.into(), Flag::Flagged.into());
+        builder.insert(uid, expected);
         let changes = builder.build();
-        assert_eq!(
-            HashMap::from([(flag, &set)]),
-            changes.additional_flags().collect()
-        );
-        assert_is_empty!(changes.removed_flags().collect::<HashMap<_, _>>());
+        assert_eq!(vec![(expected, &set)], changes.iter().collect::<Vec<_>>());
     }
 
     #[rstest]
-    fn test_insert_removed_inserts_removed(
+    fn test_insert_combines_changes_of_same_mail(
         mut builder: LocalFlagChangesBuilder,
-        flag: Flag,
         uid: Uid,
         set: SequenceSet,
     ) {
-        builder.insert_removed(flag, uid);
+        builder.insert(uid, change(Flag::Seen.into(), Flag::Flagged.into()));
+        builder.insert(
+            uid,
+            change(Flag::Flagged | Flag::Answered, Flag::Seen.into()),
+        );
         let changes = builder.build();
-        assert_is_empty!(changes.additional_flags().collect::<HashMap<_, _>>());
         assert_eq!(
-            HashMap::from([(flag, &set)]),
-            changes.removed_flags().collect()
+            vec![(
+                change(Flag::Flagged | Flag::Answered, Flag::Seen.into()),
+                &set
+            )],
+            changes.iter().collect::<Vec<_>>()
         );
     }
 
     #[rstest]
-    fn test_remove_removes_from_both_collections(
-        mut builder: LocalFlagChangesBuilder,
-        flag: Flag,
-        uid: Uid,
-    ) {
-        builder.insert_additional(flag, uid);
-        builder.insert_additional(flag, uid);
+    fn test_build_groups_mails_with_same_change(mut builder: LocalFlagChangesBuilder) {
+        let expected = change(Flag::Seen.into(), BitFlags::empty());
+        let first = assert_ok!(Uid::try_from(1));
+        let second = assert_ok!(Uid::try_from(2));
+        builder.insert(first, expected);
+        builder.insert(second, expected);
+        let changes = builder.build();
+        let mut set = SequenceSetBuilder::default();
+        set.add(first);
+        set.add(second);
+        assert_eq!(
+            vec![(expected, &assert_ok!(set.build()))],
+            changes.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[rstest]
+    fn test_remove_removes_change(mut builder: LocalFlagChangesBuilder, uid: Uid) {
+        builder.insert(uid, change(Flag::Seen.into(), Flag::Flagged.into()));
         builder.remove(uid);
         let changes = builder.build();
-        assert_is_empty!(changes.additional_flags().collect::<HashMap<_, _>>());
-        assert_is_empty!(changes.removed_flags().collect::<HashMap<_, _>>());
+        assert_is_empty!(changes.iter().collect::<Vec<_>>());
     }
 
     #[rstest]

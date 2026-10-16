@@ -1,13 +1,13 @@
 use std::{
     fmt::Debug,
-    fs::{self, DirBuilder, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::{DirBuilderExt as _, OpenOptionsExt},
+    fs, io,
+    os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
+use compio::{BufResult, fs::DirBuilder, io::AsyncWriteAtExt as _};
 use crossfire::{
     AsyncRx, MAsyncTx, SendError,
     mpsc::{self, Array},
@@ -56,8 +56,8 @@ pub struct Maildir {
 }
 
 impl Maildir {
-    pub fn try_init(mail_dir: &Path) -> Result<Self, InitError> {
-        match Self::load(mail_dir) {
+    pub async fn try_init(mail_dir: &Path) -> Result<Self, InitError> {
+        match Self::load(mail_dir).await {
             Ok(_) | Err(LoadError::Partial(_)) => Err(InitError::Exists(mail_dir.to_path_buf())),
             Err(LoadError::Io(path, kind)) => Err(InitError::Io(path, kind)),
             Err(_) => {
@@ -68,9 +68,9 @@ impl Maildir {
                 let unchecked = Self::unchecked(mail_dir);
 
                 match (
-                    builder.create(unchecked.tmp.as_path()),
-                    builder.create(unchecked.new.as_path()),
-                    builder.create(unchecked.cur.as_path()),
+                    builder.create(unchecked.tmp.as_path()).await,
+                    builder.create(unchecked.new.as_path()).await,
+                    builder.create(unchecked.cur.as_path()).await,
                 ) {
                     (Ok(()), Ok(()), Ok(())) => Ok(unchecked),
                     (Err(e), _, _) => Err(InitError::Io(unchecked.tmp, e.kind())),
@@ -93,25 +93,25 @@ impl Maildir {
         }
     }
 
-    pub fn load(mail_dir: &Path) -> Result<Self, LoadError> {
+    pub async fn load(mail_dir: &Path) -> Result<Self, LoadError> {
         let mail = Self::unchecked(mail_dir);
         log::trace!("loading maildir {mail:?}");
         match (
             // todo: this should check for directories (.metadata().is_dir), not just existence
             // todo: check for read/write mode
-            mail.new.try_exists(),
-            mail.cur.try_exists(),
-            mail.tmp.try_exists(),
+            try_exists(&mail.new).await,
+            try_exists(&mail.cur).await,
+            try_exists(&mail.tmp).await,
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
             (Ok(new_exists), Ok(true), Ok(tmp_exists)) => {
                 log::warn!(
                     "Found partially existing maildir with intact \"cur\" directory. Recreating \"tmp\" and \"new\"..."
                 );
-                if !new_exists && let Err(e) = fs::create_dir(&mail.new) {
+                if !new_exists && let Err(e) = compio::fs::create_dir(&mail.new).await {
                     return Err(LoadError::Io(mail_dir.to_path_buf(), e.kind()));
                 }
-                if !tmp_exists && let Err(e) = fs::create_dir(&mail.tmp) {
+                if !tmp_exists && let Err(e) = compio::fs::create_dir(&mail.tmp).await {
                     return Err(LoadError::Io(mail_dir.to_path_buf(), e.kind()));
                 }
 
@@ -254,7 +254,10 @@ impl Maildir {
                 .await
                 .expect("removing uid of new file should succeed"),
         };
-        let content = self.read_content(&to).expect("mail should be readable");
+        let content = self
+            .read_content(&to)
+            .await
+            .expect("mail should be readable");
 
         change_tx
             .send(Change::New(LocalMail::new(content, to)))
@@ -271,8 +274,9 @@ impl Maildir {
         let metadata = Self::handle_new_unstructured_file(watch, cur, filename)
             .await
             .expect("new file should be handleable");
-        let content =
-            fs::read(cur.join(metadata.filename())).expect("mail content should be readable");
+        let content = compio::fs::read(cur.join(metadata.filename()))
+            .await
+            .expect("mail content should be readable");
 
         change_tx
             .send(Change::New(LocalMail::new(content, metadata)))
@@ -289,21 +293,23 @@ impl Maildir {
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         log::trace!("writing to {}", file_path.display());
-        let mut file = OpenOptions::new()
+        let mut file = compio::fs::OpenOptions::new()
             .mode(0o400)
             .write(true)
             .create_new(true)
-            .open(&file_path)?;
+            .open(&file_path)
+            .await?;
+        let BufResult(written, _) = file.write_all_at(mail.content().clone(), 0).await;
+        written?;
+        file.sync_all().await?;
+        file.close().await?;
 
-        file.write_all(mail.content())?;
-        file.sync_all()?;
-
-        Self::rename(
-            self.watch.lock().await.as_ref(),
-            file_path,
-            self.get_path_of(&new_local_metadata),
-        )
-        .await?;
+        let new_path = self.get_path_of(&new_local_metadata);
+        log::trace!("renaming {} to {}", file_path.display(), new_path.display());
+        if let Some(watch) = self.watch.lock().await.as_ref() {
+            watch.ignore_next_update_for_file(&new_path).await;
+        }
+        compio::fs::rename(&file_path, &new_path).await?;
 
         Ok(new_local_metadata)
     }
@@ -397,14 +403,20 @@ impl Maildir {
         }
     }
 
-    pub fn read_content(&self, metadata: &impl MaildirFile) -> io::Result<Vec<u8>> {
+    pub async fn read_content(&self, metadata: &impl MaildirFile) -> io::Result<Vec<u8>> {
         let mailpath = self.get_path_of(metadata);
         log::trace!("Getting content of {}", mailpath.display());
-        fs::read(mailpath)
+        compio::fs::read(mailpath).await
     }
 
     fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
         self.cur.join(mail.filename())
+    }
+
+    pub async fn sync_cur(&self) -> Result<(), Error> {
+        compio::fs::File::open(&self.cur).await?.sync_all().await?;
+
+        Ok(())
     }
 
     pub async fn handle_uid_conflict(
@@ -414,7 +426,7 @@ impl Maildir {
     ) -> Result<(), Error> {
         let current_path = self.get_path_of(current);
         let new_path = self.get_path_of(new);
-        if Self::is_content_identical(&current_path, &new_path)? {
+        if Self::is_content_identical(&current_path, &new_path).await? {
             self.delete(new).await?;
         } else {
             let tmp_path = self.tmp.join(new.filename());
@@ -426,7 +438,7 @@ impl Maildir {
             let watch = self.watch.lock().await;
             if let Some(watch) = watch.as_ref() {
                 watch.ignore_next_update_for_file(&new_path).await;
-                fs::rename(&new_path, &tmp_path)?;
+                compio::fs::rename(&new_path, &tmp_path).await?;
             }
         }
 
@@ -435,9 +447,9 @@ impl Maildir {
 
     async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
         // todo: write and match error instead of checking if exists
-        match (current.try_exists()?, new.try_exists()?) {
+        match (try_exists(&current).await?, try_exists(&new).await?) {
             (true, true) => {
-                if Self::is_content_identical(current.as_path(), new.as_path())? {
+                if Self::is_content_identical(current.as_path(), new.as_path()).await? {
                     log::warn!(
                         "Removing {} during rename to {}: target name is already present with identical content",
                         current.display(),
@@ -446,7 +458,7 @@ impl Maildir {
                     if let Some(watch) = watch {
                         watch.ignore_next_update_for_file(&new).await;
                     }
-                    fs::remove_file(&current).map_err(Error::from)
+                    compio::fs::remove_file(&current).await.map_err(Error::from)
                 } else {
                     Err(Error::Existing {
                         from: current,
@@ -459,7 +471,7 @@ impl Maildir {
                 if let Some(watch) = watch {
                     watch.ignore_next_update_for_file(&new).await;
                 }
-                fs::rename(current, new)?;
+                compio::fs::rename(current, new).await?;
 
                 Ok(())
             }
@@ -476,14 +488,14 @@ impl Maildir {
         }
     }
 
-    fn is_content_identical(current: &Path, new: &Path) -> io::Result<bool> {
+    async fn is_content_identical(current: &Path, new: &Path) -> io::Result<bool> {
         log::trace!(
             "checking if content of {} and {} is identical",
             current.display(),
             new.display()
         );
-        let current_content = fs::read(current)?;
-        let new_content = fs::read(new)?;
+        let current_content = compio::fs::read(current).await?;
+        let new_content = compio::fs::read(new).await?;
 
         Ok(current_content == new_content)
     }
@@ -536,7 +548,7 @@ impl Maildir {
             watch.ignore_next_update_for_file(&file_path).await;
         }
         log::trace!("deleting {}", file_path.display());
-        fs::remove_file(&file_path).or_else(|e| {
+        compio::fs::remove_file(&file_path).await.or_else(|e| {
             if let std::io::ErrorKind::NotFound = e.kind() {
                 log::trace!("{} already gone", file_path.display());
                 Ok(())
@@ -557,6 +569,15 @@ impl Maildir {
         Self::rename_new_mail(watch.lock().await.as_ref(), current, new).await?;
 
         Ok(metadata)
+    }
+}
+
+/// Async version of [`Path::try_exists`]
+async fn try_exists(path: &Path) -> io::Result<bool> {
+    match compio::fs::metadata(path).await {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -672,9 +693,9 @@ mod tests {
     }
 
     #[fixture]
-    fn maildir(temp_dir: TempDir) -> TestMaildir {
+    async fn maildir(temp_dir: TempDir) -> TestMaildir {
         TestMaildir {
-            maildir: assert_ok!(Maildir::try_init(temp_dir.path())),
+            maildir: assert_ok!(Maildir::try_init(temp_dir.path()).await),
             dir: temp_dir,
         }
     }
@@ -705,9 +726,10 @@ mod tests {
     }
 
     #[rstest]
-    fn test_init_creates_maildir_dirs(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_init_creates_maildir_dirs(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        assert_ok!(Maildir::try_init(maildir_path));
+        assert_ok!(Maildir::try_init(maildir_path).await);
 
         assert!(maildir_path.join("cur").exists());
         assert!(maildir_path.join("new").exists());
@@ -715,7 +737,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_init_errors_on_existing_dir(
+    #[compio::test]
+    async fn test_init_errors_on_existing_dir(
         temp_dir: TempDir,
         #[values("cur", "tmp", "new")] dir: &str,
     ) {
@@ -723,73 +746,86 @@ mod tests {
         let cur = maildir_path.join(dir);
         assert_ok!(fs::create_dir(cur));
 
-        let maybe_maildir = Maildir::try_init(maildir_path);
+        let maybe_maildir = Maildir::try_init(maildir_path).await;
 
         assert_matches!(maybe_maildir, Err(InitError::Exists(_)));
     }
 
     #[rstest]
-    fn test_new_errors_on_unreadable_dir(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_new_errors_on_unreadable_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
         let mut permissions = assert_ok!(fs::metadata(maildir_path)).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(maildir_path, permissions));
 
-        let result = Maildir::try_init(maildir_path);
+        let result = Maildir::try_init(maildir_path).await;
         let result = assert_err!(result);
         assert_matches!(result, InitError::Io(_, _));
     }
 
     #[rstest]
-    fn test_load_loads_exisiting_dir(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_load_loads_exisiting_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
         assert_ok!(fs::create_dir(maildir_path.join("cur")));
         assert_ok!(fs::create_dir(maildir_path.join("new")));
         assert_ok!(fs::create_dir(maildir_path.join("tmp")));
 
-        assert!(Maildir::load(maildir_path).is_ok());
+        assert!(Maildir::load(maildir_path).await.is_ok());
     }
 
     #[rstest]
-    fn test_load_errors_on_missing_dir(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_load_errors_on_missing_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
-        assert_matches!(Maildir::load(maildir_path), Err(LoadError::Missing(_)));
+        assert_matches!(
+            Maildir::load(maildir_path).await,
+            Err(LoadError::Missing(_))
+        );
     }
 
     #[rstest]
-    fn test_load_errors_on_partial_existing_dir(
+    #[compio::test]
+    async fn test_load_errors_on_partial_existing_dir(
         temp_dir: TempDir,
         #[values("tmp", "new")] dir: &str,
     ) {
         let maildir_path = temp_dir.path();
         assert_ok!(fs::create_dir(maildir_path.join(dir)));
 
-        assert_matches!(Maildir::load(maildir_path), Err(LoadError::Partial(_)));
+        assert_matches!(
+            Maildir::load(maildir_path).await,
+            Err(LoadError::Partial(_))
+        );
     }
 
     #[rstest]
-    fn test_load_recreates_tmp_and_cur_if_missing(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_load_recreates_tmp_and_cur_if_missing(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
         assert_ok!(fs::create_dir(maildir_path.join("cur")));
 
-        assert_ok!(Maildir::load(maildir_path));
+        assert_ok!(Maildir::load(maildir_path).await);
     }
 
     #[rstest]
-    fn test_load_errors_on_unreadable_dir(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_load_errors_on_unreadable_dir(temp_dir: TempDir) {
         let maildir_path = temp_dir.path();
         let mut permissions = assert_ok!(fs::metadata(maildir_path)).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(maildir_path, permissions));
 
-        let result = Maildir::load(maildir_path);
+        let result = Maildir::load(maildir_path).await;
         let result = assert_err!(result);
         assert_matches!(result, LoadError::Io(_, _));
     }
 
     #[rstest]
     #[compio::test]
-    async fn test_store_stores_mail(maildir: TestMaildir, new_mail: RemoteMail) {
+    #[awt]
+    async fn test_store_stores_mail(#[future] maildir: TestMaildir, new_mail: RemoteMail) {
         let maildir = maildir.maildir;
 
         let result = assert_ok!(maildir.store(&new_mail).await);
@@ -805,8 +841,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_store_errors_on_missing_dir(
-        maildir: TestMaildir,
+        #[future] maildir: TestMaildir,
         new_mail: RemoteMail,
         #[values("tmp", "cur")] dir: &str,
     ) {
@@ -822,7 +859,8 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_list_cur_lists_all_mails(maildir: TestMaildir) {
+    #[awt]
+    async fn test_list_cur_lists_all_mails(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let mail1 = LocalMailMetadata::new(
             assert_ok!(Uid::try_from(&1)),
@@ -859,7 +897,8 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_list_cur_errors_on_unreadable_cur_dir(maildir: TestMaildir) {
+    #[awt]
+    async fn test_list_cur_errors_on_unreadable_cur_dir(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
         assert_ok!(fs::remove_dir(&maildir.cur));
 
@@ -871,7 +910,8 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_list_cur_errors_on_non_utf8_filename(maildir: TestMaildir) {
+    #[awt]
+    async fn test_list_cur_errors_on_non_utf8_filename(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
         let filename = OsString::from_vec(vec![255]);
         assert_ok!(fs::write(maildir.cur.join(filename), ""));
@@ -884,7 +924,10 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_list_cur_renames_file_according_to_new_local_metadata(maildir: TestMaildir) {
+    #[awt]
+    async fn test_list_cur_renames_file_according_to_new_local_metadata(
+        #[future] maildir: TestMaildir,
+    ) {
         let maildir = maildir.maildir;
         let fileprefix = "f";
         let mail = maildir.cur.join(fileprefix);
@@ -900,8 +943,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_list_cur_renames_file_with_additional_prefix_if_new_name_exists_with_different_content(
-        maildir: TestMaildir,
+        #[future] maildir: TestMaildir,
     ) {
         let maildir = maildir.maildir;
         let fileprefix = "f";
@@ -937,7 +981,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_read_reads_mail(maildir: TestMaildir, local_mail: LocalMail) {
+    #[compio::test]
+    #[awt]
+    async fn test_read_reads_mail(#[future] maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
         let (metadata, expected_content) = local_mail.unpack();
         assert_ok!(fs::write(
@@ -945,16 +991,18 @@ mod tests {
             &expected_content
         ));
 
-        let result = assert_ok!(maildir.read_content(&metadata));
+        let result = assert_ok!(maildir.read_content(&metadata).await);
         assert_eq!(result, expected_content);
     }
 
     #[rstest]
-    fn test_read_errors_on_io_error(maildir: TestMaildir, local_mail: LocalMail) {
+    #[compio::test]
+    #[awt]
+    async fn test_read_errors_on_io_error(#[future] maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
         let (metadata, _) = local_mail.unpack();
 
-        let result = assert_err!(maildir.read_content(&metadata));
+        let result = assert_err!(maildir.read_content(&metadata).await);
         assert_matches!(result, io::Error { .. });
     }
 
@@ -1069,7 +1117,8 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_update_uid_updates_uid(maildir: TestMaildir, local_mail: LocalMail) {
+    #[awt]
+    async fn test_update_uid_updates_uid(#[future] maildir: TestMaildir, local_mail: LocalMail) {
         let maildir = maildir.maildir;
         let (entry, content) = local_mail.unpack();
         assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
@@ -1084,7 +1133,11 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_update_flags_errors_on_missing_mail(maildir: TestMaildir, local_mail: LocalMail) {
+    #[awt]
+    async fn test_update_flags_errors_on_missing_mail(
+        #[future] maildir: TestMaildir,
+        local_mail: LocalMail,
+    ) {
         let maildir = maildir.maildir;
         let (mut entry, content) = local_mail.unpack();
         assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
@@ -1098,7 +1151,11 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_delete_deletes_existing_mail(maildir: TestMaildir, local_mail: LocalMail) {
+    #[awt]
+    async fn test_delete_deletes_existing_mail(
+        #[future] maildir: TestMaildir,
+        local_mail: LocalMail,
+    ) {
         let maildir = maildir.maildir;
         let (entry, content) = local_mail.unpack();
         assert_ok!(fs::write(maildir.get_path_of(&entry), &content));
@@ -1109,8 +1166,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_delete_succeeds_on_already_gone_mail(
-        maildir: TestMaildir,
+        #[future] maildir: TestMaildir,
         local_mail: LocalMail,
     ) {
         let maildir = maildir.maildir;
@@ -1122,7 +1180,11 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_delete_propagates_deletion_error(maildir: TestMaildir, local_mail: LocalMail) {
+    #[awt]
+    async fn test_delete_propagates_deletion_error(
+        #[future] maildir: TestMaildir,
+        local_mail: LocalMail,
+    ) {
         let (entry, ..) = local_mail.unpack();
         let mut permissions = assert_ok!(maildir.dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
@@ -1134,7 +1196,11 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_remove_uid_removes_uid(maildir: TestMaildir, metadata: LocalMailMetadata) {
+    #[awt]
+    async fn test_remove_uid_removes_uid(
+        #[future] maildir: TestMaildir,
+        metadata: LocalMailMetadata,
+    ) {
         let maildir = maildir.maildir;
         assert_ok!(fs::File::create_new(maildir.get_path_of(&metadata)));
         let old_metadata = metadata.clone();
@@ -1146,8 +1212,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_remove_uid_errors_if_new_file_with_different_content_exists(
-        maildir: TestMaildir,
+        #[future] maildir: TestMaildir,
         metadata: LocalMailMetadata,
     ) {
         let maildir = maildir.maildir;

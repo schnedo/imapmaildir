@@ -5,6 +5,7 @@ mod maildir_repository;
 mod state;
 mod watcher;
 
+pub use local_changes::FlagChange;
 pub use local_changes::LocalChanges;
 pub use local_changes::LocalFlagChangesBuilder;
 pub use local_mail::LocalMail;

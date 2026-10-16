@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     convert::Into,
     fs::{self, create_dir_all},
     io,
@@ -14,7 +15,7 @@ use thiserror::Error;
 
 use crate::{
     maildir::{LocalMailMetadata, MaildirFile as _},
-    repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
+    repository::{Flag, ModSeq, Uid, UidValidity},
 };
 
 const STATE_FILE_NAME: &str = "imapmaildir.db";
@@ -66,25 +67,42 @@ impl State {
         }
     }
 
-    pub fn init(state_dir: &Path, mailbox_metadata: &MailboxMetadata) -> Result<Self, InitError> {
+    pub fn init(state_dir: &Path, uid_validity: UidValidity) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir)?;
         log::debug!("creating new state file {}", state_file.to_string_lossy());
         let mut db = Connection::open(state_file)?;
         apply_migrations(&mut db)?;
 
-        log::trace!(
-            "setting cached uid_validity {}",
-            mailbox_metadata.uid_validity()
-        );
+        log::trace!("setting cached uid_validity {uid_validity}");
         db.execute(
-            "insert or ignore into mailbox_metadata (highest_modseq, uid_validity) values (?1, ?2)",
-            (
-                i64::from(mailbox_metadata.highest_modseq()),
-                u32::from(mailbox_metadata.uid_validity()),
-            ),
+            "insert or ignore into uid_validity (uid_validity) values (?1)",
+            [u32::from(uid_validity)],
         )?;
 
         Ok(Self::new(db))
+    }
+
+    pub fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), Error> {
+        log::trace!("completing initial sync with highest_modseq {highest_modseq}");
+        self.db
+            .lock()
+            .expect("state lock should not be poisoned")
+            .execute(
+                "insert into highest_modseq (highest_modseq) values (?1)",
+                [i64::from(highest_modseq)],
+            )?;
+
+        Ok(())
+    }
+
+    pub fn is_initial_sync_complete(&self) -> Result<bool, Error> {
+        self.db
+            .lock()
+            .expect("state lock should not be poisoned")
+            .query_one("select exists (select 1 from highest_modseq)", [], |row| {
+                row.get(0)
+            })
+            .map_err(Into::into)
     }
 
     pub fn remove_from(state_dir: &Path) -> io::Result<()> {
@@ -117,7 +135,7 @@ impl State {
         self.db
             .lock()
             .expect("state lock should not be poisoned")
-            .query_one("select uid_validity from mailbox_metadata", (), |row| {
+            .query_one("select uid_validity from uid_validity", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity.try_into().map_err(Error::from);
                 Ok(validity)
@@ -135,14 +153,6 @@ impl State {
         transaction.commit()?;
 
         Ok(())
-    }
-
-    pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
-        set_highest_modseq(
-            &self.db.lock().expect("state lock should not be poisoned"),
-            value,
-        )
-        .map_err(std::convert::Into::into)
     }
 
     pub fn highest_modseq(&self) -> Result<ModSeq, Error> {
@@ -170,6 +180,41 @@ impl State {
         Ok(())
     }
 
+    pub fn store_all<'a>(
+        &self,
+        data: &'a [LocalMailMetadata],
+    ) -> Result<Vec<&'a LocalMailMetadata>, Error> {
+        log::trace!("storing {} mail caches", data.len());
+        let mut db = self.db.lock().expect("state lock should not be poisoned");
+        let transaction = db.transaction()?;
+        let mut conflicts = Vec::new();
+        {
+            let mut stmt = transaction.prepare_cached(
+                "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+            )?;
+            for entry in data {
+                match stmt.execute((
+                    u32::from(entry.uid()),
+                    entry.flags().bits(),
+                    &entry.fileprefix(),
+                )) {
+                    Ok(_) => {}
+                    Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error {
+                            code: rusqlite::ErrorCode::ConstraintViolation,
+                            ..
+                        },
+                        _,
+                    )) => conflicts.push(entry),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        transaction.commit()?;
+
+        Ok(conflicts)
+    }
+
     pub fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata with {uid:?}");
         let db = self.db.lock().expect("state lock should not be poisoned");
@@ -188,6 +233,15 @@ impl State {
         stmt.execute([u32::from(uid)])?;
 
         Ok(())
+    }
+
+    pub fn uids(&self) -> Result<HashSet<Uid>, Error> {
+        log::trace!("getting all stored uids");
+        let db = self.db.lock().expect("state lock should not be poisoned");
+        let mut stmt = db.prepare_cached("select uid from mail_metadata;")?;
+        stmt.query_map([], |row| row.get::<_, u32>(0))?
+            .map(|uid| Uid::try_from(uid?).map_err(|_| Error::Conversion))
+            .collect()
     }
 
     pub fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
@@ -287,7 +341,7 @@ impl From<io::Error> for InitError {
 }
 
 fn get_highest_modseq(db: &Connection) -> Result<ModSeq, Error> {
-    let result = db.query_one("select highest_modseq from mailbox_metadata", [], |row| {
+    let result = db.query_one("select highest_modseq from highest_modseq", [], |row| {
         let modseq: i64 = row.get(0)?;
         let modseq: Result<ModSeq, Error> = modseq.try_into().map_err(Error::from);
         Ok(modseq)
@@ -298,7 +352,7 @@ fn get_highest_modseq(db: &Connection) -> Result<ModSeq, Error> {
 
 fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
     log::trace!("setting highest_modseq {value}");
-    let mut stmt = db.prepare_cached("update mailbox_metadata set highest_modseq=?1")?;
+    let mut stmt = db.prepare_cached("update highest_modseq set highest_modseq=?1")?;
     stmt.execute([i64::from(value)])?;
 
     Ok(())
@@ -306,13 +360,11 @@ fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Er
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     use assertables::*;
     use rstest::*;
     use tempfile::{TempDir, tempdir};
-
-    use crate::repository::MailboxMetadataBuilder;
 
     use super::*;
 
@@ -337,20 +389,17 @@ mod tests {
     }
 
     #[fixture]
-    fn mailbox_metadata(uid_validity: UidValidity, highest_modseq: ModSeq) -> MailboxMetadata {
-        let mut metadata = MailboxMetadataBuilder::default();
-        metadata.uid_validity(uid_validity);
-        metadata.highest_modseq(highest_modseq);
-
-        assert_ok!(metadata.build())
+    fn incomplete_state(temp_dir: TempDir, uid_validity: UidValidity) -> TestState {
+        TestState {
+            state: assert_ok!(State::init(temp_dir.path(), uid_validity)),
+            dir: temp_dir,
+        }
     }
 
     #[fixture]
-    fn state(temp_dir: TempDir, mailbox_metadata: MailboxMetadata) -> TestState {
-        TestState {
-            state: assert_ok!(State::init(temp_dir.path(), &mailbox_metadata)),
-            dir: temp_dir,
-        }
+    fn state(incomplete_state: TestState, highest_modseq: ModSeq) -> TestState {
+        assert_ok!(incomplete_state.state.complete_initial_sync(highest_modseq));
+        incomplete_state
     }
 
     #[fixture]
@@ -395,27 +444,27 @@ mod tests {
     #[rstest]
     fn test_state_init_fails_on_not_creatable_state_dir(
         temp_dir: TempDir,
-        mailbox_metadata: MailboxMetadata,
+        uid_validity: UidValidity,
     ) {
         let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
         let state_dir = temp_dir.path().join("foo");
 
-        let result = assert_err!(State::init(&state_dir, &mailbox_metadata));
+        let result = assert_err!(State::init(&state_dir, uid_validity));
         assert_matches!(result, InitError::Io(_));
     }
 
     #[rstest]
     fn test_state_init_fails_on_not_creatable_state_file(
         temp_dir: TempDir,
-        mailbox_metadata: MailboxMetadata,
+        uid_validity: UidValidity,
     ) {
         let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
 
-        let result = assert_err!(State::init(temp_dir.path(), &mailbox_metadata));
+        let result = assert_err!(State::init(temp_dir.path(), uid_validity));
         assert_matches!(
             result,
             InitError::DbError(Error::Db(rusqlite::Error::SqliteFailure(_, _)))
@@ -431,6 +480,45 @@ mod tests {
         let result = assert_ok!(State::load(loadable_state_dir.path()));
         assert_eq!(assert_ok!(result.highest_modseq()), highest_modseq);
         assert_eq!(assert_ok!(result.uid_validity()), uid_validity);
+    }
+
+    #[rstest]
+    fn test_initial_sync_is_incomplete_after_init(incomplete_state: TestState) {
+        assert!(!assert_ok!(
+            incomplete_state.state.is_initial_sync_complete()
+        ));
+        assert_err!(incomplete_state.state.highest_modseq());
+    }
+
+    #[rstest]
+    fn test_complete_initial_sync_completes_initial_sync(
+        incomplete_state: TestState,
+        highest_modseq: ModSeq,
+        uid_validity: UidValidity,
+    ) {
+        assert_ok!(incomplete_state.state.complete_initial_sync(highest_modseq));
+
+        assert!(assert_ok!(
+            incomplete_state.state.is_initial_sync_complete()
+        ));
+        assert_eq!(
+            assert_ok!(incomplete_state.state.highest_modseq()),
+            highest_modseq
+        );
+        assert_eq!(
+            assert_ok!(incomplete_state.state.uid_validity()),
+            uid_validity
+        );
+    }
+
+    #[rstest]
+    fn test_uids_returns_stored_uids(state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata));
+
+        assert_eq!(
+            assert_ok!(state.state.uids()),
+            HashSet::from([metadata.uid()])
+        );
     }
 
     #[rstest]
@@ -466,16 +554,6 @@ mod tests {
         assert_ok!(state.state.update_highest_modseq(new_modseq));
 
         assert_eq!(assert_ok!(state.state.highest_modseq()), initial_modseq);
-    }
-
-    #[rstest]
-    fn test_set_highest_modseq_always_updates(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
-        let new_modseq = assert_ok!(ModSeq::try_from(1));
-        assert_lt!(new_modseq, initial_modseq);
-        assert_ok!(state.state.set_highest_modseq(new_modseq));
-
-        assert_eq!(assert_ok!(state.state.highest_modseq()), new_modseq);
     }
 
     #[rstest]

@@ -27,35 +27,57 @@ impl RemoteMailMetadata {
         self.uid
     }
 
+    pub fn from_fetch(attributes: &[imap_proto::AttributeValue]) -> Self {
+        let mut metadata_builder = RemoteMailMetadataBuilder::default();
+        for attribute in attributes {
+            match attribute {
+                imap_proto::AttributeValue::Flags(flags) => {
+                    metadata_builder.flags(Flag::into_bitflags(flags));
+                }
+                imap_proto::AttributeValue::ModSeq(modseq) => {
+                    metadata_builder.modseq(
+                        modseq
+                            .try_into()
+                            .expect("received modseq should be nonzero"),
+                    );
+                }
+                imap_proto::AttributeValue::Uid(uid) => {
+                    metadata_builder.uid(uid.try_into().expect("received uid should be nonzero"));
+                }
+                _ => {
+                    log::warn!("unhandled attribute {attribute:?}");
+                }
+            }
+        }
+
+        metadata_builder
+            .build()
+            .expect("fetch metadata should be complete")
+    }
+
     pub fn flags(&self) -> BitFlags<Flag> {
         self.flags
     }
 }
 
 pub struct RemoteContent {
-    #[expect(dead_code)] // Contains data that `content` borrows
-    raw: Bytes,
-    content: &'static [u8],
+    content: Bytes,
 }
 
 impl RemoteContent {
-    pub fn new(raw: Bytes, content: &'static [u8]) -> Self {
-        Self { raw, content }
+    pub fn new(content: Bytes) -> Self {
+        Self { content }
     }
 
-    pub fn content(&self) -> &[u8] {
-        self.content
+    pub fn content(&self) -> &Bytes {
+        &self.content
     }
 
     #[cfg(test)]
     pub fn from_string(value: String) -> Self {
-        let raw: Bytes = value.into();
-        let content = unsafe {
-            use std::mem::transmute;
-            transmute::<&[u8], &[u8]>(raw.as_ref())
-        };
-
-        Self { raw, content }
+        Self {
+            content: value.into(),
+        }
     }
 }
 
@@ -73,7 +95,7 @@ impl RemoteMail {
         &self.metadata
     }
 
-    pub fn content(&self) -> &[u8] {
+    pub fn content(&self) -> &Bytes {
         self.content.content()
     }
 }

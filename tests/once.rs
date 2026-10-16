@@ -70,6 +70,31 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
+async fn test_adding_and_removing_flags_of_same_mail_works(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let mut client_mails = client_mailbox.mails().await;
+    let mail = assert_some!(client_mails.iter_mut().find(|mail| mail.has_flag('S')));
+    assert!(!mail.has_flag('F'));
+    assert!(mail.remove_flag('S'));
+    assert!(mail.add_flag('F'));
+
+    mail_setup.sync("INBOX").await;
+
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+    assert!(
+        server_mails
+            .iter()
+            .any(|mail| mail.has_flag('F') && !mail.has_flag('S'))
+    );
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
 async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     let server_mail = mail_setup.server_mail();
     let server_mailbox = server_mail.mailbox("INBOX");
@@ -213,4 +238,42 @@ async fn test_syncing_removed_mail_works(#[future] mail_setup: MailSetup) {
     let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
     assert_eq!(server_mails, client_mails);
     assert_ne!(initial_client_mails, client_mails);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_interrupted_initial_sync_gets_resumed(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    client_mail.wipe();
+    mail_setup.sync("INBOX").await;
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+
+    let state_file = mail_setup
+        .config()
+        .state_dir()
+        .join("INBOX")
+        .join("imapmaildir.db");
+    let db = assert_ok!(rusqlite::Connection::open(state_file));
+    assert_ok!(db.execute("delete from highest_modseq", []));
+    let mut client_mails = client_mailbox.mails().await;
+    let missing_mail = assert_some!(client_mails.pop());
+    assert_ok!(db.execute(
+        "delete from mail_metadata where uid = ?1",
+        [assert_ok!(i64::try_from(missing_mail.uid()))]
+    ));
+    drop(db);
+    missing_mail.delete();
+    let mut server_mails = server_mailbox.mails().await;
+    let deleted_mail = assert_some!(server_mails.pop());
+    let deleted_uid = deleted_mail.uid();
+    deleted_mail.delete();
+
+    mail_setup.sync("INBOX").await;
+
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+    assert!(client_mails.iter().all(|mail| mail.uid() != deleted_uid));
 }
