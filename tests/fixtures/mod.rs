@@ -125,6 +125,11 @@ impl MailFile<'_> {
     }
 
     #[must_use]
+    pub fn uid(&self) -> u64 {
+        self.uid
+    }
+
+    #[must_use]
     pub fn has_flag(&self, flag: char) -> bool {
         self.flags.contains(flag)
     }
