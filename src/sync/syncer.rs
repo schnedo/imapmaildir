@@ -190,22 +190,15 @@ impl Syncer {
                 .expect("writing back synced uid should succeed");
         }
         let updates = updates.build();
-        for (flag, sequence_set) in updates.removed_flags() {
-            client.remove_flag(highest_modseq, flag, sequence_set).await;
-            for uid in sequence_set.iter() {
+        for (change, sequence_set) in updates.iter() {
+            let rejected = client
+                .store_flag_change(highest_modseq, change, sequence_set)
+                .await;
+            for uid in sequence_set.iter().filter(|uid| !rejected.contains(uid)) {
                 maildir_repository
-                    .remove_flag(uid, flag)
+                    .apply_flag_change(uid, change)
                     .await
-                    .expect("removing flag from maildir_repository should succeed");
-            }
-        }
-        for (flag, sequence_set) in updates.additional_flags() {
-            client.add_flag(highest_modseq, flag, sequence_set).await;
-            for uid in sequence_set.iter() {
-                maildir_repository
-                    .add_flag(uid, flag)
-                    .await
-                    .expect("adding flag to maildir_repository should succeed");
+                    .expect("updating flags in maildir_repository should succeed");
             }
         }
         if let Ok(set) = SequenceSet::try_from(&deletions) {
@@ -241,9 +234,9 @@ impl Syncer {
         if let Ok(sequence_set) = refetch_mails.build() {
             client.fetch_mail(&sequence_set).await;
         }
-        maildir_repository
-            .set_highest_modseq(mailbox_data.highest_modseq())
-            .expect("setting highest_modseq should succeed");
+        client
+            .commit_highest_modseq(mailbox_data.highest_modseq())
+            .await;
     }
 
     fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
@@ -313,12 +306,11 @@ impl Syncer {
                         }
                         on_local_change();
                     }
-                    Task::UpdateModseq(uid, mod_seq) => {
-                        log::debug!("Setting modseq of mail {uid} to {mod_seq}");
+                    Task::SetHighestModseq(modseq) => {
+                        log::debug!("Setting highest modseq to {modseq}");
                         maildir_repository
-                            .update_highest_modseq(mod_seq)
+                            .update_highest_modseq(modseq)
                             .expect("setting highest_modseq should succeed");
-                        on_local_change();
                     }
                     Task::UpdateFlags(remote_mail_metadata) => {
                         log::debug!(

@@ -70,6 +70,31 @@ async fn test_adding_flag_works(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
+async fn test_adding_and_removing_flags_of_same_mail_works(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let mut client_mails = client_mailbox.mails().await;
+    let mail = assert_some!(client_mails.iter_mut().find(|mail| mail.has_flag('S')));
+    assert!(!mail.has_flag('F'));
+    assert!(mail.remove_flag('S'));
+    assert!(mail.add_flag('F'));
+
+    mail_setup.sync("INBOX").await;
+
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+    assert!(
+        server_mails
+            .iter()
+            .any(|mail| mail.has_flag('F') && !mail.has_flag('S'))
+    );
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
 async fn test_syncing_added_flag_works(#[future] mail_setup: MailSetup) {
     let server_mail = mail_setup.server_mail();
     let server_mailbox = server_mail.mailbox("INBOX");

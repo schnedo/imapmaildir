@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::Write as _;
 use std::mem::transmute;
 use std::time::{Duration, Instant};
@@ -6,6 +7,7 @@ use crossfire::{
     AsyncRx, MAsyncTx,
     mpsc::{self, Array},
 };
+use enumflags2::BitFlags;
 use futures::FutureExt as _;
 
 use crate::maildir::LocalChanges;
@@ -15,7 +17,7 @@ use crate::{
         client::capability::{Capabilities, Capability},
         transport::{Chain, Connection, ResponseData, ResponseHandler},
     },
-    maildir::{LocalMail, MaildirFile, NewLocalMailMetadata},
+    maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
     sync::Task,
 };
@@ -76,13 +78,26 @@ impl SelectedClient {
     }
 
     pub async fn fetch_since(&mut self, modseq: ModSeq) {
-        let command =
-            format!("UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[]) (CHANGEDSINCE {modseq})");
+        let command = format!(
+            "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[]) (CHANGEDSINCE {modseq} VANISHED)"
+        );
         log::debug!("{command}");
+        let mut handler = Chain(ModSeqTracker::default(), &mut self.mailbox_handler);
         self.connection
-            .send(command.into(), &mut self.mailbox_handler)
+            .send(command.into(), &mut handler)
             .await
             .expect("fetching mails should succeed");
+        if let Some(highest_modseq) = handler.0.highest_modseq {
+            self.commit_highest_modseq(highest_modseq).await;
+        }
+    }
+
+    pub async fn commit_highest_modseq(&mut self, modseq: ModSeq) {
+        self.mailbox_handler
+            .task_tx
+            .send(Task::SetHighestModseq(modseq))
+            .await
+            .expect("task channel should still be open");
     }
 
     pub async fn store(
@@ -143,44 +158,69 @@ impl SelectedClient {
         info_rx
     }
 
-    pub async fn remove_flag(
+    pub async fn store_flag_change(
         &mut self,
         highest_modseq: ModSeq,
-        flag: Flag,
+        change: FlagChange,
         sequence_set: &SequenceSet,
-    ) {
-        let command = format!(
-            "UID STORE {sequence_set} (UNCHANGEDSINCE {highest_modseq}) -FLAGS.SILENT ({flag})"
-        );
-        log::debug!("{command}");
+    ) -> HashSet<Uid> {
+        let mut rejected = HashSet::new();
+        let mut pending: Vec<Uid> = sequence_set.iter().collect();
+        let mut unchanged_since = highest_modseq;
+        for (operation, flags) in [('+', change.added), ('-', change.removed)] {
+            if flags.is_empty() {
+                continue;
+            }
+            let Ok(set) = SequenceSet::try_from(&pending) else {
+                break;
+            };
+            let (modified, modseq) = self
+                .store_flags(unchanged_since, operation, flags, &set)
+                .await;
+            pending.retain(|uid| !modified.contains(uid));
+            rejected.extend(modified);
+            if let Some(modseq) = modseq {
+                unchanged_since = unchanged_since.max(modseq);
+            }
+        }
 
-        self.connection
-            .send(command.into_bytes(), &mut self.mailbox_handler)
-            .await
-            // todo: handle bad response when highest_modseq does not match
-            .expect("sending of flag update should succeed");
+        rejected
     }
 
-    pub async fn add_flag(
+    async fn store_flags(
         &mut self,
-        highest_modseq: ModSeq,
-        flag: Flag,
+        unchanged_since: ModSeq,
+        operation: char,
+        flags: BitFlags<Flag>,
         sequence_set: &SequenceSet,
-    ) {
+    ) -> (HashSet<Uid>, Option<ModSeq>) {
+        let flags = Flag::format(flags).unwrap_or_default();
         let command = format!(
-            "UID STORE {sequence_set} (UNCHANGEDSINCE {highest_modseq}) +FLAGS.SILENT ({flag})"
+            "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}FLAGS.SILENT ({flags})"
         );
         log::debug!("{command}");
 
-        self.connection
-            .send(command.into_bytes(), &mut self.mailbox_handler)
+        let mut handler = Chain(StoreHandler::default(), &mut self.mailbox_handler);
+        let response = self
+            .connection
+            .send(command.into_bytes(), &mut handler)
             .await
             .expect("sending of flag update should succeed");
+        let modified = modified_uids(&response);
+        if !modified.is_empty() {
+            log::warn!("mails {modified:?} changed on server. Not updating their flags");
+        }
+
+        (modified, handler.0.highest_modseq)
     }
 
     pub async fn delete(&mut self, highest_modseq: ModSeq, sequence_set: &SequenceSet) {
-        self.add_flag(highest_modseq, Flag::Deleted, sequence_set)
+        let (modified, _) = self
+            .store_flags(highest_modseq, '+', Flag::Deleted.into(), sequence_set)
             .await;
+        if !modified.is_empty() {
+            log::warn!("mails {modified:?} changed on server. Not deleting them");
+        }
         let command = format!("UID EXPUNGE {sequence_set}");
         log::debug!("{command}");
         self.connection
@@ -271,7 +311,6 @@ async fn handle_unsolicited(handler: &mut impl ResponseHandler, response: Respon
     }
 }
 
-/// Detects remote changes that should stop IDLE
 #[derive(Default)]
 struct IdleHandler {
     remote_changed: bool,
@@ -295,8 +334,81 @@ impl ResponseHandler for IdleHandler {
     }
 }
 
-/// Turns mail data received in the selected state into sync tasks, regardless of the command
-/// that triggered it
+#[derive(Default)]
+struct ModSeqTracker {
+    highest_modseq: Option<ModSeq>,
+}
+
+impl ResponseHandler for ModSeqTracker {
+    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
+        if let imap_proto::Response::Fetch(_, attributes) = response.parsed() {
+            for attribute in attributes {
+                if let imap_proto::AttributeValue::ModSeq(modseq) = attribute {
+                    let modseq = modseq.try_into().expect("received modseq should be valid");
+                    self.highest_modseq = self.highest_modseq.max(Some(modseq));
+                }
+            }
+        }
+        std::future::ready(Some(response))
+    }
+}
+
+#[derive(Default)]
+struct StoreHandler {
+    highest_modseq: Option<ModSeq>,
+}
+
+impl ResponseHandler for StoreHandler {
+    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
+        std::future::ready(
+            if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
+                && let [
+                    imap_proto::AttributeValue::Uid(_),
+                    imap_proto::AttributeValue::ModSeq(modseq),
+                ] = attributes.as_slice()
+            {
+                let modseq = modseq.try_into().expect("received modseq should be valid");
+                self.highest_modseq = self.highest_modseq.max(Some(modseq));
+                None
+            } else {
+                Some(response)
+            },
+        )
+    }
+}
+
+fn modified_uids(response: &ResponseData) -> HashSet<Uid> {
+    if let imap_proto::Response::Done {
+        outcome:
+            imap_proto::Outcome {
+                code: None,
+                information: Some(information),
+            },
+        ..
+    } = response.parsed()
+        && let Some(uids) = information
+            .strip_prefix("[MODIFIED ")
+            .and_then(|rest| rest.split_once(']'))
+            .map(|(uids, _)| uids)
+    {
+        parse_uid_set(uids)
+    } else {
+        HashSet::new()
+    }
+}
+
+fn parse_uid_set(uids: &str) -> HashSet<Uid> {
+    let parse = |uid: &str| -> u32 { uid.parse().expect("received uid should be a number") };
+    uids.split(',')
+        .flat_map(|range| {
+            let (start, end) = range.split_once(':').unwrap_or((range, range));
+            let (start, end) = (parse(start), parse(end));
+            start.min(end)..=start.max(end)
+        })
+        .map(|uid| Uid::try_from(uid).expect("received uid should be nonzero"))
+        .collect()
+}
+
 #[derive(Debug)]
 struct MailboxHandler {
     task_tx: MAsyncTx<Array<Task>>,
@@ -307,6 +419,12 @@ impl ResponseHandler for MailboxHandler {
         match response.parsed() {
             imap_proto::Response::Fetch(_, attributes) => {
                 let task = match attributes.as_slice() {
+                    [
+                        imap_proto::AttributeValue::Uid(_),
+                        imap_proto::AttributeValue::ModSeq(_),
+                    ] => {
+                        return Some(response);
+                    }
                     [
                         imap_proto::AttributeValue::Uid(uid),
                         imap_proto::AttributeValue::ModSeq(modseq),
@@ -326,25 +444,13 @@ impl ResponseHandler for MailboxHandler {
                         );
 
                         if let Some(content) = content {
-                            let content =
-                                // safe as long as the raw data is not dropped
-                                unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
+                            let content = unsafe { transmute::<&[u8], &[u8]>(content.as_ref()) };
                             let content = RemoteContent::new(response.raw(), content);
 
                             Task::NewMail(RemoteMail::new(metadata, content))
                         } else {
                             unreachable!("mail without content")
                         }
-                    }
-                    [
-                        imap_proto::AttributeValue::Uid(uid),
-                        imap_proto::AttributeValue::ModSeq(modseq),
-                    ] => {
-                        log::trace!("FETCH uid {uid:?} modseq {modseq:?}");
-                        Task::UpdateModseq(
-                            uid.try_into().expect("uid should be nonzero"),
-                            modseq.try_into().expect("modseq shoud be nonzero"),
-                        )
                     }
                     [
                         imap_proto::AttributeValue::Uid(uid),
@@ -400,5 +506,41 @@ impl LocalMail {
         command.extend(content);
 
         metadata
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn test_imap_proto_keeps_modified_code_in_information() {
+        let (_, response) = assertables::assert_ok!(imap_proto::Response::parse(
+            b"0001 OK [MODIFIED 7,9] Conditional STORE failed\r\n"
+        ));
+        let imap_proto::Response::Done {
+            outcome: imap_proto::Outcome { code, information },
+            ..
+        } = response
+        else {
+            panic!("response should be tagged");
+        };
+        assert!(code.is_none());
+        assert_eq!(
+            information.as_deref(),
+            Some("[MODIFIED 7,9] Conditional STORE failed")
+        );
+    }
+
+    #[test]
+    fn test_parse_uid_set_parses_ranges() {
+        let expected: HashSet<Uid> = [1, 3, 4, 5, 9]
+            .into_iter()
+            .map(|uid: u32| assertables::assert_ok!(Uid::try_from(uid)))
+            .collect();
+
+        assert_eq!(parse_uid_set("1,3:5,9"), expected);
     }
 }
