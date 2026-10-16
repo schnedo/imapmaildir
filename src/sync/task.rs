@@ -8,5 +8,4 @@ pub enum Task {
     Delete(SequenceSet),
     UpdateFlags(RemoteMailMetadata),
     UpdateModseq(Uid, ModSeq),
-    Shutdown,
 }

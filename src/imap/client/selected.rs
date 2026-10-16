@@ -323,6 +323,15 @@ impl SelectedClient {
             .expect("sending uid expunge should succeed");
     }
 
+    pub async fn logout(mut self) {
+        let command = "LOGOUT";
+        log::debug!("{command}");
+        self.connection
+            .send(command.into())
+            .await
+            .expect("logging out should succeed");
+    }
+
     pub fn idle_stop_tx(&self) -> MAsyncTx<Array<IdleStopReason>> {
         self.idle_stop_tx.clone()
     }
