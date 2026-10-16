@@ -1,13 +1,14 @@
 use std::{
     fmt::Debug,
-    fs::{self, DirBuilder, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::{DirBuilderExt as _, OpenOptionsExt},
+    fs::{self, DirBuilder},
+    io,
+    os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
+use compio::{BufResult, io::AsyncWriteAtExt as _};
 use crossfire::{
     AsyncRx, MAsyncTx, SendError,
     mpsc::{self, Array},
@@ -289,21 +290,23 @@ impl Maildir {
         let file_path = self.tmp.join(new_local_metadata.fileprefix());
 
         log::trace!("writing to {}", file_path.display());
-        let mut file = OpenOptions::new()
+        let mut file = compio::fs::OpenOptions::new()
             .mode(0o400)
             .write(true)
             .create_new(true)
-            .open(&file_path)?;
+            .open(&file_path)
+            .await?;
+        let BufResult(written, _) = file.write_all_at(mail.content().clone(), 0).await;
+        written?;
+        file.sync_all().await?;
+        file.close().await?;
 
-        file.write_all(mail.content())?;
-        file.sync_all()?;
-
-        Self::rename(
-            self.watch.lock().await.as_ref(),
-            file_path,
-            self.get_path_of(&new_local_metadata),
-        )
-        .await?;
+        let new_path = self.get_path_of(&new_local_metadata);
+        log::trace!("renaming {} to {}", file_path.display(), new_path.display());
+        if let Some(watch) = self.watch.lock().await.as_ref() {
+            watch.ignore_next_update_for_file(&new_path).await;
+        }
+        compio::fs::rename(&file_path, &new_path).await?;
 
         Ok(new_local_metadata)
     }
@@ -405,6 +408,12 @@ impl Maildir {
 
     fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
         self.cur.join(mail.filename())
+    }
+
+    pub async fn sync_cur(&self) -> Result<(), Error> {
+        compio::fs::File::open(&self.cur).await?.sync_all().await?;
+
+        Ok(())
     }
 
     pub async fn handle_uid_conflict(

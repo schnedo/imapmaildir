@@ -161,30 +161,32 @@ impl MaildirRepository {
         self.state.uids()
     }
 
-    pub async fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
-        let uid = mail.metadata().uid();
-        log::info!("storing mail {uid} with flags {}", mail.metadata().flags());
-        let metadata = self.maildir.store(mail).await?;
-        if let Err(state::Error::Db(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ErrorCode::ConstraintViolation,
-                ..
-            },
-            _,
-        ))) = self.state.store(&metadata)
-        {
-            if let Some(existing_mail) = self.state.get_by_id(uid)? {
-                self.maildir
-                    .handle_uid_conflict(&existing_mail, &metadata)
-                    .await?;
+    pub async fn store_batch(&self, mails: &[RemoteMail]) -> Result<(), StoreError> {
+        for mail in mails {
+            log::info!(
+                "storing mail {} with flags {}",
+                mail.metadata().uid(),
+                mail.metadata().flags()
+            );
+        }
+        let stored: Vec<LocalMailMetadata> =
+            futures::future::join_all(mails.iter().map(|mail| self.maildir.store(mail)))
+                .await
+                .into_iter()
+                .collect::<Result<_, _>>()?;
+        self.maildir.sync_cur().await?;
 
-                Ok(())
+        for conflict in self.state.store_all(&stored)? {
+            if let Some(existing_mail) = self.state.get_by_id(conflict.uid())? {
+                self.maildir
+                    .handle_uid_conflict(&existing_mail, conflict)
+                    .await?;
             } else {
                 unreachable!("stored mail should exist on store ConstraintViolation");
             }
-        } else {
-            Ok(())
         }
+
+        Ok(())
     }
 
     pub async fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
@@ -538,7 +540,7 @@ mod tests {
     }
     #[fixture]
     async fn repo_with_mail(repo: TestMaildirRepository, mail: RemoteMail) -> RepoWithMail {
-        assert_ok!(repo.repo.store(&mail).await);
+        assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
         RepoWithMail { repo, mail }
     }
@@ -685,7 +687,7 @@ mod tests {
         let uid = mail.metadata().uid();
         assert_err!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
 
-        assert_ok!(repo.repo.store(&mail).await);
+        assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
         let list_rx = assert_ok!(repo.repo.maildir.list_cur());
         assert_ok!(assert_ok!(list_rx.recv().await));
@@ -707,7 +709,7 @@ mod tests {
         assert_err!(list_rx.recv().await);
         assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
 
-        assert_ok!(repo.repo.store(&mail).await);
+        assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
         let list_rx = assert_ok!(repo.repo.maildir.list_cur());
         assert_ok!(assert_ok!(list_rx.recv().await));
@@ -721,7 +723,7 @@ mod tests {
     async fn test_store_propagaters_maildir_error(repo: TestMaildirRepository, mail: RemoteMail) {
         assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
 
-        let result = assert_err!(repo.repo.store(&mail).await);
+        let result = assert_err!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
         assert_matches!(result, StoreError::Maildir(_));
     }
@@ -1039,5 +1041,34 @@ mod tests {
         assert_len_eq_x!(&result.deletions, 1);
         let deleted_mail_uid = assert_some!(result.deletions.pop());
         assert_eq!(deleted_mail_uid, uid);
+    }
+
+    #[rstest]
+    #[compio::test]
+    async fn test_store_batch_stores_all_mails(repo: TestMaildirRepository) {
+        let mails: Vec<_> = (1..=3u32)
+            .map(|uid| {
+                RemoteMail::new(
+                    RemoteMailMetadata::new(
+                        assert_ok!(Uid::try_from(uid)),
+                        Flag::Seen.into(),
+                        assert_ok!(ModSeq::try_from(i64::from(uid))),
+                    ),
+                    RemoteContent::from_string(uid.to_string()),
+                )
+            })
+            .collect();
+
+        assert_ok!(repo.repo.store_batch(&mails).await);
+
+        let expected: HashSet<_> = mails.iter().map(|mail| mail.metadata().uid()).collect();
+        assert_eq!(assert_ok!(repo.repo.uids()), expected);
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        let mut count = 0;
+        while let Ok(entry) = list_rx.recv().await {
+            assert_ok!(entry);
+            count += 1;
+        }
+        assert_eq!(count, 3);
     }
 }

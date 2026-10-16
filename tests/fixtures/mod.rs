@@ -417,6 +417,7 @@ impl MailSetup {
             config.maildir_base_path(),
             config.state_dir(),
             client,
+            config.sync(),
             || {},
         )
         .await;
@@ -428,6 +429,7 @@ impl MailSetup {
         let maildir_base_path = config.maildir_base_path().clone();
         let state_dir = config.state_dir().clone();
         let idle_timout = config.idle_timout();
+        let sync_config = config.sync();
         let client = Client::login(config.connection(), config.auth()).await;
         let mailbox = mailbox.to_string();
         let handle = compio::runtime::spawn(async move {
@@ -437,6 +439,7 @@ impl MailSetup {
                 &state_dir,
                 client,
                 idle_timout,
+                sync_config,
                 move || {
                     eprintln!("calling onchange");
                     let call = call_tx.clone();
@@ -520,6 +523,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             client_base_path,
             Duration::from_secs(30),
             Vec::new(),
+            config_m::SyncConfig::default(),
         ),
         tmp_dir,
         server_mail_storge: ServerMailStorage {

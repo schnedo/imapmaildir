@@ -4,7 +4,7 @@ use std::{fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
 use derive_getters::Getters;
 use serde::Deserialize;
 
-use crate::config::auth::Auth;
+use crate::{config::auth::Auth, sync};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +20,8 @@ struct AccountConfigFile {
     maildir_base_path: Option<PathBuf>,
     #[serde(default)]
     on_local_change: Vec<String>,
+    store_batch_size: Option<usize>,
+    store_batch_max_bytes: Option<usize>,
 }
 
 // todo: move config to code using it
@@ -52,6 +54,8 @@ pub struct Account {
     #[getter(copy)]
     idle_timout: Duration,
     on_local_change: Vec<String>,
+    #[getter(copy)]
+    sync: sync::Config,
 }
 
 impl Account {
@@ -67,6 +71,7 @@ impl Account {
         state_dir: PathBuf,
         idle_timout: Duration,
         on_local_change: Vec<String>,
+        sync: sync::Config,
     ) -> Self {
         Self {
             auth,
@@ -76,6 +81,7 @@ impl Account {
             state_dir,
             idle_timout,
             on_local_change,
+            sync,
         }
     }
 
@@ -109,6 +115,17 @@ impl Account {
             state_dir,
             idle_timout: config.idle_timeout.unwrap_or(Duration::from_mins(29)),
             on_local_change: config.on_local_change,
+            sync: {
+                let default = sync::Config::default();
+                sync::Config::new(
+                    config
+                        .store_batch_size
+                        .unwrap_or(default.store_batch_size()),
+                    config
+                        .store_batch_max_bytes
+                        .unwrap_or(default.store_batch_max_bytes()),
+                )
+            },
         }
     }
 }
