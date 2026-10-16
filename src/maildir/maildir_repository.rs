@@ -9,7 +9,8 @@ use thiserror::Error;
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
-        LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata, NewLocalMailMetadata,
+        FlagChange, LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata,
+        NewLocalMailMetadata,
         maildir::{self, Change, MaildirFile},
         state::{self, State},
     },
@@ -72,14 +73,13 @@ impl MaildirRepository {
         new: &LocalMailMetadata,
     ) {
         debug_assert_eq!(old.uid(), new.uid());
-        let additional_flags = new.additional_flags_compared_to(old);
-        for flag in additional_flags {
-            flag_changes_builder.insert_additional(flag, new.uid());
-        }
-        let removed_flags = new.removed_flags_compared_to(old);
-        for flag in removed_flags {
-            flag_changes_builder.insert_removed(flag, new.uid());
-        }
+        flag_changes_builder.insert(
+            new.uid(),
+            FlagChange {
+                added: new.additional_flags_compared_to(old),
+                removed: new.removed_flags_compared_to(old),
+            },
+        );
     }
 
     pub async fn watch(self) -> AsyncRx<Array<LocalChanges>> {
@@ -140,10 +140,6 @@ impl MaildirRepository {
         self.state.highest_modseq()
     }
 
-    pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
-        self.state.set_highest_modseq(value)
-    }
-
     pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
         self.state.update_highest_modseq(value)
     }
@@ -170,10 +166,6 @@ impl MaildirRepository {
                 unreachable!("stored mail should exist on store ConstraintViolation");
             }
         } else {
-            self.state
-                // todo: check highest modseq handling consistent with channel?
-                .update_highest_modseq(mail.metadata().modseq())?;
-
             Ok(())
         }
     }
@@ -191,9 +183,6 @@ impl MaildirRepository {
             if entry.flags() != mail_metadata.flags() {
                 let new_flags = mail_metadata.flags();
                 self.handle_flags(&mut entry, new_flags).await?;
-                self.state
-                    // todo: check highest modseq handling consistent with channel?
-                    .update_highest_modseq(mail_metadata.modseq())?;
             }
 
             Ok(())
@@ -202,27 +191,14 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn add_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
+    pub async fn apply_flag_change(&self, uid: Uid, change: FlagChange) -> Result<(), Error> {
         if let Some(mut entry) = self.state.get_by_id(uid)? {
-            if !entry.has_flag(flag) {
-                log::info!("adding flag {flag} to mail {uid}");
-                let mut new_flags = entry.flags();
-                new_flags.insert(flag);
-                self.handle_flags(&mut entry, new_flags).await?;
-            }
-
-            Ok(())
-        } else {
-            Err(Error::NoExists { uid })
-        }
-    }
-
-    pub async fn remove_flag(&self, uid: Uid, flag: Flag) -> Result<(), Error> {
-        if let Some(mut entry) = self.state.get_by_id(uid)? {
-            if entry.has_flag(flag) {
-                log::info!("removing flag {flag} of mail {uid}");
-                let mut new_flags = entry.flags();
-                new_flags.remove(flag);
+            let new_flags = (entry.flags() | change.added) & !change.removed;
+            if entry.flags() != new_flags {
+                log::info!(
+                    "updating flags of mail {uid}: {} -> {new_flags}",
+                    entry.flags()
+                );
                 self.handle_flags(&mut entry, new_flags).await?;
             }
 
@@ -471,6 +447,20 @@ mod tests {
 
     use super::*;
 
+    fn added(flag: Flag) -> FlagChange {
+        FlagChange {
+            added: flag.into(),
+            removed: BitFlags::empty(),
+        }
+    }
+
+    fn removed(flag: Flag) -> FlagChange {
+        FlagChange {
+            added: BitFlags::empty(),
+            removed: flag.into(),
+        }
+    }
+
     #[fixture]
     fn mail_dir() -> TempDir {
         assert_ok!(TempDir::new())
@@ -671,17 +661,6 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_set_highest_modseq_sets_highes_modseq(repo: TestMaildirRepository) {
-        let repo = repo.repo;
-        let modseq = assert_ok!(ModSeq::try_from(1));
-        assert_lt!(modseq, assert_ok!(repo.highest_modseq()));
-
-        assert_ok!(repo.set_highest_modseq(modseq));
-        assert_eq!(modseq, assert_ok!(repo.highest_modseq()));
-    }
-
-    #[rstest]
-    #[compio::test]
     async fn test_update_highest_modseq_updates_highest_modseq(repo: TestMaildirRepository) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(999));
@@ -775,7 +754,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .add_flag(metadata.uid(), flag)
+                .apply_flag_change(metadata.uid(), added(flag))
                 .await
         );
     }
@@ -794,7 +773,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .add_flag(metadata.uid(), flag)
+                .apply_flag_change(metadata.uid(), added(flag))
                 .await
         );
     }
@@ -807,7 +786,11 @@ mod tests {
     ) {
         let metadata = mail.metadata();
 
-        let result = assert_err!(repo.repo.add_flag(metadata.uid(), Flag::Deleted).await);
+        let result = assert_err!(
+            repo.repo
+                .apply_flag_change(metadata.uid(), added(Flag::Deleted))
+                .await
+        );
         assert_matches!(result, Error::NoExists { .. });
     }
 
@@ -826,7 +809,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .add_flag(metadata.uid(), Flag::Deleted)
+                .apply_flag_change(metadata.uid(), added(Flag::Deleted))
                 .await
         );
         assert_matches!(result, Error::NoExists { .. });
@@ -847,7 +830,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .remove_flag(metadata.uid(), flag)
+                .apply_flag_change(metadata.uid(), removed(flag))
                 .await
         );
     }
@@ -866,7 +849,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .remove_flag(metadata.uid(), flag)
+                .apply_flag_change(metadata.uid(), removed(flag))
                 .await
         );
     }
@@ -879,7 +862,11 @@ mod tests {
     ) {
         let metadata = mail.metadata();
 
-        let result = assert_err!(repo.repo.remove_flag(metadata.uid(), Flag::Seen).await);
+        let result = assert_err!(
+            repo.repo
+                .apply_flag_change(metadata.uid(), removed(Flag::Seen))
+                .await
+        );
         assert_matches!(result, Error::NoExists { .. });
     }
 
@@ -938,8 +925,7 @@ mod tests {
         assert_len_eq_x!(result.deletions, 0);
         assert_len_eq_x!(result.news, 0);
         let changes = result.updates.build();
-        assert_len_eq_x!(changes.additional_flags().collect::<Vec<_>>(), 0);
-        assert_len_eq_x!(changes.removed_flags().collect::<Vec<_>>(), 0);
+        assert_len_eq_x!(changes.iter().collect::<Vec<_>>(), 0);
     }
 
     #[rstest]
@@ -1021,22 +1007,12 @@ mod tests {
         let result = assert_ok!(repo.detect_changes().await);
 
         let changes = result.updates.build();
-        let mut removed: Vec<_> = changes.removed_flags().collect();
-        assert_len_eq_x!(&removed, 1);
-        let (removed_flag, removed_uids) = assert_some!(removed.pop());
-        assert_eq!(removed_flag, Flag::Seen);
-        let mut removed_uids: Vec<_> = removed_uids.iter().collect();
-        assert_len_eq_x!(&removed_uids, 1);
-        let removed_uid = assert_some!(removed_uids.pop());
-        assert_eq!(removed_uid, uid);
-        let mut additional: Vec<_> = changes.additional_flags().collect();
-        assert_len_eq_x!(&additional, 1);
-        let (additional_flag, additional_uids) = assert_some!(additional.pop());
-        assert_eq!(additional_flag, Flag::Deleted);
-        let mut additional_uids: Vec<_> = additional_uids.iter().collect();
-        assert_len_eq_x!(&additional_uids, 1);
-        let additional_uid = assert_some!(additional_uids.pop());
-        assert_eq!(additional_uid, uid);
+        let mut changes: Vec<_> = changes.iter().collect();
+        assert_len_eq_x!(&changes, 1);
+        let (change, uids) = assert_some!(changes.pop());
+        assert_eq!(change.removed, BitFlags::from_flag(Flag::Seen));
+        assert_eq!(change.added, BitFlags::from_flag(Flag::Deleted));
+        assert_eq!(uids.iter().collect::<Vec<_>>(), vec![uid]);
     }
 
     #[rstest]
