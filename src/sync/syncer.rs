@@ -116,7 +116,7 @@ impl Syncer {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
-        match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir) {
+        match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await {
             Ok(maildir_repository)
                 if maildir_repository
                     .is_initial_sync_complete()
@@ -326,6 +326,7 @@ impl Syncer {
             maildir_repository
         } else {
             MaildirRepository::try_init(mailbox_data.uid_validity(), mail_dir, state_dir)
+                .await
                 .expect("initializing maildir repository should succeed")
         };
         let task_handle = Self::setup_task_processing(

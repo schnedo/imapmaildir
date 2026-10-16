@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fs, io, path::PathBuf};
+use std::{fmt::Debug, io, path::PathBuf};
 
 use asynchronous_codec::Framed;
 use compio::{
@@ -43,8 +43,9 @@ impl Connection {
         log::debug!("Connecting to server");
         let mut tls = native_tls::TlsConnector::builder();
         if let Some(cert_file) = connection_config.server_certificate_file() {
-            let cert =
-                fs::read(cert_file).map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
+            let cert = compio::fs::read(cert_file)
+                .await
+                .map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
             tls.add_root_certificate(Certificate::from_pem(&cert).map_err(|_| {
                 Error::TlsError(TlsError::CertfileFormatInvalid(cert_file.clone()))
             })?);
@@ -176,6 +177,7 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         os::unix::fs::PermissionsExt as _,
         path::{Path, PathBuf},
     };

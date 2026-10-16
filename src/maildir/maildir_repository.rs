@@ -36,19 +36,19 @@ impl MaildirRepository {
         Self { maildir, state }
     }
 
-    pub fn try_init(
+    pub async fn try_init(
         uid_validity: UidValidity,
         mail_dir: &Path,
         state_dir: &Path,
     ) -> Result<Self, InitError> {
-        let mail = Maildir::try_init(mail_dir)?;
+        let mail = Maildir::try_init(mail_dir).await?;
         let state = State::init(state_dir, uid_validity)?;
 
         Ok(Self::new(mail, state))
     }
 
-    pub fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, LoadError> {
-        match (State::load(state_dir), Maildir::load(mail_dir)) {
+    pub async fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, LoadError> {
+        match (State::load(state_dir), Maildir::load(mail_dir).await) {
             (Ok(state), Ok(mail)) => {
                 let repo = Self::new(mail, state);
 
@@ -285,7 +285,7 @@ impl MaildirRepository {
             let metadata = metadata?;
             match metadata {
                 maildir::MaildirEntry::New(new_local_mail_metadata) => {
-                    let content = self.maildir.read_content(&new_local_mail_metadata)?;
+                    let content = self.maildir.read_content(&new_local_mail_metadata).await?;
                     news.push(LocalMail::new(content, new_local_mail_metadata));
                 }
                 maildir::MaildirEntry::MaybeTracked(local_mail_metadata) => {
@@ -307,7 +307,7 @@ impl MaildirRepository {
         for maildata in maildir_mails.into_values() {
             let maildata = self.maildir.remove_uid(maildata).await?;
             // todo: return Iterator and chain here
-            let content = self.maildir.read_content(&maildata)?;
+            let content = self.maildir.read_content(&maildata).await?;
             news.push(LocalMail::new(content, maildata));
         }
 
@@ -507,17 +507,15 @@ mod tests {
     }
 
     #[fixture]
-    fn repo(
+    async fn repo(
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
         mail_dir: TempDir,
         state_dir: TempDir,
     ) -> TestMaildirRepository {
-        let repo = assert_ok!(MaildirRepository::try_init(
-            uid_validity,
-            mail_dir.path(),
-            state_dir.path()
-        ));
+        let repo = assert_ok!(
+            MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await
+        );
         assert_ok!(repo.complete_initial_sync(highest_modseq));
         TestMaildirRepository {
             repo,
@@ -539,23 +537,26 @@ mod tests {
         mail: RemoteMail,
     }
     #[fixture]
-    async fn repo_with_mail(repo: TestMaildirRepository, mail: RemoteMail) -> RepoWithMail {
+    async fn repo_with_mail(
+        #[future] repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) -> RepoWithMail {
+        let repo = repo.await;
         assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
         RepoWithMail { repo, mail }
     }
 
     #[rstest]
-    fn test_init_works_in_empty_dirs(
+    #[compio::test]
+    async fn test_init_works_in_empty_dirs(
         uid_validity: UidValidity,
         mail_dir: TempDir,
         state_dir: TempDir,
     ) {
-        assert_ok!(MaildirRepository::try_init(
-            uid_validity,
-            mail_dir.path(),
-            state_dir.path(),
-        ));
+        assert_ok!(
+            MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path(),).await
+        );
         let mut readdir = assert_ok!(mail_dir.path().read_dir());
         assert_ok!(assert_some!(readdir.next()));
         let mut readdir = assert_ok!(state_dir.path().read_dir());
@@ -563,7 +564,8 @@ mod tests {
     }
 
     #[rstest]
-    fn test_init_propagates_maildir_error(
+    #[compio::test]
+    async fn test_init_propagates_maildir_error(
         uid_validity: UidValidity,
         mail_dir: TempDir,
         state_dir: TempDir,
@@ -572,13 +574,15 @@ mod tests {
         permissions.set_readonly(true);
         assert_ok!(fs::set_permissions(mail_dir.path(), permissions));
 
-        let result = MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path());
+        let result =
+            MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await;
         let result = assert_err!(result);
         assert_matches!(result, InitError::Maildir(_));
     }
 
     #[rstest]
-    fn test_init_propagates_state_error(
+    #[compio::test]
+    async fn test_init_propagates_state_error(
         uid_validity: UidValidity,
         mail_dir: TempDir,
         state_dir: TempDir,
@@ -587,71 +591,78 @@ mod tests {
         permissions.set_readonly(true);
         assert_ok!(fs::set_permissions(state_dir.path(), permissions));
 
-        let result = MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path());
+        let result =
+            MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await;
         let result = assert_err!(result);
         assert_matches!(result, InitError::State(_));
     }
 
     #[rstest]
-    fn test_load_loads_repo_on_existing_repository(repo: TestMaildirRepository) {
-        assert_ok!(MaildirRepository::load(
-            repo.mail_dir.path(),
-            repo.state_dir.path()
-        ));
+    #[compio::test]
+    #[awt]
+    async fn test_load_loads_repo_on_existing_repository(#[future] repo: TestMaildirRepository) {
+        assert_ok!(MaildirRepository::load(repo.mail_dir.path(), repo.state_dir.path()).await);
     }
 
     #[rstest]
-    fn test_load_errors_with_uninitialized_on_empty_dirs(mail_dir: TempDir, state_dir: TempDir) {
-        let result = assert_err!(MaildirRepository::load(mail_dir.path(), state_dir.path()));
+    #[compio::test]
+    async fn test_load_errors_with_uninitialized_on_empty_dirs(
+        mail_dir: TempDir,
+        state_dir: TempDir,
+    ) {
+        let result = assert_err!(MaildirRepository::load(mail_dir.path(), state_dir.path()).await);
 
         assert_matches!(result, LoadError::Uninitialized);
     }
 
     #[rstest]
-    fn test_load_removes_existing_state_on_uninitialized_maildir(repo: TestMaildirRepository) {
+    #[compio::test]
+    #[awt]
+    async fn test_load_removes_existing_state_on_uninitialized_maildir(
+        #[future] repo: TestMaildirRepository,
+    ) {
         assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
         assert!(assert_ok!(repo.state_dir.path().try_exists()));
 
-        let result = assert_err!(MaildirRepository::load(
-            repo.mail_dir.path(),
-            repo.state_dir.path()
-        ));
+        let result =
+            assert_err!(MaildirRepository::load(repo.mail_dir.path(), repo.state_dir.path()).await);
 
         assert_matches!(result, LoadError::Uninitialized);
     }
 
     #[rstest]
-    fn test_load_propagates_maildir_error(repo: TestMaildirRepository) {
+    #[compio::test]
+    #[awt]
+    async fn test_load_propagates_maildir_error(#[future] repo: TestMaildirRepository) {
         let mut permissions = assert_ok!(repo.mail_dir.path().metadata()).permissions();
         permissions.set_mode(0o200);
         assert_ok!(fs::set_permissions(repo.mail_dir.path(), permissions));
 
-        let result = assert_err!(MaildirRepository::load(
-            repo.mail_dir.path(),
-            repo.state_dir.path()
-        ));
+        let result =
+            assert_err!(MaildirRepository::load(repo.mail_dir.path(), repo.state_dir.path()).await);
 
         assert_matches!(result, LoadError::Maildir(_));
     }
 
     #[rstest]
-    fn test_load_propagates_state_error(repo: TestMaildirRepository) {
+    #[compio::test]
+    #[awt]
+    async fn test_load_propagates_state_error(#[future] repo: TestMaildirRepository) {
         let mut permissions = assert_ok!(repo.state_dir.path().metadata()).permissions();
         permissions.set_mode(0o200);
         assert_ok!(fs::set_permissions(repo.state_dir.path(), permissions));
 
-        let result = assert_err!(MaildirRepository::load(
-            repo.mail_dir.path(),
-            repo.state_dir.path()
-        ));
+        let result =
+            assert_err!(MaildirRepository::load(repo.mail_dir.path(), repo.state_dir.path()).await);
 
         assert_matches!(result, LoadError::State(_));
     }
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_uid_validity_returns_uid_validity(
-        repo: TestMaildirRepository,
+        #[future] repo: TestMaildirRepository,
         uid_validity: UidValidity,
     ) {
         let result = assert_ok!(repo.repo.uid_validity());
@@ -661,8 +672,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_highest_modseq_returns_highest_modseq(
-        repo: TestMaildirRepository,
+        #[future] repo: TestMaildirRepository,
         highest_modseq: ModSeq,
     ) {
         let result = assert_ok!(repo.repo.highest_modseq());
@@ -672,7 +684,10 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_update_highest_modseq_updates_highest_modseq(repo: TestMaildirRepository) {
+    #[awt]
+    async fn test_update_highest_modseq_updates_highest_modseq(
+        #[future] repo: TestMaildirRepository,
+    ) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(999));
         assert_gt!(modseq, assert_ok!(repo.highest_modseq()));
@@ -683,7 +698,8 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_store_stores_new_mail(repo: TestMaildirRepository, mail: RemoteMail) {
+    #[awt]
+    async fn test_store_stores_new_mail(#[future] repo: TestMaildirRepository, mail: RemoteMail) {
         let uid = mail.metadata().uid();
         assert_err!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
 
@@ -720,7 +736,11 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_store_propagaters_maildir_error(repo: TestMaildirRepository, mail: RemoteMail) {
+    #[awt]
+    async fn test_store_propagaters_maildir_error(
+        #[future] repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) {
         assert_ok!(fs::remove_dir_all(repo.mail_dir.path()));
 
         let result = assert_err!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
@@ -742,8 +762,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_update_flags_errors_on_non_existent_mail(
-        repo: TestMaildirRepository,
+        #[future] repo: TestMaildirRepository,
         mail: RemoteMail,
     ) {
         let metadata = mail.metadata();
@@ -791,8 +812,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_add_flag_errors_on_non_existent_mail(
-        repo: TestMaildirRepository,
+        #[future] repo: TestMaildirRepository,
         mail: RemoteMail,
     ) {
         let metadata = mail.metadata();
@@ -867,8 +889,9 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
     async fn test_remove_flag_errors_on_non_existent_mail(
-        repo: TestMaildirRepository,
+        #[future] repo: TestMaildirRepository,
         mail: RemoteMail,
     ) {
         let metadata = mail.metadata();
@@ -897,13 +920,17 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_delete_does_nothing_on_mail_missing_in_state(repo: TestMaildirRepository) {
+    #[awt]
+    async fn test_delete_does_nothing_on_mail_missing_in_state(
+        #[future] repo: TestMaildirRepository,
+    ) {
         assert_ok!(repo.repo.delete(Uid::MAX).await);
     }
 
     #[rstest]
     #[compio::test]
-    async fn test_add_synced_adds_synced_mail(repo: TestMaildirRepository) {
+    #[awt]
+    async fn test_add_synced_adds_synced_mail(#[future] repo: TestMaildirRepository) {
         let filename = "foo:2,S";
         let metadata = assert_ok!(NewLocalMailMetadata::from_str(filename));
         assert_ok!(fs::write(
@@ -1045,7 +1072,8 @@ mod tests {
 
     #[rstest]
     #[compio::test]
-    async fn test_store_batch_stores_all_mails(repo: TestMaildirRepository) {
+    #[awt]
+    async fn test_store_batch_stores_all_mails(#[future] repo: TestMaildirRepository) {
         let mails: Vec<_> = (1..=3u32)
             .map(|uid| {
                 RemoteMail::new(
