@@ -81,6 +81,7 @@ impl AuthenticatedClient {
             new_mailbox: MailboxMetadataBuilder::default(),
             updates: Vec::new(),
             deletions: None,
+            exists: None,
         };
         self.connection
             .send(command.into(), &mut handler)
@@ -90,6 +91,7 @@ impl AuthenticatedClient {
             new_mailbox,
             updates,
             deletions,
+            exists,
             ..
         } = handler;
 
@@ -100,7 +102,12 @@ impl AuthenticatedClient {
         log::trace!("mail updates = {updates:?}");
         log::trace!("mail deletions = {deletions:?}");
 
-        let client = SelectedClient::new(self.connection, &self.capabilities, task_tx);
+        let client = SelectedClient::new(
+            self.connection,
+            &self.capabilities,
+            task_tx,
+            exists.expect("server should send EXISTS on SELECT"),
+        );
 
         Selection {
             client,
@@ -116,6 +123,7 @@ struct SelectHandler<'a> {
     new_mailbox: MailboxMetadataBuilder,
     updates: Vec<RemoteMailMetadata>,
     deletions: Option<SequenceSet>,
+    exists: Option<u32>,
 }
 
 impl ResponseHandler for SelectHandler<'_> {
@@ -129,7 +137,8 @@ impl SelectHandler<'_> {
         match response.parsed() {
             imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
                 imap_proto::MailboxDatum::Exists(exists) => {
-                    log::trace!("not handling MailboxData response Exists {exists:?}");
+                    log::trace!("mailbox contains {exists} messages");
+                    self.exists = Some(*exists);
                 }
                 imap_proto::MailboxDatum::Flags(flags) => {
                     log::trace!("not handling MailboxData response Flags {flags:?}");

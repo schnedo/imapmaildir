@@ -16,6 +16,7 @@ use crate::{
     imap::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
         client::capability::{Capabilities, Capability},
+        client::message_count::MessageCount,
         transport::{Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
@@ -41,6 +42,7 @@ impl SelectedClient {
         connection: Connection,
         capabilities: &Capabilities,
         task_tx: MAsyncTx<Array<Task>>,
+        exists: u32,
     ) -> Self {
         assert!(
             capabilities.contains(Capability::LiteralPlus),
@@ -54,7 +56,10 @@ impl SelectedClient {
 
         Self {
             connection,
-            mailbox_handler: MailboxHandler { task_tx },
+            mailbox_handler: MailboxHandler {
+                task_tx,
+                message_count: MessageCount::new(exists),
+            },
             idle_stop_rx,
             idle_stop_tx,
         }
@@ -158,6 +163,16 @@ impl SelectedClient {
                         .map(SequenceRange::try_from)
                         .collect();
                     let uid_ranges = uid_ranges.expect("received uids should be valid");
+                    let appended = uid_set_members
+                        .iter()
+                        .map(|member| match member {
+                            imap_proto::rfc4315::UidSetMember::UidRange(range) => {
+                                range.end() - range.start() + 1
+                            }
+                            imap_proto::rfc4315::UidSetMember::Uid(_) => 1,
+                        })
+                        .sum();
+                    self.mailbox_handler.message_count.on_append(appended);
 
                     compio::runtime::spawn(async move {
                         futures::future::join_all(
@@ -268,12 +283,16 @@ impl SelectedClient {
     }
 
     pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
+        if self.mailbox_handler.message_count.has_unknown() {
+            log::debug!("not idling due to unfetched remote mail");
+            return IdleStopReason::Remote;
+        }
         let command = "IDLE";
         log::debug!("{command}");
         let deadline = Instant::now() + timeout;
         let connection = &mut self.connection;
         let idle_stop_rx = &self.idle_stop_rx;
-        let mut handler = Chain(IdleHandler::default(), &mut self.mailbox_handler);
+        let handler = &mut self.mailbox_handler;
 
         let tag = connection.write_command(command.into()).await;
         loop {
@@ -284,12 +303,13 @@ impl SelectedClient {
                     break;
                 }
                 imap_proto::Response::Done { .. } => todo!("handle idle no continuation"),
-                _ => handle_unsolicited(&mut handler, response).await,
+                _ => handler.handle_or_log(response).await,
             }
         }
 
         let stop_reason = loop {
-            if handler.0.remote_changed {
+            if handler.message_count.has_unknown() {
+                log::trace!("stopping idle");
                 break IdleStopReason::Remote;
             }
             let event = compio::time::timeout_at(deadline, async {
@@ -304,7 +324,7 @@ impl SelectedClient {
             match event {
                 Ok(IdleEvent::Stop(reason)) => break reason,
                 Ok(IdleEvent::Response(response)) => {
-                    handle_unsolicited(&mut handler, response).await;
+                    handler.handle_or_log(response).await;
                 }
                 Err(_) => {
                     log::debug!("idle timed out");
@@ -317,7 +337,7 @@ impl SelectedClient {
         log::debug!("{command}");
         connection.write_continuation(command.into()).await;
         connection
-            .receive_completion(&tag, &mut handler)
+            .receive_completion(&tag, handler)
             .await
             .expect("idle should succeed");
 
@@ -328,35 +348,6 @@ impl SelectedClient {
 enum IdleEvent {
     Stop(IdleStopReason),
     Response(ResponseData),
-}
-
-async fn handle_unsolicited(handler: &mut impl ResponseHandler, response: ResponseData) {
-    if let Some(response) = handler.handle(response).await {
-        log::trace!("unhandled untagged response {:?}", response.parsed());
-    }
-}
-
-#[derive(Default)]
-struct IdleHandler {
-    remote_changed: bool,
-}
-
-impl ResponseHandler for IdleHandler {
-    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
-        std::future::ready(match response.parsed() {
-            // todo: do not interrupt idle, if mails only got deleted (but handle
-            // highest modseq then)
-            imap_proto::Response::Expunge(_)
-            | imap_proto::Response::MailboxData(
-                imap_proto::MailboxDatum::Exists(_) | imap_proto::MailboxDatum::Recent(_),
-            ) => {
-                log::trace!("stopping idle");
-                self.remote_changed = true;
-                None
-            }
-            _ => Some(response),
-        })
-    }
 }
 
 #[derive(Default)]
@@ -462,12 +453,14 @@ fn parse_uid_set(uids: &str) -> HashSet<Uid> {
 #[derive(Debug)]
 struct MailboxHandler {
     task_tx: MAsyncTx<Array<Task>>,
+    message_count: MessageCount,
 }
 
 impl ResponseHandler for MailboxHandler {
     async fn handle(&mut self, response: ResponseData) -> Option<ResponseData> {
         match response.parsed() {
-            imap_proto::Response::Fetch(_, attributes) => {
+            imap_proto::Response::Fetch(sequence, attributes) => {
+                self.message_count.on_fetch(*sequence);
                 let task = match attributes.as_slice() {
                     [
                         imap_proto::AttributeValue::Uid(_),
@@ -529,6 +522,13 @@ impl ResponseHandler for MailboxHandler {
             }
             imap_proto::Response::Vanished { earlier, uids } => {
                 log::trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
+                if !earlier {
+                    let count = uids
+                        .iter()
+                        .map(|range| range.end() - range.start() + 1)
+                        .sum();
+                    self.message_count.on_expunge(count);
+                }
                 self.task_tx
                     .send(Task::Delete(
                         uids.try_into()
@@ -536,6 +536,15 @@ impl ResponseHandler for MailboxHandler {
                     ))
                     .await
                     .expect("task channel should still be open");
+                None
+            }
+            imap_proto::Response::MailboxData(imap_proto::MailboxDatum::Exists(exists)) => {
+                log::trace!("mailbox contains {exists} messages");
+                self.message_count.on_exists(*exists);
+                None
+            }
+            imap_proto::Response::Expunge(_) => {
+                self.message_count.on_expunge(1);
                 None
             }
             _ => Some(response),
