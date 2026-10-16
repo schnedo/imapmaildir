@@ -1,8 +1,3 @@
-use crossfire::{
-    AsyncRx,
-    mpsc::{self, Array},
-};
-
 use crate::{
     config::{self, Auth},
     imap::{
@@ -10,13 +5,12 @@ use crate::{
             AuthenticatedClient,
             capability::{AuthCapabilities, AuthCapability, Capabilities},
         },
-        transport::{Connection, ResponseData},
+        transport::{Connection, ResponseData, ResponseHandler},
     },
 };
 
 pub struct Client {
     connection: Connection,
-    untagged_response_receiver: AsyncRx<Array<ResponseData>>,
     capabilities: Capabilities,
     auth_capabilities: AuthCapabilities,
 }
@@ -31,19 +25,14 @@ impl Client {
     }
 
     async fn connect(connection_config: &config::Connection) -> Self {
-        let (untagged_response_sender, untagged_response_receiver) = mpsc::bounded_async(32);
-        // todo: pass configured server cert file
-        let mut connection = Connection::start(connection_config, untagged_response_sender)
+        let mut connection = Connection::start(connection_config)
             .await
             .expect("creating a connection should succeed");
 
         let mut capabilities = Capabilities::default();
         let mut auth_capabilities = AuthCapabilities::default();
 
-        let greeting = untagged_response_receiver
-            .recv()
-            .await
-            .expect("there should be a greeting from the server");
+        let greeting = connection.next_response().await;
         match greeting.parsed() {
             imap_proto::Response::Data {
                 status: imap_proto::Status::Ok,
@@ -55,21 +44,12 @@ impl Client {
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) = code {
                     update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
                 } else {
-                    let command = "CAPABILITY";
-                    log::debug!("{command}");
-                    connection
-                        .send(command.into())
-                        .await
-                        .expect("capability request should succeed");
-                    let response = untagged_response_receiver.recv().await.expect(
-                        "CAPABILITY command should return single untagged CAPABILITY response",
-                    );
-                    match response.parsed() {
-                        imap_proto::Response::Capabilities(caps) => {
-                            update_capabilities(&mut capabilities, &mut auth_capabilities, caps);
-                        }
-                        _ => todo!("handle misbehaved response to CAPABILITY"),
-                    }
+                    request_capabilities(
+                        &mut connection,
+                        &mut capabilities,
+                        &mut auth_capabilities,
+                    )
+                    .await;
                 }
             }
             imap_proto::Response::Data {
@@ -91,7 +71,6 @@ impl Client {
 
         Self {
             connection,
-            untagged_response_receiver,
             capabilities,
             auth_capabilities,
         }
@@ -107,7 +86,6 @@ impl Client {
                 log::debug!("LOGIN <user> <password>");
                 let response = self
                     .connection
-                    // todo: this will block if server sends untagged response
                     .send(
                         format!(
                             "LOGIN {} {}",
@@ -115,6 +93,10 @@ impl Client {
                             plain_auth_config.password()
                         )
                         .into(),
+                        &mut CapabilityHandler {
+                            capabilities: &mut self.capabilities,
+                            auth_capabilities: &mut self.auth_capabilities,
+                        },
                     )
                     .await
                     .expect("login should succeed");
@@ -123,19 +105,54 @@ impl Client {
                 {
                     update_capabilities(&mut self.capabilities, &mut self.auth_capabilities, caps);
                 } else {
-                    self.connection
-                        .send("CAPABILITY".into())
-                        .await
-                        .expect("capabilities should succeed");
+                    request_capabilities(
+                        &mut self.connection,
+                        &mut self.capabilities,
+                        &mut self.auth_capabilities,
+                    )
+                    .await;
                 }
 
-                AuthenticatedClient::new(
-                    self.connection,
-                    self.capabilities,
-                    self.untagged_response_receiver,
-                )
+                AuthenticatedClient::new(self.connection, self.capabilities)
             }
         }
+    }
+}
+
+async fn request_capabilities(
+    connection: &mut Connection,
+    capabilities: &mut Capabilities,
+    auth_capabilities: &mut AuthCapabilities,
+) {
+    let command = "CAPABILITY";
+    log::debug!("{command}");
+    connection
+        .send(
+            command.into(),
+            &mut CapabilityHandler {
+                capabilities,
+                auth_capabilities,
+            },
+        )
+        .await
+        .expect("capability request should succeed");
+}
+
+struct CapabilityHandler<'a> {
+    capabilities: &'a mut Capabilities,
+    auth_capabilities: &'a mut AuthCapabilities,
+}
+
+impl ResponseHandler for CapabilityHandler<'_> {
+    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
+        std::future::ready(
+            if let imap_proto::Response::Capabilities(caps) = response.parsed() {
+                update_capabilities(self.capabilities, self.auth_capabilities, caps);
+                None
+            } else {
+                Some(response)
+            },
+        )
     }
 }
 
