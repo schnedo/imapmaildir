@@ -2,6 +2,7 @@ use std::{
     fmt::{Debug, Display},
     process,
     str::FromStr,
+    sync::LazyLock,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -14,6 +15,13 @@ use crate::{
     maildir::maildir::MaildirFile,
     repository::{Flag, Uid},
 };
+
+static PID_AND_HOSTNAME: LazyLock<(u32, String)> = LazyLock::new(|| {
+    (
+        process::id(),
+        uname().nodename().to_string_lossy().into_owned(),
+    )
+});
 
 #[derive(PartialEq, Clone)]
 pub struct LocalMail {
@@ -152,9 +160,7 @@ impl LocalMailMetadata {
             .expect("should be able to get unix time");
         let secs = time.as_secs();
         let nanos = time.subsec_nanos();
-        let hostname = uname();
-        let hostname = hostname.nodename().to_string_lossy();
-        let pid = process::id();
+        let (pid, hostname) = &*PID_AND_HOSTNAME;
         format!("{secs}.P{pid}N{nanos}.{hostname}")
     }
 
