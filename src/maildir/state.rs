@@ -137,14 +137,6 @@ impl State {
         Ok(())
     }
 
-    pub fn set_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
-        set_highest_modseq(
-            &self.db.lock().expect("state lock should not be poisoned"),
-            value,
-        )
-        .map_err(std::convert::Into::into)
-    }
-
     pub fn highest_modseq(&self) -> Result<ModSeq, Error> {
         log::trace!("getting cached highest_modseq");
         get_highest_modseq(&self.db.lock().expect("state lock should not be poisoned"))
@@ -466,16 +458,6 @@ mod tests {
         assert_ok!(state.state.update_highest_modseq(new_modseq));
 
         assert_eq!(assert_ok!(state.state.highest_modseq()), initial_modseq);
-    }
-
-    #[rstest]
-    fn test_set_highest_modseq_always_updates(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
-        let new_modseq = assert_ok!(ModSeq::try_from(1));
-        assert_lt!(new_modseq, initial_modseq);
-        assert_ok!(state.state.set_highest_modseq(new_modseq));
-
-        assert_eq!(assert_ok!(state.state.highest_modseq()), new_modseq);
     }
 
     #[rstest]

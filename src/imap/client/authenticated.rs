@@ -38,7 +38,8 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
+    pub async fn select(mut self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
+        self.enable_qresync().await;
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
         self.do_select(task_tx, &command, None).await
@@ -51,15 +52,19 @@ impl AuthenticatedClient {
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
     ) -> Selection {
+        self.enable_qresync().await;
+        let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
+
+        self.do_select(task_tx, &command, Some(uid_validity)).await
+    }
+
+    async fn enable_qresync(&mut self) {
         let command = "ENABLE QRESYNC";
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut Unhandled)
             .await
             .expect("enabling qresync should succeed");
-        let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
-
-        self.do_select(task_tx, &command, Some(uid_validity)).await
     }
 
     async fn do_select(

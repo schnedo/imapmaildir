@@ -181,6 +181,7 @@ impl MailFile<'_> {
             let new_path = self.path.with_file_name(file_name);
             assert_ok!(fs::rename(&self.path, &new_path));
             self.flags = flags;
+            self.path = new_path;
 
             true
         } else {

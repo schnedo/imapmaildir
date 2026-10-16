@@ -102,10 +102,6 @@ impl SequenceSetBuilder {
         self.nums.insert(uid);
     }
 
-    pub fn remove(&mut self, uid: Uid) -> bool {
-        self.nums.remove(&uid)
-    }
-
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
         let mut sorted_nums: Vec<Uid> = self.nums.drain().collect();
         sorted_nums.sort_unstable();
@@ -347,8 +343,6 @@ mod tests {
         let mut builder = SequenceSetBuilder::default();
         builder.add(assert_ok!(Uid::try_from(4)));
         builder.add(assert_ok!(Uid::try_from(4)));
-        builder.add(assert_ok!(Uid::try_from(5)));
-        builder.remove(assert_ok!(Uid::try_from(5)));
 
         assert_eq!("4", assert_ok!(builder.build()).to_string());
     }
