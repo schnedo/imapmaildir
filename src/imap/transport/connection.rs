@@ -84,7 +84,13 @@ impl Connection {
 
         compio::runtime::spawn(async move {
             while let Some(response) = reader.next().await {
-                let response = response.expect("response should be receivable");
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        log::debug!("Receiving response failed: {error}");
+                        break;
+                    }
+                };
                 match response.parsed() {
                     imap_proto::Response::Done { tag, status, outcome: imap_proto::Outcome { code, information }} => {
                         log::trace!("{tag:?} {status:?} {code:?}");
