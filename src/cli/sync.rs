@@ -20,6 +20,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
                 config.state_dir(),
                 client,
                 config.idle_timout(),
+                config.sync(),
                 on_change,
             )
             .await;
@@ -29,6 +30,7 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
                 config.maildir_base_path(),
                 config.state_dir(),
                 client,
+                config.sync(),
                 on_change,
             )
             .await;

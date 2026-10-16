@@ -1,8 +1,10 @@
 use crate::{
-    imap::{IdleStopReason, RemoteChanges, RemoteMailMetadata, SelectedClient, Selection},
+    imap::{
+        IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
+    },
     maildir::LocalChanges,
     repository::{SequenceSet, SequenceSetBuilder, Uid},
-    sync::task::Task,
+    sync::{Config, task::Task},
 };
 use std::{collections::HashSet, path::Path, time::Duration};
 
@@ -23,10 +25,18 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
+        config: Config,
         on_local_change: impl FnMut() + Send + 'static,
     ) {
-        let ((client, task_handle), _) =
-            Self::sync(mailbox, mail_dir, state_dir, client, on_local_change).await;
+        let ((client, task_handle), _) = Self::sync(
+            mailbox,
+            mail_dir,
+            state_dir,
+            client,
+            config,
+            on_local_change,
+        )
+        .await;
         client.logout().await;
         task_handle
             .await
@@ -40,6 +50,7 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
         idle_timeout: Duration,
+        config: Config,
         mut on_local_change: impl FnMut() + Clone + Send + 'static,
     ) -> ! {
         let ((mut client, task_handle), maildir_repository) = Self::sync(
@@ -47,6 +58,7 @@ impl Syncer {
             mail_dir,
             state_dir,
             client,
+            config,
             on_local_change.clone(),
         )
         .await;
@@ -98,6 +110,7 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         client: AuthenticatedClient,
+        config: Config,
         on_local_change: impl FnMut() + Send + 'static,
     ) -> ((SelectedClient, JoinHandle<()>), MaildirRepository) {
         let mailbox_maildir = mail_dir.join(mailbox);
@@ -110,8 +123,14 @@ impl Syncer {
                     .expect("checking for completed initial sync should succeed") =>
             {
                 (
-                    Self::sync_existing(&maildir_repository, client, mailbox, on_local_change)
-                        .await,
+                    Self::sync_existing(
+                        &maildir_repository,
+                        client,
+                        mailbox,
+                        config,
+                        on_local_change,
+                    )
+                    .await,
                     maildir_repository,
                 )
             }
@@ -123,6 +142,7 @@ impl Syncer {
                     &mailbox_maildir,
                     &mailbox_statedir,
                     mailbox,
+                    config,
                     on_local_change,
                 )
                 .await
@@ -135,6 +155,7 @@ impl Syncer {
                     &mailbox_maildir,
                     &mailbox_statedir,
                     mailbox,
+                    config,
                     on_local_change,
                 )
                 .await
@@ -146,6 +167,7 @@ impl Syncer {
         maildir_repository: &MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
+        config: Config,
         on_local_change: impl FnMut() + Send + 'static,
     ) -> (SelectedClient, JoinHandle<()>) {
         let uid_validity = maildir_repository
@@ -158,9 +180,13 @@ impl Syncer {
             .detect_changes()
             .await
             .expect("detecting local changes should succeed");
-        let (task_tx, task_rx) = mpsc::bounded_async(32);
-        let task_handle =
-            Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
+        let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let task_handle = Self::setup_task_processing(
+            maildir_repository.clone(),
+            task_rx,
+            config,
+            on_local_change,
+        );
 
         let Selection {
             mut client,
@@ -279,9 +305,10 @@ impl Syncer {
         mail_dir: &Path,
         state_dir: &Path,
         mailbox: &str,
+        config: Config,
         on_local_change: impl FnMut() + Send + 'static,
     ) -> ((SelectedClient, JoinHandle<()>), MaildirRepository) {
-        let (task_tx, task_rx) = mpsc::bounded_async(32);
+        let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
         let Selection {
             mut client,
             mailbox_data,
@@ -301,8 +328,12 @@ impl Syncer {
             MaildirRepository::try_init(mailbox_data.uid_validity(), mail_dir, state_dir)
                 .expect("initializing maildir repository should succeed")
         };
-        let task_handle =
-            Self::setup_task_processing(maildir_repository.clone(), task_rx, on_local_change);
+        let task_handle = Self::setup_task_processing(
+            maildir_repository.clone(),
+            task_rx,
+            config,
+            on_local_change,
+        );
 
         let local_uids = maildir_repository
             .uids()
@@ -326,18 +357,51 @@ impl Syncer {
         ((client, task_handle), maildir_repository)
     }
 
+    fn collect_store_batch(
+        first: RemoteMail,
+        task_rx: &AsyncRx<Array<Task>>,
+        config: Config,
+    ) -> (Vec<RemoteMail>, Option<Task>) {
+        let mut bytes = first.content().len();
+        let mut batch = vec![first];
+        while batch.len() < config.store_batch_size() && bytes < config.store_batch_max_bytes() {
+            match task_rx.try_recv() {
+                Ok(Task::NewMail(remote_mail)) => {
+                    bytes += remote_mail.content().len();
+                    batch.push(remote_mail);
+                }
+                Ok(task) => return (batch, Some(task)),
+                Err(_) => break,
+            }
+        }
+
+        (batch, None)
+    }
+
     fn setup_task_processing(
         maildir_repository: MaildirRepository,
         task_rx: AsyncRx<Array<Task>>,
+        config: Config,
         mut on_local_change: impl FnMut() + Send + 'static,
     ) -> JoinHandle<()> {
         compio::runtime::spawn(async move {
             log::debug!("Listening to incoming mail...");
-            while let Ok(task) = task_rx.recv().await {
+            let mut next_task = None;
+            loop {
+                let task = if let Some(task) = next_task.take() {
+                    task
+                } else if let Ok(task) = task_rx.recv().await {
+                    task
+                } else {
+                    break;
+                };
                 match task {
                     Task::NewMail(remote_mail) => {
+                        let (batch, task) =
+                            Self::collect_store_batch(remote_mail, &task_rx, config);
+                        next_task = task;
                         maildir_repository
-                            .store(&remote_mail)
+                            .store_batch(&batch)
                             .await
                             .expect("storing new mail should succeed");
                         on_local_change();
@@ -380,5 +444,104 @@ impl Syncer {
             }
             log::debug!("Task channel closed. Stopping task processing");
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+    use crossfire::MAsyncTx;
+
+    use crate::{
+        imap::{RemoteContent, RemoteMailMetadata},
+        repository::{Flag, ModSeq, Uid},
+    };
+
+    use super::*;
+
+    fn mail(uid: u32, size: usize) -> RemoteMail {
+        RemoteMail::new(
+            RemoteMailMetadata::new(
+                assert_ok!(Uid::try_from(uid)),
+                Flag::Seen.into(),
+                assert_ok!(ModSeq::try_from(i64::from(uid))),
+            ),
+            RemoteContent::from_string("x".repeat(size)),
+        )
+    }
+
+    async fn queue(
+        tasks: impl IntoIterator<Item = Task>,
+    ) -> (MAsyncTx<Array<Task>>, AsyncRx<Array<Task>>) {
+        let (task_tx, task_rx) = mpsc::bounded_async(16);
+        for task in tasks {
+            assert_ok!(task_tx.send(task).await);
+        }
+
+        (task_tx, task_rx)
+    }
+
+    fn uids(batch: &[RemoteMail]) -> Vec<u32> {
+        batch
+            .iter()
+            .map(|mail| u32::from(mail.metadata().uid()))
+            .collect()
+    }
+
+    #[compio::test]
+    async fn test_collect_store_batch_collects_queued_mails() {
+        let (_task_tx, task_rx) =
+            queue([Task::NewMail(mail(2, 1)), Task::NewMail(mail(3, 1))]).await;
+
+        let (batch, next) = Syncer::collect_store_batch(mail(1, 1), &task_rx, Config::default());
+
+        assert_eq!(uids(&batch), vec![1, 2, 3]);
+        assert!(next.is_none());
+    }
+
+    #[compio::test]
+    async fn test_collect_store_batch_respects_count_limit() {
+        let (_task_tx, task_rx) =
+            queue([Task::NewMail(mail(2, 1)), Task::NewMail(mail(3, 1))]).await;
+
+        let (batch, next) = Syncer::collect_store_batch(mail(1, 1), &task_rx, Config::new(2, 100));
+
+        assert_eq!(uids(&batch), vec![1, 2]);
+        assert!(next.is_none());
+        assert_matches!(task_rx.try_recv(), Ok(Task::NewMail(_)));
+    }
+
+    #[compio::test]
+    async fn test_collect_store_batch_respects_byte_limit() {
+        let (_task_tx, task_rx) =
+            queue([Task::NewMail(mail(2, 6)), Task::NewMail(mail(3, 1))]).await;
+
+        let (batch, _) = Syncer::collect_store_batch(mail(1, 5), &task_rx, Config::new(10, 10));
+
+        assert_eq!(uids(&batch), vec![1, 2]);
+    }
+
+    #[compio::test]
+    async fn test_collect_store_batch_takes_single_oversized_mail() {
+        let (_task_tx, task_rx) = queue([Task::NewMail(mail(2, 1))]).await;
+
+        let (batch, _) = Syncer::collect_store_batch(mail(1, 20), &task_rx, Config::new(10, 10));
+
+        assert_eq!(uids(&batch), vec![1]);
+    }
+
+    #[compio::test]
+    async fn test_collect_store_batch_ends_on_other_task() {
+        let (_task_tx, task_rx) = queue([
+            Task::NewMail(mail(2, 1)),
+            Task::SetHighestModseq(assert_ok!(ModSeq::try_from(9))),
+            Task::NewMail(mail(3, 1)),
+        ])
+        .await;
+
+        let (batch, next) = Syncer::collect_store_batch(mail(1, 1), &task_rx, Config::default());
+
+        assert_eq!(uids(&batch), vec![1, 2]);
+        assert_matches!(next, Some(Task::SetHighestModseq(_)));
     }
 }

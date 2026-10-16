@@ -180,6 +180,41 @@ impl State {
         Ok(())
     }
 
+    pub fn store_all<'a>(
+        &self,
+        data: &'a [LocalMailMetadata],
+    ) -> Result<Vec<&'a LocalMailMetadata>, Error> {
+        log::trace!("storing {} mail caches", data.len());
+        let mut db = self.db.lock().expect("state lock should not be poisoned");
+        let transaction = db.transaction()?;
+        let mut conflicts = Vec::new();
+        {
+            let mut stmt = transaction.prepare_cached(
+                "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+            )?;
+            for entry in data {
+                match stmt.execute((
+                    u32::from(entry.uid()),
+                    entry.flags().bits(),
+                    &entry.fileprefix(),
+                )) {
+                    Ok(_) => {}
+                    Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error {
+                            code: rusqlite::ErrorCode::ConstraintViolation,
+                            ..
+                        },
+                        _,
+                    )) => conflicts.push(entry),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        transaction.commit()?;
+
+        Ok(conflicts)
+    }
+
     pub fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata with {uid:?}");
         let db = self.db.lock().expect("state lock should not be poisoned");
