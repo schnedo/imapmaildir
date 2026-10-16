@@ -3,7 +3,12 @@ use crossfire::{
     mpsc::{self, Array},
 };
 use enumflags2::BitFlags;
-use std::{collections::HashMap, io, path::Path, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    path::Path,
+    time::Duration,
+};
 use thiserror::Error;
 
 use crate::{
@@ -14,7 +19,7 @@ use crate::{
         maildir::{self, Change, MaildirFile},
         state::{self, State},
     },
-    repository::{Flag, MailboxMetadata, ModSeq, Uid, UidValidity},
+    repository::{Flag, ModSeq, Uid, UidValidity},
 };
 
 use super::Maildir;
@@ -32,12 +37,12 @@ impl MaildirRepository {
     }
 
     pub fn try_init(
-        mailbox_metadata: &MailboxMetadata,
+        uid_validity: UidValidity,
         mail_dir: &Path,
         state_dir: &Path,
     ) -> Result<Self, InitError> {
         let mail = Maildir::try_init(mail_dir)?;
-        let state = State::init(state_dir, mailbox_metadata)?;
+        let state = State::init(state_dir, uid_validity)?;
 
         Ok(Self::new(mail, state))
     }
@@ -142,6 +147,18 @@ impl MaildirRepository {
 
     pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
         self.state.update_highest_modseq(value)
+    }
+
+    pub fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), state::Error> {
+        self.state.complete_initial_sync(highest_modseq)
+    }
+
+    pub fn is_initial_sync_complete(&self) -> Result<bool, state::Error> {
+        self.state.is_initial_sync_complete()
+    }
+
+    pub fn uids(&self) -> Result<HashSet<Uid>, state::Error> {
+        self.state.uids()
     }
 
     pub async fn store(&self, mail: &RemoteMail) -> Result<(), StoreError> {
@@ -443,7 +460,7 @@ mod tests {
     use rstest::*;
     use tempfile::TempDir;
 
-    use crate::{imap::RemoteContent, repository::MailboxMetadataBuilder};
+    use crate::imap::RemoteContent;
 
     use super::*;
 
@@ -481,15 +498,6 @@ mod tests {
         assert_ok!(ModSeq::try_from(900))
     }
 
-    #[fixture]
-    fn mailbox_metadata(uid_validity: UidValidity, highest_modseq: ModSeq) -> MailboxMetadata {
-        let mut builder = MailboxMetadataBuilder::default();
-        builder.uid_validity(uid_validity);
-        builder.highest_modseq(highest_modseq);
-
-        assert_ok!(builder.build())
-    }
-
     struct TestMaildirRepository {
         repo: MaildirRepository,
         mail_dir: TempDir,
@@ -498,16 +506,19 @@ mod tests {
 
     #[fixture]
     fn repo(
-        mailbox_metadata: MailboxMetadata,
+        uid_validity: UidValidity,
+        highest_modseq: ModSeq,
         mail_dir: TempDir,
         state_dir: TempDir,
     ) -> TestMaildirRepository {
+        let repo = assert_ok!(MaildirRepository::try_init(
+            uid_validity,
+            mail_dir.path(),
+            state_dir.path()
+        ));
+        assert_ok!(repo.complete_initial_sync(highest_modseq));
         TestMaildirRepository {
-            repo: assert_ok!(MaildirRepository::try_init(
-                &mailbox_metadata,
-                mail_dir.path(),
-                state_dir.path()
-            )),
+            repo,
             mail_dir,
             state_dir,
         }
@@ -534,12 +545,12 @@ mod tests {
 
     #[rstest]
     fn test_init_works_in_empty_dirs(
-        mailbox_metadata: MailboxMetadata,
+        uid_validity: UidValidity,
         mail_dir: TempDir,
         state_dir: TempDir,
     ) {
         assert_ok!(MaildirRepository::try_init(
-            &mailbox_metadata,
+            uid_validity,
             mail_dir.path(),
             state_dir.path(),
         ));
@@ -551,7 +562,7 @@ mod tests {
 
     #[rstest]
     fn test_init_propagates_maildir_error(
-        mailbox_metadata: MailboxMetadata,
+        uid_validity: UidValidity,
         mail_dir: TempDir,
         state_dir: TempDir,
     ) {
@@ -559,15 +570,14 @@ mod tests {
         permissions.set_readonly(true);
         assert_ok!(fs::set_permissions(mail_dir.path(), permissions));
 
-        let result =
-            MaildirRepository::try_init(&mailbox_metadata, mail_dir.path(), state_dir.path());
+        let result = MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path());
         let result = assert_err!(result);
         assert_matches!(result, InitError::Maildir(_));
     }
 
     #[rstest]
     fn test_init_propagates_state_error(
-        mailbox_metadata: MailboxMetadata,
+        uid_validity: UidValidity,
         mail_dir: TempDir,
         state_dir: TempDir,
     ) {
@@ -575,8 +585,7 @@ mod tests {
         permissions.set_readonly(true);
         assert_ok!(fs::set_permissions(state_dir.path(), permissions));
 
-        let result =
-            MaildirRepository::try_init(&mailbox_metadata, mail_dir.path(), state_dir.path());
+        let result = MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path());
         let result = assert_err!(result);
         assert_matches!(result, InitError::State(_));
     }
