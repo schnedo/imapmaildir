@@ -23,7 +23,7 @@ compio = { version = "0.19.2", features = [
   "native-tls",
   "process",
 ] }
-crossfire = "3.1.20"
+crossfire = "3.1.21"
 derive-getters = { version = "0.5.0", features = ["auto_copy_getters"] }
 derive_builder = "0.20.2"
 enumflags2 = { version = "0.7.12", features = ["serde"] }
