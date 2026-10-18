@@ -150,11 +150,8 @@ impl SelectedClient {
         let mut stored = Vec::new();
         let mut metadatas = Vec::new();
         if self.multiappend {
-            let mut mails = mails.peekable();
-            if mails.peek().is_some() {
-                self.append(&mailbox, mails, &mut metadatas, &mut stored)
-                    .await;
-            }
+            self.append(&mailbox, mails, &mut metadatas, &mut stored)
+                .await;
         } else {
             for mail in mails {
                 self.append(&mailbox, std::iter::once(mail), &mut metadatas, &mut stored)
