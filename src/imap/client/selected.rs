@@ -16,6 +16,7 @@ use crate::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
         client::capability::{Capabilities, Capability},
         client::encoding,
+        client::fetch::FetchAttributes,
         client::message_count::MessageCount,
         transport::{Chain, Connection, ResponseData, ResponseHandler},
     },
@@ -387,15 +388,12 @@ impl ResponseHandler for MetadataCollector {
     fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
         std::future::ready(
             if let imap_proto::Response::Fetch(sequence, attributes) = response.parsed()
-                && let [
-                    imap_proto::AttributeValue::Uid(_),
-                    imap_proto::AttributeValue::ModSeq(_),
-                    imap_proto::AttributeValue::Flags(_),
-                ] = attributes.as_slice()
+                && let parsed = FetchAttributes::parse(attributes)
+                && parsed.body.is_none()
+                && let Some(metadata) = parsed.metadata()
             {
                 self.highest_sequence = self.highest_sequence.max(*sequence);
-                self.metadata
-                    .push(RemoteMailMetadata::from_fetch(attributes));
+                self.metadata.push(metadata);
                 None
             } else {
                 Some(response)
@@ -413,10 +411,12 @@ impl ResponseHandler for StoreHandler {
     fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
         std::future::ready(
             if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
-                && let [
-                    imap_proto::AttributeValue::Uid(_),
-                    imap_proto::AttributeValue::ModSeq(modseq),
-                ] = attributes.as_slice()
+                && let FetchAttributes {
+                    uid: Some(_),
+                    modseq: Some(modseq),
+                    flags: None,
+                    body: None,
+                } = FetchAttributes::parse(attributes)
             {
                 let modseq = modseq.try_into().expect("received modseq should be valid");
                 self.highest_modseq = self.highest_modseq.max(Some(modseq));
@@ -471,57 +471,16 @@ impl ResponseHandler for MailboxHandler {
         match response.parsed() {
             imap_proto::Response::Fetch(sequence, attributes) => {
                 self.message_count.on_fetch(*sequence);
-                let task = match attributes.as_slice() {
-                    [
-                        imap_proto::AttributeValue::Uid(_),
-                        imap_proto::AttributeValue::ModSeq(_),
-                    ] => {
-                        return Some(response);
+                let parsed = FetchAttributes::parse(attributes);
+                log::trace!("FETCH {parsed:?}");
+                let task = match (parsed.metadata(), parsed.body) {
+                    (Some(metadata), Some(Some(content))) => {
+                        let content = RemoteContent::new(response.bytes_of(content));
+                        Task::NewMail(RemoteMail::new(metadata, content))
                     }
-                    [
-                        imap_proto::AttributeValue::Uid(uid),
-                        imap_proto::AttributeValue::ModSeq(modseq),
-                        imap_proto::AttributeValue::Flags(flags),
-                        imap_proto::AttributeValue::BodySection {
-                            section: _,
-                            index: _,
-                            data: content,
-                        },
-                    ] => {
-                        log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
-                        let mail_flags = Flag::into_bitflags(flags);
-                        let metadata = RemoteMailMetadata::new(
-                            Uid::try_from(uid).expect("remote uid should be valid"),
-                            mail_flags,
-                            modseq.try_into().expect("received modseq should be valid"),
-                        );
-
-                        if let Some(content) = content {
-                            let content = RemoteContent::new(response.bytes_of(content));
-
-                            Task::NewMail(RemoteMail::new(metadata, content))
-                        } else {
-                            unreachable!("mail without content")
-                        }
-                    }
-                    [
-                        imap_proto::AttributeValue::Uid(uid),
-                        imap_proto::AttributeValue::ModSeq(modseq),
-                        imap_proto::AttributeValue::Flags(flags),
-                    ] => {
-                        log::trace!("FETCH uid {uid:?} modseq {modseq:?} flags {flags:?}");
-                        Task::UpdateFlags(RemoteMailMetadata::new(
-                            uid.try_into().expect("uid should be nonzero"),
-                            Flag::into_bitflags(flags),
-                            modseq.try_into().expect("modseq shoud be nonzero"),
-                        ))
-                    }
-                    _ => {
-                        log::trace!("attributes {attributes:?}");
-                        panic!(
-                            "wrong format of FETCH response. check order of attributes in command"
-                        );
-                    }
+                    (Some(_), Some(None)) => unreachable!("mail without content"),
+                    (Some(metadata), None) => Task::UpdateFlags(metadata),
+                    (None, _) => return Some(response),
                 };
                 self.task_tx
                     .send(task)

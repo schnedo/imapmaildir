@@ -1,6 +1,7 @@
 mod authenticated;
 mod capability;
 mod encoding;
+mod fetch;
 mod message_count;
 mod not_authenticated;
 mod selected;
