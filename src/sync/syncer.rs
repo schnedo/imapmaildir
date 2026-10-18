@@ -530,11 +530,11 @@ impl Syncer {
                 done_tx.send(());
             }
             Task::ApplyRemoteUpdates(updates, reply) => {
-                let missing = maildir_repository
+                let (missing, changed) = maildir_repository
                     .apply_remote_updates(&updates)
                     .await
                     .unwrap_or_else(|e| panic!("updating flags should succeed: {e}"));
-                if !updates.is_empty() {
+                if changed {
                     on_local_change();
                 }
                 reply.send(missing);

@@ -320,7 +320,7 @@ impl MaildirRepository {
     pub async fn apply_remote_updates(
         &self,
         updates: &[RemoteMailMetadata],
-    ) -> Result<Vec<Uid>, Error> {
+    ) -> Result<(Vec<Uid>, bool), Error> {
         let mut remote_flags: HashMap<Uid, BitFlags<Flag>> = updates
             .iter()
             .map(|update| (update.uid(), update.flags()))
@@ -329,22 +329,27 @@ impl MaildirRepository {
             .state
             .get_all_by_id(remote_flags.keys().copied().collect())
             .await?;
-        let changes = entries
+        let changes: Vec<_> = entries
             .into_iter()
             .filter_map(|entry| {
                 let new_flags = remote_flags.remove(&entry.uid())?;
-                log::info!(
-                    "update flags of mail {}: {} -> {new_flags}",
-                    entry.uid(),
-                    entry.flags()
-                );
-                (entry.flags() != new_flags).then_some((entry, new_flags))
+                (entry.flags() != new_flags).then(|| {
+                    log::info!(
+                        "update flags of mail {}: {} -> {new_flags}",
+                        entry.uid(),
+                        entry.flags()
+                    );
+                    (entry, new_flags)
+                })
             })
             .collect();
+        let change_count = changes.len();
         let mut missing: Vec<Uid> = remote_flags.into_keys().collect();
-        missing.extend(self.set_flags_all(changes).await?);
+        let gone = self.set_flags_all(changes).await?;
+        let has_changes = change_count > gone.len();
+        missing.extend(gone);
 
-        Ok(missing)
+        Ok((missing, has_changes))
     }
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
@@ -1310,6 +1315,24 @@ mod tests {
         assert_err!(list_rx.recv().await);
         let tmp_files = assert_ok!(repo.mail_dir.path().join("tmp").read_dir()).count();
         assert_eq!(tmp_files, 1);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_apply_remote_updates_reports_changes(#[future] repo_with_mail: RepoWithMail) {
+        let RepoWithMail { repo, mail } = repo_with_mail;
+        let unchanged = mail.metadata().clone();
+        let changed =
+            RemoteMailMetadata::new(unchanged.uid(), Flag::Flagged.into(), unchanged.modseq());
+
+        let (missing, has_changes) = assert_ok!(repo.repo.apply_remote_updates(&[unchanged]).await);
+        assert_is_empty!(missing);
+        assert!(!has_changes);
+
+        let (missing, has_changes) = assert_ok!(repo.repo.apply_remote_updates(&[changed]).await);
+        assert_is_empty!(missing);
+        assert!(has_changes);
     }
 
     #[rstest]
