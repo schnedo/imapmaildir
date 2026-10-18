@@ -42,13 +42,13 @@ impl MaildirRepository {
         state_dir: &Path,
     ) -> Result<Self, InitError> {
         let mail = Maildir::try_init(mail_dir).await?;
-        let state = State::init(state_dir, uid_validity)?;
+        let state = State::init(state_dir, uid_validity).await?;
 
         Ok(Self::new(mail, state))
     }
 
     pub async fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, LoadError> {
-        match (State::load(state_dir), Maildir::load(mail_dir).await) {
+        match (State::load(state_dir).await, Maildir::load(mail_dir).await) {
             (Ok(state), Ok(mail)) => {
                 let repo = Self::new(mail, state);
 
@@ -57,12 +57,13 @@ impl MaildirRepository {
             (Err(state::InitError::Missing(_)), Err(maildir::LoadError::Missing(_))) => {
                 Err(LoadError::Uninitialized)
             }
-            (Ok(_), Err(maildir_error)) => match maildir_error {
+            (Ok(state), Err(maildir_error)) => match maildir_error {
                 maildir::LoadError::Missing(_) => {
                     log::warn!(
                         "encountered missing maildir for existing state. Reinitilizing state and maildir..."
                     );
-                    State::remove_from(state_dir)?;
+                    state.close().await;
+                    State::remove_from(state_dir).await?;
 
                     Err(LoadError::Uninitialized)
                 }
@@ -113,6 +114,7 @@ impl MaildirRepository {
                 let change = rx.recv().await.expect("changes_rx should still be open");
                 let highest_modseq = this
                     .highest_modseq()
+                    .await
                     .expect("getting highest modseq should succeed");
                 handle_change(change);
 
@@ -137,28 +139,28 @@ impl MaildirRepository {
         changes_rx
     }
 
-    pub fn uid_validity(&self) -> Result<UidValidity, state::Error> {
-        self.state.uid_validity()
+    pub async fn uid_validity(&self) -> Result<UidValidity, state::Error> {
+        self.state.uid_validity().await
     }
 
-    pub fn highest_modseq(&self) -> Result<ModSeq, state::Error> {
-        self.state.highest_modseq()
+    pub async fn highest_modseq(&self) -> Result<ModSeq, state::Error> {
+        self.state.highest_modseq().await
     }
 
-    pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
-        self.state.update_highest_modseq(value)
+    pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), state::Error> {
+        self.state.update_highest_modseq(value).await
     }
 
-    pub fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), state::Error> {
-        self.state.complete_initial_sync(highest_modseq)
+    pub async fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), state::Error> {
+        self.state.complete_initial_sync(highest_modseq).await
     }
 
-    pub fn is_initial_sync_complete(&self) -> Result<bool, state::Error> {
-        self.state.is_initial_sync_complete()
+    pub async fn is_initial_sync_complete(&self) -> Result<bool, state::Error> {
+        self.state.is_initial_sync_complete().await
     }
 
-    pub fn uids(&self) -> Result<HashSet<Uid>, state::Error> {
-        self.state.uids()
+    pub async fn uids(&self) -> Result<HashSet<Uid>, state::Error> {
+        self.state.uids().await
     }
 
     pub async fn store_batch(&self, mails: &[RemoteMail]) -> Result<(), StoreError> {
@@ -176,10 +178,10 @@ impl MaildirRepository {
                 .collect::<Result<_, _>>()?;
         self.maildir.sync_cur().await?;
 
-        for conflict in self.state.store_all(&stored)? {
-            if let Some(existing_mail) = self.state.get_by_id(conflict.uid())? {
+        for conflict in self.state.store_all(stored).await? {
+            if let Some(existing_mail) = self.state.get_by_id(conflict.uid()).await? {
                 self.maildir
-                    .handle_uid_conflict(&existing_mail, conflict)
+                    .handle_uid_conflict(&existing_mail, &conflict)
                     .await?;
             } else {
                 unreachable!("stored mail should exist on store ConstraintViolation");
@@ -193,7 +195,7 @@ impl MaildirRepository {
         let uid = mail_metadata.uid();
 
         // todo: should this be transactional?
-        if let Some(mut entry) = self.state.get_by_id(uid)? {
+        if let Some(mut entry) = self.state.get_by_id(uid).await? {
             log::info!(
                 "update flags of mail {uid}: {} -> {}",
                 entry.flags(),
@@ -211,7 +213,7 @@ impl MaildirRepository {
     }
 
     pub async fn apply_flag_change(&self, uid: Uid, change: FlagChange) -> Result<(), Error> {
-        if let Some(mut entry) = self.state.get_by_id(uid)? {
+        if let Some(mut entry) = self.state.get_by_id(uid).await? {
             let new_flags = (entry.flags() | change.added) & !change.removed;
             if entry.flags() != new_flags {
                 log::info!(
@@ -234,12 +236,12 @@ impl MaildirRepository {
     ) -> Result<(), Error> {
         match self.maildir.update_flags(entry, new_flags).await {
             Ok(()) => {
-                self.state.update(entry)?;
+                self.state.update(entry).await?;
 
                 Ok(())
             }
             Err(maildir::Error::Missing(_)) => {
-                self.state.delete_by_id(entry.uid())?;
+                self.state.delete_by_id(entry.uid()).await?;
 
                 Err(Error::NoExists { uid: entry.uid() })
             }
@@ -257,16 +259,16 @@ impl MaildirRepository {
             mail_metadata.filename()
         );
         let mail_metadata = self.maildir.update_uid(mail_metadata, uid).await?;
-        self.state.store(&mail_metadata)?;
+        self.state.store(&mail_metadata).await?;
 
         Ok(())
     }
 
     pub async fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
         log::info!("deleting mail {uid}");
-        if let Some(entry) = self.state.get_by_id(uid)? {
+        if let Some(entry) = self.state.get_by_id(uid).await? {
             self.maildir.delete(&entry).await?;
-            self.state.delete_by_id(uid)?;
+            self.state.delete_by_id(uid).await?;
         } else {
             log::trace!("mail {uid:?} already gone");
         }
@@ -296,14 +298,17 @@ impl MaildirRepository {
         let mut updates = LocalFlagChangesBuilder::default();
         let mut deletions = Vec::new();
 
-        let highest_modseq = self.state.fore_each(|entry| {
-            let uid = entry.uid();
-            if let Some(data) = maildir_mails.remove(&uid) {
-                Self::update_flag_changes(&mut updates, &entry, &data);
-            } else {
-                deletions.push(entry.uid());
-            }
-        })?;
+        let highest_modseq = self
+            .state
+            .fore_each(|entry| {
+                let uid = entry.uid();
+                if let Some(data) = maildir_mails.remove(&uid) {
+                    Self::update_flag_changes(&mut updates, &entry, &data);
+                } else {
+                    deletions.push(entry.uid());
+                }
+            })
+            .await?;
         for maildata in maildir_mails.into_values() {
             let maildata = self.maildir.remove_uid(maildata).await?;
             // todo: return Iterator and chain here
@@ -516,7 +521,7 @@ mod tests {
         let repo = assert_ok!(
             MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await
         );
-        assert_ok!(repo.complete_initial_sync(highest_modseq));
+        assert_ok!(repo.complete_initial_sync(highest_modseq).await);
         TestMaildirRepository {
             repo,
             mail_dir,
@@ -665,7 +670,7 @@ mod tests {
         #[future] repo: TestMaildirRepository,
         uid_validity: UidValidity,
     ) {
-        let result = assert_ok!(repo.repo.uid_validity());
+        let result = assert_ok!(repo.repo.uid_validity().await);
 
         assert_eq!(result, uid_validity);
     }
@@ -677,7 +682,7 @@ mod tests {
         #[future] repo: TestMaildirRepository,
         highest_modseq: ModSeq,
     ) {
-        let result = assert_ok!(repo.repo.highest_modseq());
+        let result = assert_ok!(repo.repo.highest_modseq().await);
 
         assert_eq!(result, highest_modseq);
     }
@@ -690,10 +695,10 @@ mod tests {
     ) {
         let repo = repo.repo;
         let modseq = assert_ok!(ModSeq::try_from(999));
-        assert_gt!(modseq, assert_ok!(repo.highest_modseq()));
+        assert_gt!(modseq, assert_ok!(repo.highest_modseq().await));
 
-        assert_ok!(repo.update_highest_modseq(modseq));
-        assert_eq!(modseq, assert_ok!(repo.highest_modseq()));
+        assert_ok!(repo.update_highest_modseq(modseq).await);
+        assert_eq!(modseq, assert_ok!(repo.highest_modseq().await));
     }
 
     #[rstest]
@@ -709,7 +714,7 @@ mod tests {
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
 
-        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid).await));
     }
 
     #[rstest]
@@ -723,7 +728,7 @@ mod tests {
         let list_rx = assert_ok!(repo.repo.maildir.list_cur());
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
-        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid).await));
 
         assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
@@ -731,7 +736,7 @@ mod tests {
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
 
-        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(uid).await));
     }
 
     #[rstest]
@@ -847,7 +852,12 @@ mod tests {
         );
         assert_matches!(result, Error::NoExists { .. });
         assert_none!(assert_ok!(
-            repo_with_mail.repo.repo.state.get_by_id(metadata.uid())
+            repo_with_mail
+                .repo
+                .repo
+                .state
+                .get_by_id(metadata.uid())
+                .await
         ));
     }
 
@@ -915,7 +925,9 @@ mod tests {
                 .recv()
                 .await
         );
-        assert_none!(assert_ok!(repo_with_mail.repo.repo.state.get_by_id(uid)));
+        assert_none!(assert_ok!(
+            repo_with_mail.repo.repo.state.get_by_id(uid).await
+        ));
     }
 
     #[rstest]
@@ -941,7 +953,7 @@ mod tests {
 
         assert_ok!(repo.repo.add_synced(metadata, uid).await);
 
-        let mail = assert_some!(assert_ok!(repo.repo.state.get_by_id(uid)));
+        let mail = assert_some!(assert_ok!(repo.repo.state.get_by_id(uid).await));
         assert!(
             repo.mail_dir
                 .path()
@@ -959,7 +971,10 @@ mod tests {
 
         let result = assert_ok!(repo.detect_changes().await);
 
-        assert_eq!(result.highest_modseq, assert_ok!(repo.highest_modseq()));
+        assert_eq!(
+            result.highest_modseq,
+            assert_ok!(repo.highest_modseq().await)
+        );
         assert_len_eq_x!(result.deletions, 0);
         assert_len_eq_x!(result.news, 0);
         let changes = result.updates.build();
@@ -981,6 +996,7 @@ mod tests {
                 .repo
                 .state
                 .get_by_id(new_mail_metadata.uid())
+                .await
         ));
         let expected_filename = format!("{filename}:2,{}", char::from(flag));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
@@ -1032,7 +1048,7 @@ mod tests {
     async fn test_detect_changes_detects_flag_changes(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
         let uid = repo_with_mail.mail.metadata().uid();
-        let metadata = assert_some!(assert_ok!(repo.state.get_by_id(uid)));
+        let metadata = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
         let mut new_name = metadata.filename();
         new_name.pop();
@@ -1059,7 +1075,7 @@ mod tests {
     async fn test_detect_changes_detects_deleted_mail(#[future] repo_with_mail: RepoWithMail) {
         let repo = repo_with_mail.repo.repo;
         let uid = repo_with_mail.mail.metadata().uid();
-        let metadata = assert_some!(assert_ok!(repo.state.get_by_id(uid)));
+        let metadata = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
         assert_ok!(fs::remove_file(cur.join(metadata.filename())));
 
@@ -1090,7 +1106,7 @@ mod tests {
         assert_ok!(repo.repo.store_batch(&mails).await);
 
         let expected: HashSet<_> = mails.iter().map(|mail| mail.metadata().uid()).collect();
-        assert_eq!(assert_ok!(repo.repo.uids()), expected);
+        assert_eq!(assert_ok!(repo.repo.uids().await), expected);
         let list_rx = assert_ok!(repo.repo.maildir.list_cur());
         let mut count = 0;
         while let Ok(entry) = list_rx.recv().await {
