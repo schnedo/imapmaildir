@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
@@ -220,22 +220,32 @@ impl SelectedClient {
         sequence_set: &SequenceSet,
     ) -> HashSet<Uid> {
         let mut rejected = HashSet::new();
-        let mut pending: Vec<Uid> = sequence_set.iter().collect();
-        let mut unchanged_since = highest_modseq;
+        let mut pending: HashMap<Uid, ModSeq> = sequence_set
+            .iter()
+            .map(|uid| (uid, highest_modseq))
+            .collect();
         for (operation, flags) in [('+', change.added), ('-', change.removed)] {
             if flags.is_empty() {
                 continue;
             }
-            let Ok(set) = SequenceSet::try_from(&pending) else {
-                break;
-            };
-            let (modified, modseq) = self
-                .store_flags(unchanged_since, operation, flags, &set)
-                .await;
-            pending.retain(|uid| !modified.contains(uid));
-            rejected.extend(modified);
-            if let Some(modseq) = modseq {
-                unchanged_since = unchanged_since.max(modseq);
+            let mut groups: HashMap<ModSeq, Vec<Uid>> = HashMap::new();
+            for (uid, modseq) in &pending {
+                groups.entry(*modseq).or_default().push(*uid);
+            }
+            for (unchanged_since, uids) in groups {
+                let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
+                let (modified, modseqs) = self
+                    .store_flags(unchanged_since, operation, flags, &set)
+                    .await;
+                for (uid, modseq) in modseqs {
+                    if let Some(pending_modseq) = pending.get_mut(&uid) {
+                        *pending_modseq = modseq;
+                    }
+                }
+                for uid in modified {
+                    pending.remove(&uid);
+                    rejected.insert(uid);
+                }
             }
         }
 
@@ -248,7 +258,7 @@ impl SelectedClient {
         operation: char,
         flags: BitFlags<Flag>,
         sequence_set: &SequenceSet,
-    ) -> (HashSet<Uid>, Option<ModSeq>) {
+    ) -> (HashSet<Uid>, HashMap<Uid, ModSeq>) {
         let flags = Flag::format(flags).unwrap_or_default();
         let command = format!(
             "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}FLAGS.SILENT ({flags})"
@@ -266,7 +276,7 @@ impl SelectedClient {
             log::warn!("mails {modified:?} changed on server. Not updating their flags");
         }
 
-        (modified, handler.0.highest_modseq)
+        (modified, handler.0.modseqs)
     }
 
     pub async fn delete(
@@ -417,7 +427,7 @@ impl ResponseHandler for MetadataCollector {
 
 #[derive(Default)]
 struct StoreHandler {
-    highest_modseq: Option<ModSeq>,
+    modseqs: HashMap<Uid, ModSeq>,
 }
 
 impl ResponseHandler for StoreHandler {
@@ -425,14 +435,16 @@ impl ResponseHandler for StoreHandler {
         std::future::ready(
             if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
                 && let FetchAttributes {
-                    uid: Some(_),
+                    uid: Some(uid),
                     modseq: Some(modseq),
                     flags: None,
                     body: None,
                 } = FetchAttributes::parse(attributes)
             {
-                let modseq = modseq.try_into().expect("received modseq should be valid");
-                self.highest_modseq = self.highest_modseq.max(Some(modseq));
+                self.modseqs.insert(
+                    uid.try_into().expect("received uid should be valid"),
+                    modseq.try_into().expect("received modseq should be valid"),
+                );
                 None
             } else {
                 Some(response)
