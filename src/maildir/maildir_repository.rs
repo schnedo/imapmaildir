@@ -123,6 +123,19 @@ impl MaildirRepository {
         self.state.uids().await
     }
 
+    pub async fn flags(
+        &self,
+        uids: Vec<Uid>,
+    ) -> Result<HashMap<Uid, BitFlags<Flag>>, state::Error> {
+        Ok(self
+            .state
+            .get_all_by_id(uids)
+            .await?
+            .into_iter()
+            .map(|entry| (entry.uid(), entry.flags()))
+            .collect())
+    }
+
     pub async fn store_batch(&self, mails: &[RemoteMail]) -> Result<(), StoreError> {
         for mail in mails {
             log::info!(
@@ -138,8 +151,12 @@ impl MaildirRepository {
                 .collect::<Result<_, _>>()?;
         self.maildir.sync_tmp().await?;
 
-        let conflicts: HashSet<LocalMailMetadata> =
-            self.state.store_all(stored.clone()).await?.into_iter().collect();
+        let conflicts: HashSet<LocalMailMetadata> = self
+            .state
+            .store_all(stored.clone())
+            .await?
+            .into_iter()
+            .collect();
         stream::iter(stored.iter().filter(|mail| !conflicts.contains(mail)))
             .map(|mail| self.maildir.move_from_tmp(mail))
             .buffered(MAX_CONCURRENT_FILE_OPS)
@@ -1218,7 +1235,9 @@ mod tests {
             repo.mail_dir.path().join("tmp").join(metadata.fileprefix()),
             "1"
         ));
-        assert_is_empty!(assert_ok!(repo.repo.state.store_all(vec![metadata.clone()]).await));
+        assert_is_empty!(assert_ok!(
+            repo.repo.state.store_all(vec![metadata.clone()]).await
+        ));
 
         let result = assert_ok!(repo.repo.detect_changes().await);
 
@@ -1245,7 +1264,11 @@ mod tests {
             RemoteContent::from_string("different".to_string()),
         );
 
-        assert_ok!(repo.repo.store_batch(std::slice::from_ref(&conflicting)).await);
+        assert_ok!(
+            repo.repo
+                .store_batch(std::slice::from_ref(&conflicting))
+                .await
+        );
 
         let list_rx = assert_ok!(repo.repo.maildir.list_cur());
         assert_ok!(assert_ok!(list_rx.recv().await));

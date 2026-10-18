@@ -1,13 +1,17 @@
+use std::collections::HashMap;
+
 use crossfire::{
     MAsyncTx,
     mpsc::Array,
     oneshot::{RxOneshot, TxOneshot, oneshot},
 };
 
+use enumflags2::BitFlags;
+
 use crate::{
     imap::RemoteMailMetadata,
     maildir::{FlagChange, NewLocalMailMetadata},
-    repository::{ModSeq, SequenceSet, Uid},
+    repository::{Flag, ModSeq, SequenceSet, Uid},
     sync::Task,
 };
 
@@ -50,6 +54,10 @@ impl RepositoryHandle {
 
     pub async fn apply_flag_changes(&self, uids: Vec<Uid>, change: FlagChange) {
         self.send(Task::ApplyFlagChanges(uids, change)).await;
+    }
+
+    pub async fn flags(&self, uids: Vec<Uid>) -> HashMap<Uid, BitFlags<Flag>> {
+        self.request(|reply| Task::Flags(uids, reply)).await
     }
 
     pub async fn highest_modseq(&self) -> ModSeq {
