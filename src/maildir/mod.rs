@@ -13,6 +13,5 @@ pub use local_mail::LocalMailMetadata;
 pub use local_mail::NewLocalMailMetadata;
 pub use maildir::Maildir;
 pub use maildir::MaildirFile;
-pub use maildir_repository::Error;
 pub use maildir_repository::LocalWatcher;
 pub use maildir_repository::MaildirRepository;
