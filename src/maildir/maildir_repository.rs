@@ -132,13 +132,22 @@ impl MaildirRepository {
             );
         }
         let stored: Vec<LocalMailMetadata> =
-            futures::future::join_all(mails.iter().map(|mail| self.maildir.store(mail)))
+            futures::future::join_all(mails.iter().map(|mail| self.maildir.write_tmp(mail)))
                 .await
                 .into_iter()
                 .collect::<Result<_, _>>()?;
+        self.maildir.sync_tmp().await?;
+
+        let conflicts: HashSet<LocalMailMetadata> =
+            self.state.store_all(stored.clone()).await?.into_iter().collect();
+        stream::iter(stored.iter().filter(|mail| !conflicts.contains(mail)))
+            .map(|mail| self.maildir.move_from_tmp(mail))
+            .buffered(MAX_CONCURRENT_FILE_OPS)
+            .try_collect::<Vec<()>>()
+            .await?;
         self.maildir.sync_cur().await?;
 
-        for conflict in self.state.store_all(stored).await? {
+        for conflict in conflicts {
             if let Some(existing_mail) = self.state.get_by_id(conflict.uid()).await? {
                 self.maildir
                     .handle_uid_conflict(&existing_mail, &conflict)
@@ -340,7 +349,7 @@ impl MaildirRepository {
             }
         }
         let mut updates = LocalFlagChangesBuilder::default();
-        let mut deletions = Vec::new();
+        let mut missing = Vec::new();
 
         self.state
             .fore_each(|entry| {
@@ -348,10 +357,18 @@ impl MaildirRepository {
                 if let Some(data) = maildir_mails.remove(&uid) {
                     Self::update_flag_changes(&mut updates, &entry, &data);
                 } else {
-                    deletions.push(entry.uid());
+                    missing.push(entry);
                 }
             })
             .await?;
+        let mut deletions = Vec::new();
+        for entry in missing {
+            if self.maildir.recover_from_tmp(&entry).await? {
+                log::warn!("recovered mail {} from tmp", entry.uid());
+            } else {
+                deletions.push(entry.uid());
+            }
+        }
         let untracked = stream::iter(maildir_mails.into_values())
             .map(|maildata| self.maildir.remove_uid(maildata))
             .buffered(MAX_CONCURRENT_FILE_OPS)
@@ -1187,6 +1204,54 @@ mod tests {
         assert_len_eq_x!(&result.deletions, 1);
         let deleted_mail_uid = assert_some!(result.deletions.pop());
         assert_eq!(deleted_mail_uid, uid);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_detect_changes_recovers_tracked_mail_from_tmp(
+        #[future] repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) {
+        let metadata = LocalMailMetadata::from(mail.metadata());
+        assert_ok!(fs::write(
+            repo.mail_dir.path().join("tmp").join(metadata.fileprefix()),
+            "1"
+        ));
+        assert_is_empty!(assert_ok!(repo.repo.state.store_all(vec![metadata.clone()]).await));
+
+        let result = assert_ok!(repo.repo.detect_changes().await);
+
+        assert_is_empty!(result.deletions);
+        assert_is_empty!(result.news);
+        assert!(
+            repo.mail_dir
+                .path()
+                .join("cur")
+                .join(metadata.filename())
+                .exists()
+        );
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_store_batch_keeps_conflicting_mail_out_of_cur(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
+        let RepoWithMail { repo, mail } = repo_with_mail;
+        let conflicting = RemoteMail::new(
+            mail.metadata().clone(),
+            RemoteContent::from_string("different".to_string()),
+        );
+
+        assert_ok!(repo.repo.store_batch(std::slice::from_ref(&conflicting)).await);
+
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        assert_ok!(assert_ok!(list_rx.recv().await));
+        assert_err!(list_rx.recv().await);
+        let tmp_files = assert_ok!(repo.mail_dir.path().join("tmp").read_dir()).count();
+        assert_eq!(tmp_files, 1);
     }
 
     #[rstest]

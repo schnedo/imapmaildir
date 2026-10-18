@@ -297,9 +297,9 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
-    pub async fn store(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, Error> {
+    pub async fn write_tmp(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, Error> {
         let new_local_metadata = LocalMailMetadata::from(mail.metadata());
-        let file_path = self.tmp.join(new_local_metadata.fileprefix());
+        let file_path = self.tmp_path_of(&new_local_metadata);
 
         log::trace!("writing to {}", file_path.display());
         let mut file = compio::fs::OpenOptions::new()
@@ -313,14 +313,33 @@ impl Maildir {
         file.sync_all().await?;
         file.close().await?;
 
-        let new_path = self.get_path_of(&new_local_metadata);
+        Ok(new_local_metadata)
+    }
+
+    pub async fn move_from_tmp(&self, mail: &LocalMailMetadata) -> Result<(), Error> {
+        let file_path = self.tmp_path_of(mail);
+        let new_path = self.get_path_of(mail);
         log::trace!("renaming {} to {}", file_path.display(), new_path.display());
         if let Some(watch) = self.watch.lock().await.as_ref() {
             watch.ignore_next_update_for_file(&new_path).await;
         }
         compio::fs::rename(&file_path, &new_path).await?;
 
-        Ok(new_local_metadata)
+        Ok(())
+    }
+
+    pub async fn recover_from_tmp(&self, mail: &LocalMailMetadata) -> Result<bool, Error> {
+        if try_exists(&self.tmp_path_of(mail)).await? {
+            self.move_from_tmp(mail).await?;
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn tmp_path_of(&self, mail: &LocalMailMetadata) -> PathBuf {
+        self.tmp.join(mail.fileprefix())
     }
 
     pub fn list_cur(&self) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {
@@ -423,7 +442,15 @@ impl Maildir {
     }
 
     pub async fn sync_cur(&self) -> Result<(), Error> {
-        compio::fs::File::open(&self.cur).await?.sync_all().await?;
+        Self::sync_dir(&self.cur).await
+    }
+
+    pub async fn sync_tmp(&self) -> Result<(), Error> {
+        Self::sync_dir(&self.tmp).await
+    }
+
+    async fn sync_dir(dir: &Path) -> Result<(), Error> {
+        compio::fs::File::open(dir).await?.sync_all().await?;
 
         Ok(())
     }
@@ -434,21 +461,20 @@ impl Maildir {
         new: &LocalMailMetadata,
     ) -> Result<(), Error> {
         let current_path = self.get_path_of(current);
-        let new_path = self.get_path_of(new);
-        if Self::is_content_identical(&current_path, &new_path).await? {
-            self.delete(new).await?;
+        let new_path = self.tmp_path_of(new);
+        let identical = match Self::is_content_identical(&current_path, &new_path).await {
+            Ok(identical) => identical,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        if identical {
+            compio::fs::remove_file(&new_path).await?;
         } else {
-            let tmp_path = self.tmp.join(new.filename());
             log::warn!(
-                "Found already existing mail with uid {} and different content. Moving new mail to {}",
+                "Found already existing mail with uid {} and different content. Keeping new mail at {}",
                 new.uid(),
-                tmp_path.display()
+                new_path.display()
             );
-            let watch = self.watch.lock().await;
-            if let Some(watch) = watch.as_ref() {
-                watch.ignore_next_update_for_file(&new_path).await;
-                compio::fs::rename(&new_path, &tmp_path).await?;
-            }
         }
 
         Ok(())
@@ -835,7 +861,8 @@ mod tests {
     async fn test_store_stores_mail(#[future] maildir: TestMaildir, new_mail: RemoteMail) {
         let maildir = maildir.maildir;
 
-        let result = assert_ok!(maildir.store(&new_mail).await);
+        let result = assert_ok!(maildir.write_tmp(&new_mail).await);
+        assert_ok!(maildir.move_from_tmp(&result).await);
         let expected = LocalMailMetadata::new(
             new_mail.metadata().uid(),
             new_mail.metadata().flags(),
@@ -856,7 +883,10 @@ mod tests {
     ) {
         assert_ok!(fs::remove_dir(maildir.dir.path().join(dir)));
 
-        let result = assert_err!(maildir.maildir.store(&new_mail).await);
+        let result = match maildir.maildir.write_tmp(&new_mail).await {
+            Ok(metadata) => assert_err!(maildir.maildir.move_from_tmp(&metadata).await),
+            Err(e) => e,
+        };
         if let Error::Io(error) = result {
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
         } else {
