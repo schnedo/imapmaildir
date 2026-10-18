@@ -4,6 +4,7 @@ use crate::{
         client::{
             AuthenticatedClient,
             capability::{AuthCapabilities, AuthCapability, Capabilities},
+            encoding,
         },
         transport::{Connection, ResponseData, ResponseHandler, Tls},
     },
@@ -89,7 +90,12 @@ impl Client {
                 let response = self
                     .connection
                     .send(
-                        format!("LOGIN {} {}", plain_auth_config.user(), password).into(),
+                        format!(
+                            "LOGIN {} {}",
+                            encoding::quote(plain_auth_config.user()),
+                            encoding::quote(&password)
+                        )
+                        .into(),
                         &mut CapabilityHandler {
                             capabilities: &mut self.capabilities,
                             auth_capabilities: &mut self.auth_capabilities,
