@@ -137,6 +137,16 @@ impl ResponseData {
 }
 
 #[cfg(test)]
+impl ResponseData {
+    pub fn from_raw(raw: &[u8]) -> Self {
+        ImapCodec::default()
+            .decode(&mut BytesMut::from(raw))
+            .expect("raw response should be parsable")
+            .expect("raw response should be complete")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use assertables::*;
 
