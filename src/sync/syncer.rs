@@ -2,7 +2,7 @@ use crate::{
     imap::{
         IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
     },
-    maildir::{LocalChanges, LocalWatcher},
+    maildir::{LocalChanges, LocalWatcher, MaildirRepositoryError},
     repository::{ModSeq, SequenceSet, Uid},
     sync::{Config, RepositoryHandle, task::Task},
 };
@@ -501,11 +501,16 @@ impl Syncer {
                             remote_mail_metadata.uid(),
                             remote_mail_metadata.flags()
                         );
-                        maildir_repository
+                        match maildir_repository
                             .update_flags(&remote_mail_metadata)
                             .await
-                            .expect("updating flags should succeed");
-                        on_local_change();
+                        {
+                            Ok(()) => on_local_change(),
+                            Err(MaildirRepositoryError::NoExists { uid }) => {
+                                log::warn!("ignoring flag update of locally missing mail {uid}");
+                            }
+                            Err(e) => panic!("updating flags should succeed: {e}"),
+                        }
                     }
                 }
             }
