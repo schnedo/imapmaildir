@@ -61,7 +61,7 @@ impl Decoder for ImapCodec {
                 (response, buf.len() - remaining.len())
             }
             Err(nom::Err::Incomplete(Needed::Size(min))) => {
-                self.decode_need_message_bytes = min.get();
+                self.decode_need_message_bytes = buf.len() + min.get();
                 return Ok(None);
             }
             Err(nom::Err::Incomplete(_)) => {
