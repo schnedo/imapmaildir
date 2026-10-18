@@ -242,6 +242,12 @@ impl Watch {
         );
     }
 
+    pub async fn unignore_file(&self, file: &Path) {
+        if let Some(name) = file.file_name() {
+            self.ignore_files.lock().await.remove(name);
+        }
+    }
+
     async fn handle_move_event(
         event: inotify::Event<OsString>,
         move_matches: &mut HashMap<u32, OsString>,
@@ -254,7 +260,9 @@ impl Watch {
             .expect("name should always be present in move event");
         if let Some(stored_name) = move_matches.remove(&event.cookie) {
             let mut ignored = ignored.lock().await;
-            if !(ignored.remove(&filename) || ignored.remove(&stored_name)) {
+            let filename_ignored = ignored.remove(&filename);
+            let stored_name_ignored = ignored.remove(&stored_name);
+            if !(filename_ignored || stored_name_ignored) {
                 let filename = filename
                     .into_string()
                     .expect("filename should be valid utf8");
