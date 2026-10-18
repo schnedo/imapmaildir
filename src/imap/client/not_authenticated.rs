@@ -83,16 +83,12 @@ impl Client {
                     self.auth_capabilities.contains(AuthCapability::Plain),
                     "server should support PLAIN auth capability"
                 );
+                let password = plain_auth_config.password().await;
                 log::debug!("LOGIN <user> <password>");
                 let response = self
                     .connection
                     .send(
-                        format!(
-                            "LOGIN {} {}",
-                            plain_auth_config.user(),
-                            plain_auth_config.password()
-                        )
-                        .into(),
+                        format!("LOGIN {} {}", plain_auth_config.user(), password).into(),
                         &mut CapabilityHandler {
                             capabilities: &mut self.capabilities,
                             auth_capabilities: &mut self.auth_capabilities,

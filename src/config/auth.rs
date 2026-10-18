@@ -1,4 +1,6 @@
-use std::process::Command;
+use std::process::Stdio;
+
+use compio::process::Command;
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -17,19 +19,21 @@ impl PlainAuth {
         Self { user, password_cmd }
     }
 
-    #[must_use]
     #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
-    pub fn password(&self) -> String {
+    pub async fn password(&self) -> String {
         let mut cmd_parts = self.password_cmd.iter();
         let mut cmd = Command::new(
             cmd_parts
                 .next()
                 .expect("password_cmd should specify a program"),
         );
-        for part in cmd_parts {
-            cmd.arg(part);
-        }
-        let output = cmd.output().expect("password_cmd should be executable");
+        cmd.args(cmd_parts);
+        let Ok(_) = cmd.stdin(Stdio::null());
+        let Ok(_) = cmd.stdout(Stdio::piped());
+        let output = cmd
+            .output()
+            .await
+            .expect("password_cmd should be executable");
 
         assert!(
             !output.stdout.is_empty(),
@@ -47,4 +51,19 @@ impl PlainAuth {
 #[serde(tag = "type")]
 pub enum Auth {
     Plain(PlainAuth),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[compio::test]
+    async fn test_password_returns_trimmed_output_of_password_cmd() {
+        let auth = PlainAuth::new(
+            "user".to_string(),
+            vec!["echo".to_string(), "secret".to_string()],
+        );
+
+        assert_eq!(auth.password().await, "secret");
+    }
 }
