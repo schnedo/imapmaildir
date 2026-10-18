@@ -1,10 +1,18 @@
 use std::{
-    process,
+    panic, process,
     sync::Arc,
     thread::{self, JoinHandle},
 };
 
 use imapmaildir::{Client, Syncer, Tls, config::Account, on_local_change};
+
+pub fn exit_on_panic() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        process::exit(18);
+    }));
+}
 
 pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) {
     let rt = compio::runtime::Runtime::new().expect("compio runtime should be buildable");
