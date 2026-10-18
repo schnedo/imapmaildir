@@ -39,7 +39,6 @@ pub struct SelectedClient {
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     multiappend: bool,
-    idle: bool,
 }
 impl SelectedClient {
     pub fn new(
@@ -67,7 +66,6 @@ impl SelectedClient {
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
-            idle: capabilities.contains(Capability::Idle),
         }
     }
 
@@ -315,25 +313,14 @@ impl SelectedClient {
             .expect("idle stop sender should only be taken once")
     }
 
-    async fn poll(&self, deadline: Instant) -> IdleStopReason {
-        match compio::time::timeout_at(deadline, self.idle_stop_rx.recv()).await {
-            Ok(stop) => stop.expect("idle stop channel should still be open"),
-            Err(_) => IdleStopReason::Remote,
-        }
-    }
-
     pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
         if self.mailbox_handler.message_count.has_unknown() {
             log::debug!("not idling due to unfetched remote mail");
             return IdleStopReason::Remote;
         }
-        let deadline = Instant::now() + timeout;
-        if !self.idle {
-            log::debug!("server does not support IDLE. Polling instead");
-            return self.poll(deadline).await;
-        }
         let command = "IDLE";
         log::debug!("{command}");
+        let deadline = Instant::now() + timeout;
         let connection = &mut self.connection;
         let idle_stop_rx = &self.idle_stop_rx;
         let handler = &mut self.mailbox_handler;
@@ -346,10 +333,7 @@ impl SelectedClient {
                     log::trace!("idling for up to {} seconds", timeout.as_secs());
                     break;
                 }
-                imap_proto::Response::Done { .. } => {
-                    log::warn!("server rejected IDLE. Polling instead");
-                    return self.poll(deadline).await;
-                }
+                imap_proto::Response::Done { .. } => panic!("server should accept IDLE"),
                 _ => handler.handle_or_log(response).await,
             }
         }

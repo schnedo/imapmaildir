@@ -41,6 +41,10 @@ impl AuthenticatedClient {
         }
     }
 
+    pub fn supports_idle(&self) -> bool {
+        self.capabilities.contains(Capability::Idle)
+    }
+
     pub async fn select(mut self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
         self.enable_qresync().await;
         let command = format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox));

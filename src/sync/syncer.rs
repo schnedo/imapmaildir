@@ -72,6 +72,10 @@ impl Syncer {
         config: Config,
         mut on_local_change: impl FnMut() + Clone + Send + 'static,
     ) -> ! {
+        assert!(
+            client.supports_idle(),
+            "server should support IDLE capability. Use single sync instead"
+        );
         let Synced {
             mut client,
             task_handle,
