@@ -262,26 +262,6 @@ impl State {
         .await
     }
 
-    pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
-        log::trace!("storing mail cache {data:?}");
-        let (uid, flags, fileprefix) = (
-            u32::from(data.uid()),
-            data.flags().bits(),
-            data.fileprefix().to_string(),
-        );
-        self.call(move |db| {
-            let mut stmt = db.prepare_cached(
-                "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
-            )?;
-            stmt.execute((uid, flags, &fileprefix))?;
-
-            Ok(())
-        })
-        .await
-    }
-
-    /// Stores all `data` in a single transaction. Returns entries, that could not be stored due
-    /// to an already existing entry with the same uid.
     pub async fn store_all(
         &self,
         data: Vec<LocalMailMetadata>,
@@ -331,6 +311,84 @@ impl State {
         .await
     }
 
+    pub async fn get_all_by_id(&self, uids: Vec<Uid>) -> Result<Vec<LocalMailMetadata>, Error> {
+        log::trace!("get existing metadata of {} mails", uids.len());
+        self.call(move |db| {
+            let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
+            let mut entries = Vec::with_capacity(uids.len());
+            for uid in uids {
+                if let Some(entry) = stmt
+                    .query_one([u32::from(uid)], |row| row.try_into())
+                    .optional()?
+                {
+                    entries.push(entry);
+                }
+            }
+
+            Ok(entries)
+        })
+        .await
+    }
+
+    pub async fn update_all(&self, data: Vec<LocalMailMetadata>) -> Result<(), Error> {
+        log::trace!("updating {} mail caches", data.len());
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            {
+                let mut stmt =
+                    transaction.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
+                for entry in data {
+                    stmt.execute((entry.flags().bits(), u32::from(entry.uid())))?;
+                }
+            }
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn insert_all(&self, data: Vec<LocalMailMetadata>) -> Result<(), Error> {
+        log::trace!("inserting {} mail caches", data.len());
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            {
+                let mut stmt = transaction.prepare_cached(
+                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+                )?;
+                for entry in data {
+                    stmt.execute((
+                        u32::from(entry.uid()),
+                        entry.flags().bits(),
+                        &entry.fileprefix(),
+                    ))?;
+                }
+            }
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn delete_all_by_id(&self, uids: Vec<Uid>) -> Result<(), Error> {
+        log::trace!("deleting {} mail caches", uids.len());
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            {
+                let mut stmt =
+                    transaction.prepare_cached("delete from mail_metadata where uid = ?1")?;
+                for uid in uids {
+                    stmt.execute([u32::from(uid)])?;
+                }
+            }
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
     // todo: test deleting non existent mail should not fail
     pub async fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         log::trace!("deleting {uid:?}");
@@ -354,7 +412,6 @@ impl State {
         .await
     }
 
-    /// Calls `cb` with all stored mail metadata. Returns the highest modseq consistent with it.
     pub async fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
         log::trace!("getting all stored mail metadata");
         let (entries, current_highest_modseq) = self
@@ -379,7 +436,6 @@ impl State {
     }
 }
 
-/// Async version of [`Path::try_exists`]
 async fn try_exists(path: &Path) -> io::Result<bool> {
     match compio::fs::metadata(path).await {
         Ok(_) => Ok(true),
@@ -667,7 +723,7 @@ mod tests {
         #[future] state: TestState,
         metadata: LocalMailMetadata,
     ) {
-        assert_ok!(state.state.store(&metadata).await);
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
 
         assert_eq!(
             assert_ok!(state.state.uids().await),
@@ -732,7 +788,7 @@ mod tests {
         metadata: LocalMailMetadata,
     ) {
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
-        assert_ok!(state.state.store(&metadata).await);
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
         let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
@@ -744,7 +800,7 @@ mod tests {
         #[future] state: TestState,
         mut metadata: LocalMailMetadata,
     ) {
-        assert_ok!(state.state.store(&metadata).await);
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
         let flags = Flag::Seen | Flag::Deleted;
         assert_ne!(flags, metadata.flags());
         metadata.set_flags(flags);
@@ -757,7 +813,7 @@ mod tests {
     #[compio::test]
     #[awt]
     async fn test_delete_by_uid_succeeds(#[future] state: TestState, metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata).await);
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
         assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_ok!(state.state.delete_by_id(metadata.uid()).await);
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
@@ -785,10 +841,10 @@ mod tests {
         #[future] state: TestState,
         metadata: LocalMailMetadata,
     ) {
-        assert_ok!(state.state.store(&metadata).await);
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
         let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         let metadata = metadata.set_uid(assert_ok!(Uid::try_from(9)));
-        assert_ok!(state.state.store(&metadata).await);
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
         let stored_second = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
 
         let mut stored = HashSet::new();

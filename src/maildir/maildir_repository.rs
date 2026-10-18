@@ -172,21 +172,66 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn apply_flag_change(&self, uid: Uid, change: FlagChange) -> Result<(), Error> {
-        if let Some(mut entry) = self.state.get_by_id(uid).await? {
-            let new_flags = (entry.flags() | change.added) & !change.removed;
-            if entry.flags() != new_flags {
-                log::info!(
-                    "updating flags of mail {uid}: {} -> {new_flags}",
-                    entry.flags()
-                );
-                self.handle_flags(&mut entry, new_flags).await?;
+    pub async fn apply_flag_changes(&self, uids: &[Uid], change: FlagChange) -> Result<(), Error> {
+        let entries = self.state.get_all_by_id(uids.to_vec()).await?;
+        if entries.len() != uids.len() {
+            let existing: HashSet<Uid> = entries.iter().map(LocalMailMetadata::uid).collect();
+            if let Some(&uid) = uids.iter().find(|uid| !existing.contains(uid)) {
+                return Err(Error::NoExists { uid });
             }
-
-            Ok(())
-        } else {
-            Err(Error::NoExists { uid })
         }
+        let changes = entries
+            .into_iter()
+            .filter_map(|entry| {
+                let new_flags = (entry.flags() | change.added) & !change.removed;
+                (entry.flags() != new_flags).then(|| {
+                    log::info!(
+                        "updating flags of mail {}: {} -> {new_flags}",
+                        entry.uid(),
+                        entry.flags()
+                    );
+                    (entry, new_flags)
+                })
+            })
+            .collect();
+        if let Some(&uid) = self.set_flags_all(changes).await?.first() {
+            return Err(Error::NoExists { uid });
+        }
+
+        Ok(())
+    }
+
+    async fn set_flags_all(
+        &self,
+        changes: Vec<(LocalMailMetadata, BitFlags<Flag>)>,
+    ) -> Result<Vec<Uid>, Error> {
+        let results: Vec<Result<LocalMailMetadata, Uid>> = stream::iter(changes)
+            .map(|(mut entry, new_flags)| async move {
+                match self.maildir.update_flags(&mut entry, new_flags).await {
+                    Ok(()) => Ok(Ok(entry)),
+                    Err(maildir::Error::Missing(_)) => Ok(Err(entry.uid())),
+                    Err(e) => Err(e),
+                }
+            })
+            .buffered(MAX_CONCURRENT_FILE_OPS)
+            .try_collect()
+            .await?;
+        let mut updated = Vec::with_capacity(results.len());
+        let mut missing = Vec::new();
+        for result in results {
+            match result {
+                Ok(entry) => updated.push(entry),
+                Err(uid) => missing.push(uid),
+            }
+        }
+        if !updated.is_empty() {
+            self.state.update_all(updated).await?;
+        }
+        if !missing.is_empty() {
+            self.state.delete_all_by_id(missing.clone()).await?;
+        }
+
+        Ok(missing)
     }
 
     async fn handle_flags(
@@ -209,17 +254,22 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn add_synced(
+    pub async fn add_synced_all(
         &self,
-        mail_metadata: NewLocalMailMetadata,
-        uid: Uid,
+        synced: Vec<(NewLocalMailMetadata, Uid)>,
     ) -> Result<(), Error> {
-        log::info!(
-            "adding {uid} to newly synced mail {}",
-            mail_metadata.filename()
-        );
-        let mail_metadata = self.maildir.update_uid(mail_metadata, uid).await?;
-        self.state.store(&mail_metadata).await?;
+        let stored = stream::iter(synced)
+            .map(|(mail_metadata, uid)| {
+                log::info!(
+                    "adding {uid} to newly synced mail {}",
+                    mail_metadata.filename()
+                );
+                self.maildir.update_uid(mail_metadata, uid)
+            })
+            .buffered(MAX_CONCURRENT_FILE_OPS)
+            .try_collect()
+            .await?;
+        self.state.insert_all(stored).await?;
 
         Ok(())
     }
@@ -833,7 +883,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .apply_flag_change(metadata.uid(), added(flag))
+                .apply_flag_changes(&[metadata.uid()], added(flag))
                 .await
         );
     }
@@ -852,7 +902,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .apply_flag_change(metadata.uid(), added(flag))
+                .apply_flag_changes(&[metadata.uid()], added(flag))
                 .await
         );
     }
@@ -868,7 +918,7 @@ mod tests {
 
         let result = assert_err!(
             repo.repo
-                .apply_flag_change(metadata.uid(), added(Flag::Deleted))
+                .apply_flag_changes(&[metadata.uid()], added(Flag::Deleted))
                 .await
         );
         assert_matches!(result, Error::NoExists { .. });
@@ -889,7 +939,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .apply_flag_change(metadata.uid(), added(Flag::Deleted))
+                .apply_flag_changes(&[metadata.uid()], added(Flag::Deleted))
                 .await
         );
         assert_matches!(result, Error::NoExists { .. });
@@ -915,7 +965,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .apply_flag_change(metadata.uid(), removed(flag))
+                .apply_flag_changes(&[metadata.uid()], removed(flag))
                 .await
         );
     }
@@ -934,7 +984,7 @@ mod tests {
             repo_with_mail
                 .repo
                 .repo
-                .apply_flag_change(metadata.uid(), removed(flag))
+                .apply_flag_changes(&[metadata.uid()], removed(flag))
                 .await
         );
     }
@@ -950,7 +1000,7 @@ mod tests {
 
         let result = assert_err!(
             repo.repo
-                .apply_flag_change(metadata.uid(), removed(Flag::Seen))
+                .apply_flag_changes(&[metadata.uid()], removed(Flag::Seen))
                 .await
         );
         assert_matches!(result, Error::NoExists { .. });
@@ -993,7 +1043,7 @@ mod tests {
         ));
         let uid = Uid::MAX;
 
-        assert_ok!(repo.repo.add_synced(metadata, uid).await);
+        assert_ok!(repo.repo.add_synced_all(vec![(metadata, uid)]).await);
 
         let mail = assert_some!(assert_ok!(repo.repo.state.get_by_id(uid).await));
         assert!(

@@ -13,7 +13,7 @@ pub enum Task {
     SetHighestModseq(ModSeq),
     CompleteInitialSync(ModSeq, TxOneshot<()>),
     ApplyRemoteUpdates(Vec<RemoteMailMetadata>, TxOneshot<Vec<Uid>>),
-    AddSynced(NewLocalMailMetadata, Uid),
-    ApplyFlagChange(Uid, FlagChange),
+    AddSynced(Vec<(NewLocalMailMetadata, Uid)>),
+    ApplyFlagChanges(Vec<Uid>, FlagChange),
     HighestModseq(TxOneshot<ModSeq>),
 }
