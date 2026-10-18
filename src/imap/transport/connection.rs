@@ -2,6 +2,7 @@ use std::{fmt::Debug, io, path::PathBuf};
 
 use asynchronous_codec::Framed;
 use compio::{
+    io::compat::AsyncStream,
     native_tls::{self, Certificate},
     net::TcpStream,
     tls::{TlsConnector, TlsStream},
@@ -24,6 +25,8 @@ pub enum TaggedResponseError {
     Bad {},
 }
 pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
+
+const READ_BUFFER_SIZE: usize = 256 * 1024;
 
 pub struct Connection {
     tag_generator: TagGenerator,
@@ -75,7 +78,9 @@ impl Connection {
                 port,
                 cause,
             })?;
-        let stream = (tls.connect(host, stream).await)
+        let stream = (tls
+            .connect_compat(host, AsyncStream::with_capacity(READ_BUFFER_SIZE, stream))
+            .await)
             .map_err(|e| Error::TlsError(TlsError::Validation(e)))?;
 
         Ok(Self {
