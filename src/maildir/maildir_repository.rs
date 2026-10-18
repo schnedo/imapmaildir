@@ -1,6 +1,6 @@
 use crossfire::{
     AsyncRx,
-    mpsc::{self, Array},
+    spsc::{self, Array},
 };
 use enumflags2::BitFlags;
 use std::{
@@ -90,7 +90,7 @@ impl MaildirRepository {
 
     pub async fn watch(self) -> AsyncRx<Array<LocalChanges>> {
         log::debug!("listening for maildir mail changes");
-        let (changes_tx, changes_rx) = mpsc::bounded_async(1);
+        let (changes_tx, changes_rx) = spsc::bounded_async(1);
         let size = 32;
         let this = self.clone();
         let rx = self.maildir.watch(size).await;

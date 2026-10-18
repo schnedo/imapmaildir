@@ -9,8 +9,8 @@ use std::{
 
 use compio::{BufResult, fs::DirBuilder, io::AsyncWriteAtExt as _};
 use crossfire::{
-    AsyncRx, MAsyncTx, SendError,
-    mpsc::{self, Array},
+    AsyncRx, AsyncTx, SendError,
+    spsc::{self, Array},
 };
 use enumflags2::BitFlags;
 use futures::lock::Mutex;
@@ -128,7 +128,7 @@ impl Maildir {
 
     #[expect(clippy::too_many_lines)]
     pub async fn watch(self, buffer_size: usize) -> AsyncRx<Array<Change>> {
-        let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
+        let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
         let (watch, rx) = Watch::new(&self.cur, buffer_size);
         let mut my_watch = self.watch.lock().await;
         *my_watch = Some(watch);
@@ -244,7 +244,7 @@ impl Maildir {
 
     async fn send_new_structured_change(
         &self,
-        change_tx: &MAsyncTx<Array<Change>>,
+        change_tx: &AsyncTx<Array<Change>>,
         entry: MaildirEntry,
     ) {
         let to = match entry {
@@ -268,7 +268,7 @@ impl Maildir {
     async fn send_new_unstructured_change(
         watch: &Arc<Mutex<Option<Watch>>>,
         cur: &Path,
-        change_tx: &MAsyncTx<Array<Change>>,
+        change_tx: &AsyncTx<Array<Change>>,
         filename: String,
     ) {
         let metadata = Self::handle_new_unstructured_file(watch, cur, filename)
@@ -318,7 +318,7 @@ impl Maildir {
         let dir_contents = fs::read_dir(self.cur.as_path())?;
         let watch = self.watch.clone();
         let cur = self.cur.clone();
-        let (list_tx, list_rx) = mpsc::bounded_async(32);
+        let (list_tx, list_rx) = spsc::bounded_async(32);
         compio::runtime::spawn(async move {
             for entry in dir_contents {
                 match entry {

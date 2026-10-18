@@ -9,10 +9,7 @@ use std::{
 };
 
 use compio::runtime::fd::PollFd;
-use crossfire::{
-    AsyncRx, MAsyncTx,
-    mpsc::{self, Array},
-};
+use crossfire::{AsyncRx, AsyncTx, MAsyncTx, mpsc, spsc};
 use futures::lock::Mutex;
 use inotify::{EventMask, Inotify, WatchMask};
 
@@ -26,8 +23,8 @@ pub struct Watch {
     ignore_files: Arc<Mutex<HashSet<OsString>>>,
 }
 impl Watch {
-    pub fn new(path: &Path, buffer_size: usize) -> (Self, AsyncRx<Array<Change>>) {
-        let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
+    pub fn new(path: &Path, buffer_size: usize) -> (Self, AsyncRx<spsc::Array<Change>>) {
+        let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
         let ignore_files = Arc::new(Mutex::new(HashSet::new()));
         let inotify = Inotify::init().expect("initializing inotify should succeed");
         inotify
@@ -124,7 +121,7 @@ impl Watch {
         (Self { ignore_files }, change_rx)
     }
 
-    fn spawn_inotify_reader(mut inotify: Inotify, event_tx: MAsyncTx<Array<WatchEvent>>) {
+    fn spawn_inotify_reader(mut inotify: Inotify, event_tx: MAsyncTx<mpsc::Array<WatchEvent>>) {
         let inotify_fd = PollFd::new(
             inotify
                 .as_fd()
@@ -171,8 +168,8 @@ impl Watch {
     async fn handle_move_event(
         event: inotify::Event<OsString>,
         move_matches: &mut HashMap<u32, OsString>,
-        change_tx: &MAsyncTx<Array<Change>>,
-        event_tx: &MAsyncTx<Array<WatchEvent>>,
+        change_tx: &AsyncTx<spsc::Array<Change>>,
+        event_tx: &MAsyncTx<mpsc::Array<WatchEvent>>,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
     ) {
         let filename = event

@@ -11,7 +11,7 @@ use std::{collections::HashSet, path::Path, time::Duration};
 use compio::runtime::JoinHandle;
 use crossfire::{
     AsyncRx,
-    mpsc::{self, Array},
+    spsc::{self, Array},
 };
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
@@ -64,7 +64,7 @@ impl Syncer {
         .await;
         task_handle.detach();
         let repo = maildir_repository.clone();
-        let stop_tx = client.idle_stop_tx();
+        let stop_tx = client.take_idle_stop_tx();
 
         log::info!("listening for mail changes...");
         let local_change_rx = repo.watch().await;
@@ -189,7 +189,7 @@ impl Syncer {
             .detect_changes()
             .await
             .expect("detecting local changes should succeed");
-        let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let (task_tx, task_rx) = spsc::bounded_async(config.store_batch_size());
         let task_handle = Self::setup_task_processing(
             maildir_repository.clone(),
             task_rx,
@@ -317,7 +317,7 @@ impl Syncer {
         config: Config,
         on_local_change: impl FnMut() + Send + 'static,
     ) -> ((SelectedClient, JoinHandle<()>), MaildirRepository) {
-        let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let (task_tx, task_rx) = spsc::bounded_async(config.store_batch_size());
         let Selection {
             mut client,
             mailbox_data,
@@ -464,7 +464,7 @@ impl Syncer {
 #[cfg(test)]
 mod tests {
     use assertables::*;
-    use crossfire::MAsyncTx;
+    use crossfire::AsyncTx;
 
     use crate::{
         imap::{RemoteContent, RemoteMailMetadata},
@@ -486,8 +486,8 @@ mod tests {
 
     async fn queue(
         tasks: impl IntoIterator<Item = Task>,
-    ) -> (MAsyncTx<Array<Task>>, AsyncRx<Array<Task>>) {
-        let (task_tx, task_rx) = mpsc::bounded_async(16);
+    ) -> (AsyncTx<Array<Task>>, AsyncRx<Array<Task>>) {
+        let (task_tx, task_rx) = spsc::bounded_async(16);
         for task in tasks {
             assert_ok!(task_tx.send(task).await);
         }

@@ -3,9 +3,9 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use crossfire::{
-    AsyncRx, MAsyncTx,
-    mpsc::{self, Array},
+    AsyncRx, AsyncTx,
     oneshot::oneshot,
+    spsc::{self, Array},
 };
 use enumflags2::BitFlags;
 use futures::FutureExt as _;
@@ -34,13 +34,13 @@ pub struct SelectedClient {
     connection: Connection,
     mailbox_handler: MailboxHandler,
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
-    idle_stop_tx: MAsyncTx<Array<IdleStopReason>>,
+    idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
 }
 impl SelectedClient {
     pub fn new(
         connection: Connection,
         capabilities: &Capabilities,
-        task_tx: MAsyncTx<Array<Task>>,
+        task_tx: AsyncTx<Array<Task>>,
         exists: u32,
     ) -> Self {
         assert!(
@@ -51,7 +51,7 @@ impl SelectedClient {
             capabilities.contains(Capability::UidPlus),
             "server should support UIDPLUS capability"
         );
-        let (idle_stop_tx, idle_stop_rx) = mpsc::bounded_async(1);
+        let (idle_stop_tx, idle_stop_rx) = spsc::bounded_async(1);
 
         Self {
             connection,
@@ -60,7 +60,7 @@ impl SelectedClient {
                 message_count: MessageCount::new(exists),
             },
             idle_stop_rx,
-            idle_stop_tx,
+            idle_stop_tx: Some(idle_stop_tx),
         }
     }
 
@@ -134,7 +134,7 @@ impl SelectedClient {
         mailbox: &str,
         mut mails: impl Iterator<Item = LocalMail>,
     ) -> AsyncRx<Array<(Uid, NewLocalMailMetadata)>> {
-        let (info_tx, info_rx) = mpsc::bounded_async(32);
+        let (info_tx, info_rx) = spsc::bounded_async(32);
         if let Some(mail) = mails.next() {
             let command = format!("APPEND {mailbox}");
             log::debug!("{command}");
@@ -174,14 +174,15 @@ impl SelectedClient {
                     self.mailbox_handler.message_count.on_append(appended);
 
                     compio::runtime::spawn(async move {
-                        futures::future::join_all(
-                            uid_ranges
-                                .into_iter()
-                                .flat_map(SequenceRange::into_iter)
-                                .zip(metadatas)
-                                .map(|info| info_tx.send(info)),
-                        )
-                        .await
+                        let infos = uid_ranges
+                            .into_iter()
+                            .flat_map(SequenceRange::into_iter)
+                            .zip(metadatas);
+                        for info in infos {
+                            if info_tx.send(info).await.is_err() {
+                                break;
+                            }
+                        }
                     })
                     .detach();
                 } else {
@@ -277,8 +278,14 @@ impl SelectedClient {
             .expect("logging out should succeed");
     }
 
-    pub fn idle_stop_tx(&self) -> MAsyncTx<Array<IdleStopReason>> {
-        self.idle_stop_tx.clone()
+    /// Sender to stop idling with a local reason. Can only be taken once.
+    ///
+    /// # Panics
+    /// If the sender already got taken
+    pub fn take_idle_stop_tx(&mut self) -> AsyncTx<Array<IdleStopReason>> {
+        self.idle_stop_tx
+            .take()
+            .expect("idle stop sender should only be taken once")
     }
 
     pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
@@ -451,7 +458,7 @@ fn parse_uid_set(uids: &str) -> HashSet<Uid> {
 
 #[derive(Debug)]
 struct MailboxHandler {
-    task_tx: MAsyncTx<Array<Task>>,
+    task_tx: AsyncTx<Array<Task>>,
     message_count: MessageCount,
 }
 
