@@ -148,34 +148,36 @@ impl SelectedClient {
         mailbox: &str,
         mails: impl Iterator<Item = LocalMail>,
     ) -> Vec<(Uid, NewLocalMailMetadata)> {
+        let mailbox = encoding::mailbox(mailbox);
+        let mut stored = Vec::new();
+        let mut metadatas = Vec::new();
         if self.multiappend {
-            let mails: Vec<_> = mails.collect();
-            if mails.is_empty() {
-                Vec::new()
-            } else {
-                self.append(mailbox, mails).await
+            let mut mails = mails.peekable();
+            if mails.peek().is_some() {
+                self.append(&mailbox, mails, &mut metadatas, &mut stored)
+                    .await;
             }
         } else {
-            let mut stored = Vec::new();
             for mail in mails {
-                stored.extend(self.append(mailbox, vec![mail]).await);
+                self.append(&mailbox, std::iter::once(mail), &mut metadatas, &mut stored)
+                    .await;
             }
-            stored
         }
+
+        stored
     }
 
     async fn append(
         &mut self,
         mailbox: &str,
-        mails: Vec<LocalMail>,
-    ) -> Vec<(Uid, NewLocalMailMetadata)> {
-        let command = format!("APPEND {}", encoding::mailbox(mailbox));
-        log::debug!("{command}");
-        let mut command = command.into_bytes();
-        let metadatas: Vec<_> = mails
-            .into_iter()
-            .map(|mail| mail.append_to(&mut command))
-            .collect();
+        mails: impl Iterator<Item = LocalMail>,
+        metadatas: &mut Vec<NewLocalMailMetadata>,
+        stored: &mut Vec<(Uid, NewLocalMailMetadata)>,
+    ) {
+        log::debug!("APPEND {mailbox}");
+        let mut command = b"APPEND ".to_vec();
+        command.extend_from_slice(mailbox.as_bytes());
+        metadatas.extend(mails.map(|mail| mail.append_to(&mut command)));
 
         let response = self
             .connection
@@ -187,11 +189,6 @@ impl SelectedClient {
         if let Some(imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members)) =
             response.unsafe_get_tagged_response_code()
         {
-            let uid_ranges: Result<Vec<_>, _> = uid_set_members
-                .iter()
-                .map(SequenceRange::try_from)
-                .collect();
-            let uid_ranges = uid_ranges.expect("received uids should be valid");
             let appended = uid_set_members
                 .iter()
                 .map(|member| match member {
@@ -203,11 +200,10 @@ impl SelectedClient {
                 .sum();
             self.mailbox_handler.message_count.on_append(appended);
 
-            uid_ranges
-                .into_iter()
-                .flat_map(SequenceRange::into_iter)
-                .zip(metadatas)
-                .collect()
+            let uids = uid_set_members.iter().flat_map(|member| {
+                SequenceRange::try_from(member).expect("received uids should be valid")
+            });
+            stored.extend(uids.zip(metadatas.drain(..)));
         } else {
             unreachable!("response to APPEND should have AppendUid response code");
         }
