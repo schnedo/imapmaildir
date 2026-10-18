@@ -3,7 +3,7 @@ use crossfire::{
     spsc::{self, Array},
 };
 use enumflags2::BitFlags;
-use futures::{StreamExt as _, TryStreamExt as _, future, stream};
+use futures::{StreamExt as _, TryStreamExt as _, stream};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -275,41 +275,50 @@ impl MaildirRepository {
     }
 
     pub async fn delete_all(&self, uids: impl Iterator<Item = Uid>) -> Result<(), DeleteError> {
-        stream::iter(uids)
-            .map(|uid| self.delete(uid))
+        let entries = self.state.get_all_by_id(uids.collect()).await?;
+        let deleted = stream::iter(entries)
+            .map(|entry| async move {
+                log::info!("deleting mail {}", entry.uid());
+                self.maildir.delete(&entry).await.map(|()| entry.uid())
+            })
             .buffered(MAX_CONCURRENT_FILE_OPS)
-            .try_collect()
-            .await
+            .try_collect::<Vec<_>>()
+            .await?;
+        if !deleted.is_empty() {
+            self.state.delete_all_by_id(deleted).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn apply_remote_updates(
         &self,
         updates: &[RemoteMailMetadata],
     ) -> Result<Vec<Uid>, Error> {
-        stream::iter(updates)
-            .map(|update| async move {
-                match self.update_flags(update).await {
-                    Ok(()) => Ok(None),
-                    Err(Error::NoExists { uid }) => Ok(Some(uid)),
-                    Err(e) => Err(e),
-                }
+        let mut remote_flags: HashMap<Uid, BitFlags<Flag>> = updates
+            .iter()
+            .map(|update| (update.uid(), update.flags()))
+            .collect();
+        let entries = self
+            .state
+            .get_all_by_id(remote_flags.keys().copied().collect())
+            .await?;
+        let changes = entries
+            .into_iter()
+            .filter_map(|entry| {
+                let new_flags = remote_flags.remove(&entry.uid())?;
+                log::info!(
+                    "update flags of mail {}: {} -> {new_flags}",
+                    entry.uid(),
+                    entry.flags()
+                );
+                (entry.flags() != new_flags).then_some((entry, new_flags))
             })
-            .buffered(MAX_CONCURRENT_FILE_OPS)
-            .try_filter_map(future::ok)
-            .try_collect()
-            .await
-    }
+            .collect();
+        let mut missing: Vec<Uid> = remote_flags.into_keys().collect();
+        missing.extend(self.set_flags_all(changes).await?);
 
-    pub async fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
-        log::info!("deleting mail {uid}");
-        if let Some(entry) = self.state.get_by_id(uid).await? {
-            self.maildir.delete(&entry).await?;
-            self.state.delete_by_id(uid).await?;
-        } else {
-            log::trace!("mail {uid:?} already gone");
-        }
-
-        Ok(())
+        Ok(missing)
     }
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
@@ -1011,7 +1020,13 @@ mod tests {
     #[awt]
     async fn test_delete_deletes_mail(#[future] repo_with_mail: RepoWithMail) {
         let uid = repo_with_mail.mail.metadata().uid();
-        assert_ok!(repo_with_mail.repo.repo.delete(uid).await);
+        assert_ok!(
+            repo_with_mail
+                .repo
+                .repo
+                .delete_all(std::iter::once(uid))
+                .await
+        );
         assert_err!(
             assert_ok!(repo_with_mail.repo.repo.maildir.list_cur())
                 .recv()
@@ -1028,7 +1043,7 @@ mod tests {
     async fn test_delete_does_nothing_on_mail_missing_in_state(
         #[future] repo: TestMaildirRepository,
     ) {
-        assert_ok!(repo.repo.delete(Uid::MAX).await);
+        assert_ok!(repo.repo.delete_all(std::iter::once(Uid::MAX)).await);
     }
 
     #[rstest]
