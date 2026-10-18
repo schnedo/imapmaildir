@@ -31,7 +31,7 @@ impl Watch {
             .watches()
             .add(
                 path,
-                WatchMask::CREATE | WatchMask::MOVE | WatchMask::DELETE,
+                WatchMask::CREATE | WatchMask::CLOSE_WRITE | WatchMask::MOVE | WatchMask::DELETE,
             )
             .expect("adding cur watch should succeed");
 
@@ -41,28 +41,18 @@ impl Watch {
         let ignored = ignore_files.clone();
         compio::runtime::spawn(async move {
             let mut move_matches: HashMap<u32, OsString> = HashMap::new();
+            let mut created: HashSet<OsString> = HashSet::new();
             while let Ok(watch_event) = event_rx.recv().await {
                 match watch_event {
                     WatchEvent::MoveTimeout(cookie, mask) => {
                         log::trace!("file {cookie:?} timed out");
                         if let Some(filename) = move_matches.remove(&cookie) {
-                            let mut ignored = ignored.lock().await;
-                            if !ignored.remove(&filename) {
-                                let filename = filename
-                                    .into_string()
-                                    .expect("filename should be valid utf8");
-                                match mask {
-                                    EventMask::MOVED_TO => change_tx
-                                        .send(Change::New(filename))
-                                        .await
-                                        .expect("change channel should still be open"),
-                                    EventMask::MOVED_FROM => change_tx
-                                        .send(Change::Deletion(filename))
-                                        .await
-                                        .expect("change channel should still be open"),
-                                    _ => unreachable!("mask should only be defined values"),
-                                }
-                            }
+                            let change = match mask {
+                                EventMask::MOVED_TO => Change::New,
+                                EventMask::MOVED_FROM => Change::Deletion,
+                                _ => unreachable!("mask should only be defined values"),
+                            };
+                            Self::send_unless_ignored(filename, &ignored, &change_tx, change).await;
                         }
                     }
                     WatchEvent::Inotify(event) => {
@@ -82,30 +72,33 @@ impl Watch {
                                 let filename = event
                                     .name
                                     .expect("name should always be present in delete event");
-                                let mut ignored = ignored.lock().await;
-                                if !ignored.remove(&filename) {
-                                    let filename = filename
-                                        .into_string()
-                                        .expect("filename should be valid utf8");
-                                    change_tx
-                                        .send(Change::Deletion(filename))
-                                        .await
-                                        .expect("change channel should still be open");
-                                }
+                                Self::send_unless_ignored(
+                                    filename,
+                                    &ignored,
+                                    &change_tx,
+                                    Change::Deletion,
+                                )
+                                .await;
                             }
                             EventMask::CREATE => {
+                                created.insert(
+                                    event
+                                        .name
+                                        .expect("name should always be present in create event"),
+                                );
+                            }
+                            EventMask::CLOSE_WRITE => {
                                 let filename = event
                                     .name
-                                    .expect("name should always be present in create event");
-                                let mut ignored = ignored.lock().await;
-                                if !ignored.remove(&filename) {
-                                    let filename = filename
-                                        .into_string()
-                                        .expect("filename should be valid utf8");
-                                    change_tx
-                                        .send(Change::New(filename))
-                                        .await
-                                        .expect("change channel should still be open");
+                                    .expect("name should always be present in close event");
+                                if created.remove(&filename) {
+                                    Self::send_unless_ignored(
+                                        filename,
+                                        &ignored,
+                                        &change_tx,
+                                        Change::New,
+                                    )
+                                    .await;
                                 }
                             }
                             _ => unreachable!(
@@ -119,6 +112,23 @@ impl Watch {
         .detach();
 
         (Self { ignore_files }, change_rx)
+    }
+
+    async fn send_unless_ignored(
+        filename: OsString,
+        ignored: &Arc<Mutex<HashSet<OsString>>>,
+        change_tx: &AsyncTx<spsc::Array<Change>>,
+        change: fn(String) -> Change,
+    ) {
+        if !ignored.lock().await.remove(&filename) {
+            let filename = filename
+                .into_string()
+                .expect("filename should be valid utf8");
+            change_tx
+                .send(change(filename))
+                .await
+                .expect("change channel should still be open");
+        }
     }
 
     fn spawn_inotify_reader(mut inotify: Inotify, event_tx: MAsyncTx<mpsc::Array<WatchEvent>>) {
