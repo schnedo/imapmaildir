@@ -4,7 +4,7 @@ use enumflags2::BitFlags;
 
 use crate::{
     maildir::LocalMail,
-    repository::{Flag, ModSeq, SequenceSet, SequenceSetBuilder, Uid},
+    repository::{Flag, SequenceSet, SequenceSetBuilder, Uid},
 };
 
 #[derive(Debug, Default, PartialEq, Eq, Hash, Clone, Copy)]
@@ -69,7 +69,6 @@ impl LocalFlagChangesBuilder {
 
 #[derive(Debug, PartialEq)]
 pub struct LocalChanges {
-    pub highest_modseq: ModSeq,
     pub updates: LocalFlagChangesBuilder,
     pub deletions: Vec<Uid>,
     pub news: Vec<LocalMail>,
@@ -77,13 +76,11 @@ pub struct LocalChanges {
 
 impl LocalChanges {
     pub fn new(
-        highest_modseq: ModSeq,
         deletions: Vec<Uid>,
         news: Vec<LocalMail>,
         updates: LocalFlagChangesBuilder,
     ) -> Self {
         Self {
-            highest_modseq,
             updates,
             deletions,
             news,
@@ -188,20 +185,13 @@ mod tests {
 
     #[rstest]
     fn test_local_changes_constructs_correctly(builder: LocalFlagChangesBuilder) {
-        let highest_modseq = assert_ok!(ModSeq::try_from(9));
         let deletions = vec![Uid::MAX];
         let flags = BitFlags::all();
         let metadata = NewLocalMailMetadata::new(flags, "prefix".to_string());
         let mail = LocalMail::new(Vec::new(), metadata);
         let news = vec![mail];
 
-        let changes = LocalChanges::new(
-            highest_modseq,
-            deletions.clone(),
-            news.clone(),
-            builder.clone(),
-        );
-        assert_eq!(changes.highest_modseq, highest_modseq);
+        let changes = LocalChanges::new(deletions.clone(), news.clone(), builder.clone());
         assert_eq!(changes.deletions, deletions);
         assert_eq!(changes.news, news);
         assert_eq!(changes.updates, builder);

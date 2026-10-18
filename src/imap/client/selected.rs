@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use crossfire::{
-    AsyncRx, AsyncTx,
+    AsyncRx, AsyncTx, MAsyncTx, mpsc,
     oneshot::oneshot,
     spsc::{self, Array},
 };
@@ -40,7 +40,7 @@ impl SelectedClient {
     pub fn new(
         connection: Connection,
         capabilities: &Capabilities,
-        task_tx: AsyncTx<Array<Task>>,
+        task_tx: MAsyncTx<mpsc::Array<Task>>,
         exists: u32,
     ) -> Self {
         assert!(
@@ -458,7 +458,7 @@ fn parse_uid_set(uids: &str) -> HashSet<Uid> {
 
 #[derive(Debug)]
 struct MailboxHandler {
-    task_tx: AsyncTx<Array<Task>>,
+    task_tx: MAsyncTx<mpsc::Array<Task>>,
     message_count: MessageCount,
 }
 

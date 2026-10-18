@@ -24,8 +24,7 @@ use crate::{
 
 use super::Maildir;
 
-// todo: remove Clone and rework untagged response handling
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MaildirRepository {
     maildir: Maildir,
     state: State,
@@ -88,55 +87,10 @@ impl MaildirRepository {
         );
     }
 
-    pub async fn watch(self) -> AsyncRx<Array<LocalChanges>> {
-        log::debug!("listening for maildir mail changes");
-        let (changes_tx, changes_rx) = spsc::bounded_async(1);
-        let size = 32;
-        let this = self.clone();
-        let rx = self.maildir.watch(size).await;
-
-        compio::runtime::spawn(async move {
-            loop {
-                let mut deletions = Vec::new();
-                let mut news = Vec::new();
-                let mut updates = LocalFlagChangesBuilder::default();
-                let mut handle_change = |change| match change {
-                    Change::Deletion(entry) => {
-                        deletions.push(entry.uid());
-                    }
-                    Change::New(mail) => {
-                        news.push(mail);
-                    }
-                    Change::Rename { from, to } => {
-                        Self::update_flag_changes(&mut updates, &from, &to);
-                    }
-                };
-                let change = rx.recv().await.expect("changes_rx should still be open");
-                let highest_modseq = this
-                    .highest_modseq()
-                    .await
-                    .expect("getting highest modseq should succeed");
-                handle_change(change);
-
-                while let Ok(Ok(change)) =
-                    compio::time::timeout(Duration::from_millis(100), rx.recv()).await
-                {
-                    handle_change(change);
-                }
-                changes_tx
-                    .send(LocalChanges {
-                        highest_modseq,
-                        updates,
-                        deletions,
-                        news,
-                    })
-                    .await
-                    .expect("changes_tx should still be open");
-            }
-        })
-        .detach();
-
-        changes_rx
+    pub fn local_watcher(&self) -> LocalWatcher {
+        LocalWatcher {
+            maildir: self.maildir.clone(),
+        }
     }
 
     pub async fn uid_validity(&self) -> Result<UidValidity, state::Error> {
@@ -298,8 +252,7 @@ impl MaildirRepository {
         let mut updates = LocalFlagChangesBuilder::default();
         let mut deletions = Vec::new();
 
-        let highest_modseq = self
-            .state
+        self.state
             .fore_each(|entry| {
                 let uid = entry.uid();
                 if let Some(data) = maildir_mails.remove(&uid) {
@@ -316,10 +269,61 @@ impl MaildirRepository {
             news.push(LocalMail::new(content, maildata));
         }
 
-        let changes = LocalChanges::new(highest_modseq, deletions, news, updates);
+        let changes = LocalChanges::new(deletions, news, updates);
         log::trace!("{changes:?}");
 
         Ok(changes)
+    }
+}
+
+pub struct LocalWatcher {
+    maildir: Maildir,
+}
+
+impl LocalWatcher {
+    pub async fn watch(self) -> AsyncRx<Array<LocalChanges>> {
+        log::debug!("listening for maildir mail changes");
+        let (changes_tx, changes_rx) = spsc::bounded_async(1);
+        let size = 32;
+        let rx = self.maildir.watch(size).await;
+
+        compio::runtime::spawn(async move {
+            loop {
+                let mut deletions = Vec::new();
+                let mut news = Vec::new();
+                let mut updates = LocalFlagChangesBuilder::default();
+                let mut handle_change = |change| match change {
+                    Change::Deletion(entry) => {
+                        deletions.push(entry.uid());
+                    }
+                    Change::New(mail) => {
+                        news.push(mail);
+                    }
+                    Change::Rename { from, to } => {
+                        MaildirRepository::update_flag_changes(&mut updates, &from, &to);
+                    }
+                };
+                let change = rx.recv().await.expect("changes_rx should still be open");
+                handle_change(change);
+
+                while let Ok(Ok(change)) =
+                    compio::time::timeout(Duration::from_millis(100), rx.recv()).await
+                {
+                    handle_change(change);
+                }
+                changes_tx
+                    .send(LocalChanges {
+                        updates,
+                        deletions,
+                        news,
+                    })
+                    .await
+                    .expect("changes_tx should still be open");
+            }
+        })
+        .detach();
+
+        changes_rx
     }
 }
 
@@ -971,10 +975,6 @@ mod tests {
 
         let result = assert_ok!(repo.detect_changes().await);
 
-        assert_eq!(
-            result.highest_modseq,
-            assert_ok!(repo.highest_modseq().await)
-        );
         assert_len_eq_x!(result.deletions, 0);
         assert_len_eq_x!(result.news, 0);
         let changes = result.updates.build();
