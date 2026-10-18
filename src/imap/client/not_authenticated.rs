@@ -5,7 +5,7 @@ use crate::{
             AuthenticatedClient,
             capability::{AuthCapabilities, AuthCapability, Capabilities},
         },
-        transport::{Connection, ResponseData, ResponseHandler},
+        transport::{Connection, ResponseData, ResponseHandler, Tls},
     },
 };
 
@@ -18,14 +18,15 @@ pub struct Client {
 impl Client {
     pub async fn login(
         connection_config: &config::Connection,
+        tls: &Tls,
         auth_config: &Auth,
     ) -> AuthenticatedClient {
-        let connected = Self::connect(connection_config).await;
+        let connected = Self::connect(connection_config, tls).await;
         connected.authenticate(auth_config).await
     }
 
-    async fn connect(connection_config: &config::Connection) -> Self {
-        let mut connection = Connection::start(connection_config)
+    async fn connect(connection_config: &config::Connection, tls: &Tls) -> Self {
+        let mut connection = Connection::start(connection_config, tls)
             .await
             .expect("creating a connection should succeed");
 

@@ -38,13 +38,18 @@ impl Debug for Connection {
     }
 }
 
-impl Connection {
-    pub async fn start(connection_config: &config::Connection) -> Result<Self, Error> {
-        log::debug!("Connecting to server");
+#[derive(Debug, Clone)]
+pub struct Tls(TlsConnector);
+
+impl Tls {
+    /// # Errors
+    /// If the configured server certificate cannot be read or parsed, or no native TLS
+    /// implementation is available
+    pub fn new(connection_config: &config::Connection) -> Result<Self, Error> {
+        log::debug!("Setting up TLS");
         let mut tls = native_tls::TlsConnector::builder();
         if let Some(cert_file) = connection_config.server_certificate_file() {
-            let cert = compio::fs::read(cert_file)
-                .await
+            let cert = std::fs::read(cert_file)
                 .map_err(|e| Error::TlsError(TlsError::CertfileReadError(e)))?;
             tls.add_root_certificate(Certificate::from_pem(&cert).map_err(|_| {
                 Error::TlsError(TlsError::CertfileFormatInvalid(cert_file.clone()))
@@ -53,7 +58,15 @@ impl Connection {
         let tls = tls
             .build()
             .map_err(|_| Error::TlsError(TlsError::NativeTls))?;
-        let tls = TlsConnector::from(tls);
+
+        Ok(Self(TlsConnector::from(tls)))
+    }
+}
+
+impl Connection {
+    pub async fn start(connection_config: &config::Connection, tls: &Tls) -> Result<Self, Error> {
+        log::debug!("Connecting to server");
+        let tls = &tls.0;
         let host = connection_config.host().as_str();
         let port = connection_config.port();
         let stream =
@@ -293,6 +306,7 @@ mod tests {
             server.port(),
             Some(PathBuf::from(CERTIFICATE_PATH)),
         );
-        let _connection = assert_ok!(Connection::start(&config).await);
+        let tls = assert_ok!(Tls::new(&config));
+        let _connection = assert_ok!(Connection::start(&config, &tls).await);
     }
 }
