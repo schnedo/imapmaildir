@@ -257,16 +257,24 @@ impl Syncer {
             news,
         } = local_changes;
         let mailinfos = client.store(mailbox, news.into_iter()).await;
+        let mut synced = Vec::new();
         while let Ok((uid, metadata)) = mailinfos.recv().await {
-            repository.add_synced(metadata, uid).await;
+            synced.push((metadata, uid));
+        }
+        if !synced.is_empty() {
+            repository.add_synced(synced).await;
         }
         let updates = updates.build();
         for (change, sequence_set) in updates.iter() {
             let rejected = client
                 .store_flag_change(highest_modseq, change, sequence_set)
                 .await;
-            for uid in sequence_set.iter().filter(|uid| !rejected.contains(uid)) {
-                repository.apply_flag_change(uid, change).await;
+            let accepted: Vec<Uid> = sequence_set
+                .iter()
+                .filter(|uid| !rejected.contains(uid))
+                .collect();
+            if !accepted.is_empty() {
+                repository.apply_flag_changes(accepted, change).await;
             }
         }
         if let Ok(set) = SequenceSet::try_from(&deletions) {
@@ -467,15 +475,15 @@ impl Syncer {
                         }
                         reply.send(missing);
                     }
-                    Task::AddSynced(metadata, uid) => {
+                    Task::AddSynced(synced) => {
                         maildir_repository
-                            .add_synced(metadata, uid)
+                            .add_synced_all(synced)
                             .await
-                            .expect("writing back synced uid should succeed");
+                            .expect("writing back synced uids should succeed");
                     }
-                    Task::ApplyFlagChange(uid, change) => {
+                    Task::ApplyFlagChanges(uids, change) => {
                         maildir_repository
-                            .apply_flag_change(uid, change)
+                            .apply_flag_changes(&uids, change)
                             .await
                             .expect("updating flags in maildir_repository should succeed");
                     }

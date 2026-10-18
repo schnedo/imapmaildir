@@ -11,8 +11,6 @@ use crate::{
     sync::Task,
 };
 
-/// Access to the maildir repository owned by the task processor. Requests are processed in
-/// order with all other tasks.
 pub struct RepositoryHandle {
     task_tx: MAsyncTx<Array<Task>>,
 }
@@ -41,18 +39,17 @@ impl RepositoryHandle {
         self.send(Task::Delete(uids)).await;
     }
 
-    /// Returns uids of mails, that do not exist locally
     pub async fn apply_remote_updates(&self, updates: Vec<RemoteMailMetadata>) -> Vec<Uid> {
         self.request(|reply| Task::ApplyRemoteUpdates(updates, reply))
             .await
     }
 
-    pub async fn add_synced(&self, metadata: NewLocalMailMetadata, uid: Uid) {
-        self.send(Task::AddSynced(metadata, uid)).await;
+    pub async fn add_synced(&self, synced: Vec<(NewLocalMailMetadata, Uid)>) {
+        self.send(Task::AddSynced(synced)).await;
     }
 
-    pub async fn apply_flag_change(&self, uid: Uid, change: FlagChange) {
-        self.send(Task::ApplyFlagChange(uid, change)).await;
+    pub async fn apply_flag_changes(&self, uids: Vec<Uid>, change: FlagChange) {
+        self.send(Task::ApplyFlagChanges(uids, change)).await;
     }
 
     pub async fn highest_modseq(&self) -> ModSeq {
