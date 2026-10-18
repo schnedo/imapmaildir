@@ -2,7 +2,7 @@ pub mod fixtures;
 
 use std::{
     collections::HashSet,
-    fs::File,
+    fs::{self, File},
     io::Write as _,
     time::Duration,
 };
@@ -145,6 +145,40 @@ async fn test_slowly_written_local_mail_is_synced_completely(#[future] mail_setu
             .await
             .iter()
             .any(|mail| mail.content() == b"first part")
+    );
+    drop(handle);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_directory_in_cur_does_not_stop_syncing(#[future] mail_setup: MailSetup) {
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let (handle, _call_rx) = mail_setup.sync_continuous("INBOX").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let maildir = mail_setup.config().maildir_base_path().join("INBOX");
+    assert_ok!(fs::create_dir(maildir.join("cur/subdir")));
+    compio::time::sleep(Duration::from_millis(500)).await;
+    let content = b"after subdir".as_slice();
+    assert_ok!(fs::write(maildir.join("tmp/after"), content));
+    assert_ok!(fs::rename(
+        maildir.join("tmp/after"),
+        maildir.join("cur/after:2,S")
+    ));
+
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            while !server_mailbox
+                .mails()
+                .await
+                .iter()
+                .any(|mail| mail.content() == content)
+            {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
     );
     drop(handle);
 }

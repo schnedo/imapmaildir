@@ -411,8 +411,14 @@ pub struct LocalWatcher {
     maildir: Maildir,
 }
 
+#[derive(Debug)]
+pub enum LocalEvent {
+    Changes(LocalChanges),
+    Overflow,
+}
+
 impl LocalWatcher {
-    pub async fn watch(self) -> AsyncRx<Array<LocalChanges>> {
+    pub async fn watch(self) -> AsyncRx<Array<LocalEvent>> {
         log::debug!("listening for maildir mail changes");
         let (changes_tx, changes_rx) = spsc::bounded_async(1);
         let size = 32;
@@ -423,6 +429,7 @@ impl LocalWatcher {
                 let mut deletions = Vec::new();
                 let mut news = Vec::new();
                 let mut updates = LocalFlagChangesBuilder::default();
+                let mut overflowed = false;
                 let mut handle_change = |change| match change {
                     Change::Deletion(entry) => {
                         deletions.push(entry.uid());
@@ -433,6 +440,9 @@ impl LocalWatcher {
                     Change::Rename { from, to } => {
                         MaildirRepository::update_flag_changes(&mut updates, &from, &to);
                     }
+                    Change::Overflow => {
+                        overflowed = true;
+                    }
                 };
                 let change = rx.recv().await.expect("changes_rx should still be open");
                 handle_change(change);
@@ -442,12 +452,17 @@ impl LocalWatcher {
                 {
                     handle_change(change);
                 }
-                changes_tx
-                    .send(LocalChanges {
+                let event = if overflowed {
+                    LocalEvent::Overflow
+                } else {
+                    LocalEvent::Changes(LocalChanges {
                         updates,
                         deletions,
                         news,
                     })
+                };
+                changes_tx
+                    .send(event)
                     .await
                     .expect("changes_tx should still be open");
             }

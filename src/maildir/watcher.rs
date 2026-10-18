@@ -57,6 +57,9 @@ impl Watch {
                     }
                     WatchEvent::Inotify(event) => {
                         log::trace!("{event:?}");
+                        if event.mask.contains(EventMask::ISDIR) {
+                            continue;
+                        }
                         match event.mask {
                             EventMask::MOVED_FROM | EventMask::MOVED_TO => {
                                 Self::handle_move_event(
@@ -101,6 +104,16 @@ impl Watch {
                                     .await;
                                 }
                             }
+                            EventMask::Q_OVERFLOW => {
+                                log::warn!("inotify event queue overflowed");
+                                move_matches.clear();
+                                created.clear();
+                                change_tx
+                                    .send(Change::Overflow)
+                                    .await
+                                    .expect("change channel should still be open");
+                            }
+                            EventMask::IGNORED => panic!("watched maildir should not be removed"),
                             _ => unreachable!(
                                 "should never recieve unregistered inotify event {event:?}"
                             ),
@@ -230,4 +243,5 @@ pub enum Change {
     Deletion(String),
     New(String),
     Rename { from: String, to: String },
+    Overflow,
 }

@@ -28,6 +28,7 @@ pub enum IdleStopReason {
     Timeout,
     Remote,
     Local { changes: LocalChanges },
+    Rescan,
 }
 
 #[derive(Debug)]

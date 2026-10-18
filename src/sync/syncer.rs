@@ -2,7 +2,7 @@ use crate::{
     imap::{
         IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
     },
-    maildir::{FlagChange, LocalChanges, LocalWatcher, MaildirRepositoryError},
+    maildir::{FlagChange, LocalChanges, LocalEvent, LocalWatcher, MaildirRepositoryError},
     repository::{ModSeq, SequenceSet, Uid},
     sync::{Config, RepositoryHandle, task::Task},
 };
@@ -89,10 +89,14 @@ impl Syncer {
         log::info!("listening for mail changes...");
         let local_change_rx = local_watcher.watch().await;
         compio::runtime::spawn(async move {
-            while let Ok(changes) = local_change_rx.recv().await {
-                log::trace!("detected local changes {changes:?}");
+            while let Ok(event) = local_change_rx.recv().await {
+                log::trace!("detected local changes {event:?}");
+                let reason = match event {
+                    LocalEvent::Changes(changes) => IdleStopReason::Local { changes },
+                    LocalEvent::Overflow => IdleStopReason::Rescan,
+                };
                 stop_tx
-                    .send(IdleStopReason::Local { changes })
+                    .send(reason)
                     .await
                     .expect("stop idle channel should still be open");
             }
@@ -115,8 +119,14 @@ impl Syncer {
                         client.commit_highest_modseq(highest_modseq).await;
                     }
                 }
-                IdleStopReason::Local { changes } => {
+                reason @ (IdleStopReason::Local { .. } | IdleStopReason::Rescan) => {
                     log::info!("handling new local changes");
+                    let changes = if let IdleStopReason::Local { changes } = reason {
+                        changes
+                    } else {
+                        log::warn!("rescanning maildir for local changes");
+                        repository.detect_changes().await
+                    };
                     let highest_modseq = repository.highest_modseq().await;
                     Self::handle_local_changes(
                         &mut client,
@@ -547,6 +557,14 @@ impl Syncer {
                         .flags(uids)
                         .await
                         .expect("getting flags should succeed"),
+                );
+            }
+            Task::DetectChanges(reply) => {
+                reply.send(
+                    maildir_repository
+                        .detect_changes()
+                        .await
+                        .expect("detecting local changes should succeed"),
                 );
             }
             Task::HighestModseq(reply) => {

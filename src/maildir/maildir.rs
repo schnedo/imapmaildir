@@ -232,6 +232,12 @@ impl Maildir {
                             .await;
                         }
                     }
+                    watcher::Change::Overflow => {
+                        change_tx
+                            .send(Change::Overflow)
+                            .await
+                            .expect("change sender should still be open");
+                    }
                     watcher::Change::Deletion(filename) => {
                         let entry: Result<LocalMailMetadata, _> = filename.parse();
                         if let Ok(entry) = entry {
@@ -622,6 +628,7 @@ pub enum Change {
         from: LocalMailMetadata,
         to: LocalMailMetadata,
     },
+    Overflow,
 }
 
 #[derive(Debug, Error, PartialEq)]
