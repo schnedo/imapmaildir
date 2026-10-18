@@ -82,31 +82,30 @@ impl SelectedClient {
             .expect("fetching mails should succeed");
     }
 
-    pub async fn fetch_since(&mut self, modseq: ModSeq) {
-        let command = format!(
-            "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[]) (CHANGEDSINCE {modseq} VANISHED)"
-        );
-        log::debug!("{command}");
-        let mut handler = Chain(ModSeqTracker::default(), &mut self.mailbox_handler);
-        self.connection
-            .send(command.into(), &mut handler)
-            .await
-            .expect("fetching mails should succeed");
-        if let Some(highest_modseq) = handler.0.highest_modseq {
-            self.commit_highest_modseq(highest_modseq).await;
-        }
+    pub async fn fetch_changes_since(&mut self, modseq: ModSeq) -> Vec<RemoteMailMetadata> {
+        let command = format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq} VANISHED)");
+        self.collect_metadata(command).await
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Vec<RemoteMailMetadata> {
-        let command = "UID FETCH 1:* (UID, ModSeq, FLAGS)";
+        self.collect_metadata("UID FETCH 1:* (UID, ModSeq, FLAGS)".to_string())
+            .await
+    }
+
+    async fn collect_metadata(&mut self, command: String) -> Vec<RemoteMailMetadata> {
         log::debug!("{command}");
         let mut handler = Chain(MetadataCollector::default(), &mut self.mailbox_handler);
         self.connection
             .send(command.into(), &mut handler)
             .await
             .expect("fetching mail metadata should succeed");
+        let MetadataCollector {
+            metadata,
+            highest_sequence,
+        } = handler.0;
+        self.mailbox_handler.message_count.on_fetch(highest_sequence);
 
-        handler.0.metadata
+        metadata
     }
 
     pub async fn complete_initial_sync(&mut self, modseq: ModSeq) {
@@ -359,18 +358,20 @@ enum IdleEvent {
 #[derive(Default)]
 struct MetadataCollector {
     metadata: Vec<RemoteMailMetadata>,
+    highest_sequence: u32,
 }
 
 impl ResponseHandler for MetadataCollector {
     fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
         std::future::ready(
-            if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
+            if let imap_proto::Response::Fetch(sequence, attributes) = response.parsed()
                 && let [
                     imap_proto::AttributeValue::Uid(_),
                     imap_proto::AttributeValue::ModSeq(_),
                     imap_proto::AttributeValue::Flags(_),
                 ] = attributes.as_slice()
             {
+                self.highest_sequence = self.highest_sequence.max(*sequence);
                 self.metadata
                     .push(RemoteMailMetadata::from_fetch(attributes));
                 None
@@ -378,25 +379,6 @@ impl ResponseHandler for MetadataCollector {
                 Some(response)
             },
         )
-    }
-}
-
-#[derive(Default)]
-struct ModSeqTracker {
-    highest_modseq: Option<ModSeq>,
-}
-
-impl ResponseHandler for ModSeqTracker {
-    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
-        if let imap_proto::Response::Fetch(_, attributes) = response.parsed() {
-            for attribute in attributes {
-                if let imap_proto::AttributeValue::ModSeq(modseq) = attribute {
-                    let modseq = modseq.try_into().expect("received modseq should be valid");
-                    self.highest_modseq = self.highest_modseq.max(Some(modseq));
-                }
-            }
-        }
-        std::future::ready(Some(response))
     }
 }
 

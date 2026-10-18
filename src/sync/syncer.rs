@@ -100,7 +100,16 @@ impl Syncer {
                 IdleStopReason::Remote => {
                     log::info!("handling new remote changes");
                     let current_highest_modseq = repository.highest_modseq().await;
-                    client.fetch_since(current_highest_modseq).await;
+                    let updates = client.fetch_changes_since(current_highest_modseq).await;
+                    let highest_modseq = updates.iter().map(RemoteMailMetadata::modseq).max();
+                    let remote_changes = RemoteChanges {
+                        updates,
+                        deletions: None,
+                    };
+                    Self::handle_remote_changes(&mut client, &repository, remote_changes).await;
+                    if let Some(highest_modseq) = highest_modseq {
+                        client.commit_highest_modseq(highest_modseq).await;
+                    }
                 }
                 IdleStopReason::Local { changes } => {
                     log::info!("handling new local changes");
