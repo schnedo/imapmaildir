@@ -10,7 +10,7 @@ use enumflags2::BitFlags;
 
 use crate::{
     imap::RemoteMailMetadata,
-    maildir::{FlagChange, NewLocalMailMetadata},
+    maildir::{FlagChange, LocalChanges, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceSet, Uid},
     sync::Task,
 };
@@ -58,6 +58,10 @@ impl RepositoryHandle {
 
     pub async fn flags(&self, uids: Vec<Uid>) -> HashMap<Uid, BitFlags<Flag>> {
         self.request(|reply| Task::Flags(uids, reply)).await
+    }
+
+    pub async fn detect_changes(&self) -> LocalChanges {
+        self.request(Task::DetectChanges).await
     }
 
     pub async fn highest_modseq(&self) -> ModSeq {
