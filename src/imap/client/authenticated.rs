@@ -6,6 +6,7 @@ use crate::{
         client::{
             SelectedClient,
             capability::{Capabilities, Capability},
+            encoding,
         },
         transport::{Connection, ResponseData, ResponseHandler, Unhandled},
     },
@@ -40,7 +41,7 @@ impl AuthenticatedClient {
 
     pub async fn select(mut self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
         self.enable_qresync().await;
-        let command = format!("SELECT {mailbox} (CONDSTORE)");
+        let command = format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox));
 
         self.do_select(task_tx, &command, None).await
     }
@@ -53,7 +54,10 @@ impl AuthenticatedClient {
         highest_modseq: ModSeq,
     ) -> Selection {
         self.enable_qresync().await;
-        let command = format!("SELECT {mailbox} (QRESYNC ({uid_validity} {highest_modseq}))");
+        let command = format!(
+            "SELECT {} (QRESYNC ({uid_validity} {highest_modseq}))",
+            encoding::mailbox(mailbox)
+        );
 
         self.do_select(task_tx, &command, Some(uid_validity)).await
     }

@@ -15,6 +15,7 @@ use crate::{
     imap::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
         client::capability::{Capabilities, Capability},
+        client::encoding,
         client::message_count::MessageCount,
         transport::{Chain, Connection, ResponseData, ResponseHandler},
     },
@@ -166,7 +167,7 @@ impl SelectedClient {
         mailbox: &str,
         mails: Vec<LocalMail>,
     ) -> Vec<(Uid, NewLocalMailMetadata)> {
-        let command = format!("APPEND {mailbox}");
+        let command = format!("APPEND {}", encoding::mailbox(mailbox));
         log::debug!("{command}");
         let mut command = command.into_bytes();
         let metadatas: Vec<_> = mails
