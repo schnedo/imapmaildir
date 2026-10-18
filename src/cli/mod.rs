@@ -9,7 +9,7 @@ use log::LevelFilter;
 
 use crate::{
     cli::nuke::nuke,
-    cli::sync::{sync_all, sync_mailbox},
+    cli::sync::{exit_on_panic, sync_all, sync_mailbox},
 };
 
 #[derive(Parser)]
@@ -67,6 +67,9 @@ pub fn run(cli: &Cli) {
             nuke(&config);
         }
         Command::Sync(sync_args) => {
+            if sync_args.idle {
+                exit_on_panic();
+            }
             if let Some(mailbox) = &sync_args.mailbox {
                 let tls = Tls::new(config.connection()).expect("setting up TLS should succeed");
                 sync_mailbox(&config, &tls, mailbox, sync_args.idle);
