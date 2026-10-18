@@ -20,7 +20,7 @@ pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) {
     rt.block_on(async {
         let client = Client::login(config.connection(), tls, config.auth()).await;
 
-        let on_change = on_local_change(config.on_local_change());
+        let (on_change, hook_task) = on_local_change(config.on_local_change());
         if idle {
             Syncer::sync_continuously(
                 mailbox,
@@ -42,6 +42,9 @@ pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) {
                 on_change,
             )
             .await;
+            if let Err(e) = hook_task.await {
+                log::warn!("on_change hook task failed: {e:?}");
+            }
         }
     });
 }
