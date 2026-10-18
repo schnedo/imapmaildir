@@ -38,6 +38,8 @@ use nom::{self, Needed};
 
 use imap_proto::Response;
 
+const ERROR_CONTEXT_SIZE: usize = 64;
+
 #[derive(Default)]
 pub struct ImapCodec {
     decode_need_message_bytes: usize,
@@ -71,8 +73,11 @@ impl Decoder for ImapCodec {
                 nom::Err::Error(nom::error::Error { code, .. })
                 | nom::Err::Failure(nom::error::Error { code, .. }),
             ) => {
+                let start = buf.split_at(buf.len().min(ERROR_CONTEXT_SIZE)).0;
                 return Err(io::Error::other(format!(
-                    "{code:?} during parsing of {buf:?}"
+                    "{code:?} during parsing of {} bytes starting with {:?}",
+                    buf.len(),
+                    String::from_utf8_lossy(start)
                 )));
             }
         };
@@ -171,6 +176,17 @@ mod tests {
 
         assert_eq!(&bytes[..], b"hello");
         assert_eq!(bytes.as_ptr(), content.as_ptr());
+    }
+
+    #[test]
+    fn test_decode_error_does_not_contain_whole_buffer() {
+        let mut raw = b")))\r\n".to_vec();
+        raw.extend(b"secret".repeat(100));
+        let mut buf = BytesMut::from(raw.as_slice());
+
+        let error = assert_err!(ImapCodec::default().decode(&mut buf));
+
+        assert!(!error.to_string().contains(&"secret".repeat(20)));
     }
 
     #[test]
