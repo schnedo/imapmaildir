@@ -59,8 +59,8 @@ pub fn run(cli: &Cli) {
                 stdin()
                     .read_line(&mut input)
                     .expect("reading user input should succeed");
-                input.make_ascii_lowercase();
-                if input != "y" || input != "yes" {
+                let input = input.trim().to_ascii_lowercase();
+                if input != "y" && input != "yes" {
                     return;
                 }
             }
