@@ -4,7 +4,7 @@ mod sync;
 use std::io::stdin;
 
 use clap::{Parser, Subcommand};
-use imapmaildir::{config::Account, logging};
+use imapmaildir::{Tls, config::Account, logging};
 use log::LevelFilter;
 
 use crate::{
@@ -68,7 +68,8 @@ pub fn run(cli: &Cli) {
         }
         Command::Sync(sync_args) => {
             if let Some(mailbox) = &sync_args.mailbox {
-                sync_mailbox(&config, mailbox, sync_args.idle);
+                let tls = Tls::new(config.connection()).expect("setting up TLS should succeed");
+                sync_mailbox(&config, &tls, mailbox, sync_args.idle);
             } else {
                 sync_all(config, sync_args.idle);
             }

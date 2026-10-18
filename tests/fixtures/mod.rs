@@ -16,7 +16,7 @@ use crossfire::{
     mpsc::{self, Array},
 };
 use derivative::Derivative;
-use imapmaildir::{Client, Syncer, config as config_m, logging};
+use imapmaildir::{Client, Syncer, Tls, config as config_m, logging};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
@@ -410,7 +410,12 @@ impl MailSetup {
 
     pub async fn sync(&self, mailbox: &str) -> () {
         let config = self.config();
-        let client = Client::login(config.connection(), config.auth()).await;
+        let client = Client::login(
+            config.connection(),
+            &assert_ok!(Tls::new(config.connection())),
+            config.auth(),
+        )
+        .await;
 
         Syncer::sync_once(
             mailbox,
@@ -430,7 +435,12 @@ impl MailSetup {
         let state_dir = config.state_dir().clone();
         let idle_timout = config.idle_timout();
         let sync_config = config.sync();
-        let client = Client::login(config.connection(), config.auth()).await;
+        let client = Client::login(
+            config.connection(),
+            &assert_ok!(Tls::new(config.connection())),
+            config.auth(),
+        )
+        .await;
         let mailbox = mailbox.to_string();
         let handle = compio::runtime::spawn(async move {
             Syncer::sync_continuously(

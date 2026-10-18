@@ -6,5 +6,6 @@ mod repository;
 mod sync;
 
 pub use crate::imap::Client;
+pub use crate::imap::Tls;
 pub use crate::sync::Syncer;
 pub use crate::sync::on_local_change;

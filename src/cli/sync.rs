@@ -4,13 +4,13 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use imapmaildir::{Client, Syncer, config::Account, on_local_change};
+use imapmaildir::{Client, Syncer, Tls, config::Account, on_local_change};
 
-pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
+pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) {
     let rt = compio::runtime::Runtime::new().expect("compio runtime should be buildable");
 
     rt.block_on(async {
-        let client = Client::login(config.connection(), config.auth()).await;
+        let client = Client::login(config.connection(), tls, config.auth()).await;
 
         let on_change = on_local_change(config.on_local_change());
         if idle {
@@ -40,17 +40,19 @@ pub fn sync_mailbox(config: &Account, mailbox: &str, idle: bool) {
 
 pub fn sync_all(config: Account, idle: bool) {
     let config = Arc::new(config);
+    let tls = Tls::new(config.connection()).expect("setting up TLS should succeed");
     let sync_handles: Vec<JoinHandle<()>> = config
         .mailboxes()
         .iter()
         .map(|mailbox| {
             let config = config.clone();
+            let tls = tls.clone();
             // todo: Cow instead of cloning String multiple times
             let mailbox_clone = mailbox.clone();
             let thread_builder = thread::Builder::new().name(mailbox.clone());
             thread_builder
                 .spawn(move || {
-                    sync_mailbox(&config, &mailbox_clone, idle);
+                    sync_mailbox(&config, &tls, &mailbox_clone, idle);
                     log::info!("finished syncing {mailbox_clone}");
                 })
                 .expect("spawning sync thread should succeed")
