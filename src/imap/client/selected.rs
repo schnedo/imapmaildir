@@ -35,6 +35,8 @@ pub struct SelectedClient {
     mailbox_handler: MailboxHandler,
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
+    multiappend: bool,
+    idle: bool,
 }
 impl SelectedClient {
     pub fn new(
@@ -61,6 +63,8 @@ impl SelectedClient {
             },
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
+            multiappend: capabilities.contains(Capability::Multiappend),
+            idle: capabilities.contains(Capability::Idle),
         }
     }
 
@@ -139,70 +143,71 @@ impl SelectedClient {
     pub async fn store(
         &mut self,
         mailbox: &str,
-        mut mails: impl Iterator<Item = LocalMail>,
-    ) -> AsyncRx<Array<(Uid, NewLocalMailMetadata)>> {
-        let (info_tx, info_rx) = spsc::bounded_async(32);
-        if let Some(mail) = mails.next() {
-            let command = format!("APPEND {mailbox}");
-            log::debug!("{command}");
-            let mut command = command.into_bytes();
-
-            let size_hint = mails.size_hint();
-            let mut metadatas = Vec::with_capacity(size_hint.1.unwrap_or(size_hint.0));
-            metadatas.push(mail.append_to(&mut command));
-
-            for mail in mails {
-                metadatas.push(mail.append_to(&mut command));
-            }
-
-            let response = self
-                .connection
-                .send(command, &mut self.mailbox_handler)
-                .await
-                // todo: check reason and move failing mails out of cur
-                .expect("storing new mail should succeed");
-
-            if let Some(code) = response.unsafe_get_tagged_response_code() {
-                if let imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members) = code {
-                    let uid_ranges: Result<Vec<_>, _> = uid_set_members
-                        .iter()
-                        .map(SequenceRange::try_from)
-                        .collect();
-                    let uid_ranges = uid_ranges.expect("received uids should be valid");
-                    let appended = uid_set_members
-                        .iter()
-                        .map(|member| match member {
-                            imap_proto::rfc4315::UidSetMember::UidRange(range) => {
-                                range.end() - range.start() + 1
-                            }
-                            imap_proto::rfc4315::UidSetMember::Uid(_) => 1,
-                        })
-                        .sum();
-                    self.mailbox_handler.message_count.on_append(appended);
-
-                    compio::runtime::spawn(async move {
-                        let infos = uid_ranges
-                            .into_iter()
-                            .flat_map(SequenceRange::into_iter)
-                            .zip(metadatas);
-                        for info in infos {
-                            if info_tx.send(info).await.is_err() {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
-                } else {
-                    unreachable!("response code of APPEND should be AppendUid");
-                }
+        mails: impl Iterator<Item = LocalMail>,
+    ) -> Vec<(Uid, NewLocalMailMetadata)> {
+        if self.multiappend {
+            let mails: Vec<_> = mails.collect();
+            if mails.is_empty() {
+                Vec::new()
             } else {
-                unreachable!("response to APPEND should have a response code");
+                self.append(mailbox, mails).await
             }
         } else {
-            drop(info_tx);
+            let mut stored = Vec::new();
+            for mail in mails {
+                stored.extend(self.append(mailbox, vec![mail]).await);
+            }
+            stored
         }
+    }
 
-        info_rx
+    async fn append(
+        &mut self,
+        mailbox: &str,
+        mails: Vec<LocalMail>,
+    ) -> Vec<(Uid, NewLocalMailMetadata)> {
+        let command = format!("APPEND {mailbox}");
+        log::debug!("{command}");
+        let mut command = command.into_bytes();
+        let metadatas: Vec<_> = mails
+            .into_iter()
+            .map(|mail| mail.append_to(&mut command))
+            .collect();
+
+        let response = self
+            .connection
+            .send(command, &mut self.mailbox_handler)
+            .await
+            // todo: check reason and move failing mails out of cur
+            .expect("storing new mail should succeed");
+
+        if let Some(imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members)) =
+            response.unsafe_get_tagged_response_code()
+        {
+            let uid_ranges: Result<Vec<_>, _> = uid_set_members
+                .iter()
+                .map(SequenceRange::try_from)
+                .collect();
+            let uid_ranges = uid_ranges.expect("received uids should be valid");
+            let appended = uid_set_members
+                .iter()
+                .map(|member| match member {
+                    imap_proto::rfc4315::UidSetMember::UidRange(range) => {
+                        range.end() - range.start() + 1
+                    }
+                    imap_proto::rfc4315::UidSetMember::Uid(_) => 1,
+                })
+                .sum();
+            self.mailbox_handler.message_count.on_append(appended);
+
+            uid_ranges
+                .into_iter()
+                .flat_map(SequenceRange::into_iter)
+                .zip(metadatas)
+                .collect()
+        } else {
+            unreachable!("response to APPEND should have AppendUid response code");
+        }
     }
 
     pub async fn store_flag_change(
@@ -302,6 +307,7 @@ impl SelectedClient {
     }
 
     pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
+        assert!(self.idle, "server should support IDLE capability");
         if self.mailbox_handler.message_count.has_unknown() {
             log::debug!("not idling due to unfetched remote mail");
             return IdleStopReason::Remote;

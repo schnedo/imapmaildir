@@ -269,11 +269,12 @@ impl Syncer {
             deletions,
             news,
         } = local_changes;
-        let mailinfos = client.store(mailbox, news.into_iter()).await;
-        let mut synced = Vec::new();
-        while let Ok((uid, metadata)) = mailinfos.recv().await {
-            synced.push((metadata, uid));
-        }
+        let synced: Vec<_> = client
+            .store(mailbox, news.into_iter())
+            .await
+            .into_iter()
+            .map(|(uid, metadata)| (metadata, uid))
+            .collect();
         if !synced.is_empty() {
             repository.add_synced(synced).await;
         }
