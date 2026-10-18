@@ -327,10 +327,13 @@ impl Maildir {
         let file_path = self.tmp_path_of(mail);
         let new_path = self.get_path_of(mail);
         log::trace!("renaming {} to {}", file_path.display(), new_path.display());
-        if let Some(watch) = self.watch.lock().await.as_ref() {
-            watch.ignore_next_update_for_file(&new_path).await;
-        }
-        compio::fs::rename(&file_path, &new_path).await?;
+        let watch = self.watch.lock().await.clone();
+        Self::ignoring(
+            watch.as_ref(),
+            &new_path,
+            compio::fs::rename(&file_path, &new_path),
+        )
+        .await?;
 
         Ok(())
     }
@@ -491,6 +494,24 @@ impl Maildir {
         Ok(())
     }
 
+    async fn ignoring<T>(
+        watch: Option<&Watch>,
+        file: &Path,
+        operation: impl Future<Output = io::Result<T>>,
+    ) -> io::Result<T> {
+        if let Some(watch) = watch {
+            watch.ignore_next_update_for_file(file).await;
+        }
+        let result = operation.await;
+        if result.is_err()
+            && let Some(watch) = watch
+        {
+            watch.unignore_file(file).await;
+        }
+
+        result
+    }
+
     async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
         // todo: write and match error instead of checking if exists
         match futures::try_join!(try_exists(&current), try_exists(&new))? {
@@ -501,10 +522,9 @@ impl Maildir {
                         current.display(),
                         new.display()
                     );
-                    if let Some(watch) = watch {
-                        watch.ignore_next_update_for_file(&current).await;
-                    }
-                    compio::fs::remove_file(&current).await.map_err(Error::from)
+                    Self::ignoring(watch, &current, compio::fs::remove_file(&current))
+                        .await
+                        .map_err(Error::from)
                 } else {
                     Err(Error::Existing {
                         from: current,
@@ -514,10 +534,7 @@ impl Maildir {
             }
             (true, false) => {
                 log::trace!("renaming {:} to {:}", current.display(), new.display());
-                if let Some(watch) = watch {
-                    watch.ignore_next_update_for_file(&new).await;
-                }
-                compio::fs::rename(current, new).await?;
+                Self::ignoring(watch, &new, compio::fs::rename(&current, &new)).await?;
 
                 Ok(())
             }
@@ -588,11 +605,15 @@ impl Maildir {
 
     pub async fn delete(&self, entry: &impl MaildirFile) -> io::Result<()> {
         let file_path = self.get_path_of(entry);
-        if let Some(watch) = &self.watch.lock().await.as_ref() {
-            watch.ignore_next_update_for_file(&file_path).await;
-        }
         log::trace!("deleting {}", file_path.display());
-        compio::fs::remove_file(&file_path).await.or_else(|e| {
+        let watch = self.watch.lock().await.clone();
+        Self::ignoring(
+            watch.as_ref(),
+            &file_path,
+            compio::fs::remove_file(&file_path),
+        )
+        .await
+        .or_else(|e| {
             if let std::io::ErrorKind::NotFound = e.kind() {
                 log::trace!("{} already gone", file_path.display());
                 Ok(())
@@ -1120,6 +1141,29 @@ mod tests {
 
         assert_err!(compio::time::timeout(Duration::from_millis(300), changes.recv()).await);
         assert!(maildir.get_path_of(&renamed).exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_delete_of_missing_mail_does_not_ignore_later_changes(
+        #[future] maildir: TestMaildir,
+        metadata: LocalMailMetadata,
+    ) {
+        let maildir = maildir.maildir;
+        let changes = maildir.clone().watch(8).await;
+        assert_ok!(maildir.delete(&metadata).await);
+
+        assert_ok!(fs::write(maildir.tmp.join("x"), "content"));
+        assert_ok!(fs::rename(
+            maildir.tmp.join("x"),
+            maildir.get_path_of(&metadata)
+        ));
+
+        let change = assert_ok!(assert_ok!(
+            compio::time::timeout(Duration::from_secs(1), changes.recv()).await
+        ));
+        assert_matches!(change, Change::New(_));
     }
 
     #[rstest]
