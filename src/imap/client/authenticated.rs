@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use crossfire::{MAsyncTx, mpsc::Array};
 
 use crate::{
@@ -10,7 +12,7 @@ use crate::{
         },
         transport::{Connection, ResponseData, ResponseHandler, Unhandled},
     },
-    repository::{MailboxMetadataBuilder, ModSeq, SequenceSet, UidValidity},
+    repository::{MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder, UidValidity},
     sync::Task,
 };
 
@@ -137,6 +139,22 @@ impl ResponseHandler for SelectHandler<'_> {
 }
 
 impl SelectHandler<'_> {
+    fn add_deletions(&mut self, uids: &Vec<RangeInclusive<u32>>) {
+        let vanished =
+            SequenceSet::try_from(uids).expect("received ranges should start with valid uid");
+        self.deletions = Some(if let Some(deletions) = self.deletions.take() {
+            let mut builder = SequenceSetBuilder::default();
+            for uid in deletions.iter().chain(vanished.iter()) {
+                builder.add(uid);
+            }
+            builder
+                .build()
+                .expect("merged deletions should not be empty")
+        } else {
+            vanished
+        });
+    }
+
     fn handle_response(&mut self, response: ResponseData) -> Option<ResponseData> {
         match response.parsed() {
             imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
@@ -226,13 +244,43 @@ impl SelectHandler<'_> {
                     earlier,
                     "earlier should always be true during select (see https://datatracker.ietf.org/doc/html/rfc7162#section-3.2.10)"
                 );
-                self.deletions = Some(
-                    SequenceSet::try_from(uids)
-                        .expect("received ranges should start with valid uid"),
-                );
+                self.add_deletions(uids);
             }
             _ => return Some(response),
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertables::*;
+
+    use super::*;
+
+    #[test]
+    fn test_select_handler_merges_vanished_responses() {
+        let mut capabilities = Capabilities::default();
+        let mut handler = SelectHandler {
+            cached_uid_validity: None,
+            capabilities: &mut capabilities,
+            new_mailbox: MailboxMetadataBuilder::default(),
+            updates: Vec::new(),
+            deletions: None,
+            exists: None,
+        };
+
+        assert_none!(
+            handler.handle_response(ResponseData::from_raw(b"* VANISHED (EARLIER) 1:3\r\n"))
+        );
+        assert_none!(
+            handler.handle_response(ResponseData::from_raw(b"* VANISHED (EARLIER) 7\r\n"))
+        );
+
+        let deletions: Vec<u32> = assert_some!(handler.deletions)
+            .iter()
+            .map(u32::from)
+            .collect();
+        assert_eq!(deletions, vec![1, 2, 3, 7]);
     }
 }
