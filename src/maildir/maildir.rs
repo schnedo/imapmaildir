@@ -139,6 +139,7 @@ impl Maildir {
     pub async fn watch(self, buffer_size: usize) -> AsyncRx<Array<Change>> {
         let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
         let (watch, rx) = Watch::new(&self.cur, buffer_size);
+        watcher::watch_new(self.new.clone(), self.cur.clone());
         let mut my_watch = self.watch.lock().await;
         *my_watch = Some(watch);
         drop(my_watch);
@@ -346,6 +347,10 @@ impl Maildir {
 
     fn tmp_path_of(&self, mail: &LocalMailMetadata) -> PathBuf {
         self.tmp.join(mail.fileprefix())
+    }
+
+    pub async fn move_new_to_cur(&self) -> io::Result<()> {
+        watcher::move_new_to_cur(&self.new, &self.cur).await
     }
 
     pub fn list_cur(&self) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {

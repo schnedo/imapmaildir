@@ -182,3 +182,36 @@ async fn test_directory_in_cur_does_not_stop_syncing(#[future] mail_setup: MailS
     );
     drop(handle);
 }
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_local_mail_delivered_to_new_is_synced(#[future] mail_setup: MailSetup) {
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let (handle, _call_rx) = mail_setup.sync_continuous("INBOX").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let maildir = mail_setup.config().maildir_base_path().join("INBOX");
+    let content = b"delivered to new".as_slice();
+    assert_ok!(fs::write(maildir.join("tmp/delivered"), content));
+    assert_ok!(fs::rename(
+        maildir.join("tmp/delivered"),
+        maildir.join("new/delivered")
+    ));
+
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            while !server_mailbox
+                .mails()
+                .await
+                .iter()
+                .any(|mail| mail.content() == content)
+            {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+    assert_eq!(assert_ok!(maildir.join("new").read_dir()).count(), 0);
+    drop(handle);
+}

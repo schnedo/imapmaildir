@@ -348,6 +348,7 @@ impl MaildirRepository {
     }
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
+        self.maildir.move_new_to_cur().await?;
         let maildir_metadata = self.maildir.list_cur()?;
 
         // todo: use Set instead of Map
@@ -1192,6 +1193,25 @@ mod tests {
         assert_eq!(metadata.filename(), expected_filename);
         assert_eq!(metadata.flags(), BitFlags::from_flag(Flag::Seen));
         assert!(cur.join(expected_filename).exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_detect_changes_detects_new_mail_in_new(#[future] repo: TestMaildirRepository) {
+        let expected_content = "1";
+        let new = repo.mail_dir.path().join("new");
+        assert_ok!(fs::write(new.join("f"), expected_content));
+
+        let mut result = assert_ok!(repo.repo.detect_changes().await);
+
+        assert_len_eq_x!(&result.news, 1);
+        let mail = assert_some!(result.news.pop());
+        let (metadata, content) = mail.unpack();
+        assert_eq!(content, expected_content.as_bytes());
+        assert_eq!(metadata.filename(), "f:2,");
+        assert!(repo.mail_dir.path().join("cur/f:2,").exists());
+        assert_eq!(assert_ok!(new.read_dir()).count(), 0);
     }
 
     #[rstest]

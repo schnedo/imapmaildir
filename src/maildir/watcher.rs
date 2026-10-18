@@ -1,9 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     io,
     os::fd::AsFd as _,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -16,6 +16,60 @@ use inotify::{EventMask, Inotify, WatchMask};
 enum WatchEvent {
     Inotify(inotify::Event<OsString>),
     MoveTimeout(u32, EventMask),
+}
+
+pub async fn move_new_to_cur(new: &Path, cur: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(new)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            move_to_cur(new, cur, &entry.file_name()).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn move_to_cur(new: &Path, cur: &Path, filename: &OsStr) -> io::Result<()> {
+    let mut target = filename.to_os_string();
+    if !filename.to_string_lossy().contains(":2,") {
+        target.push(":2,");
+    }
+    log::debug!("moving {} from new to cur", filename.display());
+    match compio::fs::rename(new.join(filename), cur.join(target)).await {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+pub fn watch_new(new: PathBuf, cur: PathBuf) {
+    let inotify = Inotify::init().expect("initializing inotify should succeed");
+    inotify
+        .watches()
+        .add(&new, WatchMask::MOVED_TO | WatchMask::CLOSE_WRITE)
+        .expect("adding new watch should succeed");
+    let (event_tx, event_rx) = mpsc::bounded_async(32);
+    Watch::spawn_inotify_reader(inotify, event_tx);
+
+    compio::runtime::spawn(async move {
+        move_new_to_cur(&new, &cur)
+            .await
+            .expect("moving mails from new to cur should succeed");
+        while let Ok(WatchEvent::Inotify(event)) = event_rx.recv().await {
+            log::trace!("{event:?}");
+            if event.mask.contains(EventMask::ISDIR) {
+                continue;
+            }
+            let result = match (event.mask, event.name) {
+                (EventMask::IGNORED, _) => panic!("watched maildir should not be removed"),
+                (EventMask::MOVED_TO | EventMask::CLOSE_WRITE, Some(name)) => {
+                    move_to_cur(&new, &cur, &name).await
+                }
+                _ => move_new_to_cur(&new, &cur).await,
+            };
+            result.expect("moving mail from new to cur should succeed");
+        }
+    })
+    .detach();
 }
 
 #[derive(Debug, Clone)]
