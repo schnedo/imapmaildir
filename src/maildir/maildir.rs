@@ -497,7 +497,7 @@ impl Maildir {
                         new.display()
                     );
                     if let Some(watch) = watch {
-                        watch.ignore_next_update_for_file(&new).await;
+                        watch.ignore_next_update_for_file(&current).await;
                     }
                     compio::fs::remove_file(&current).await.map_err(Error::from)
                 } else {
@@ -707,6 +707,7 @@ mod tests {
         collections::HashSet,
         ffi::OsString,
         os::unix::{ffi::OsStringExt, fs::PermissionsExt},
+        time::Duration,
     };
 
     use assertables::*;
@@ -1093,6 +1094,27 @@ mod tests {
         assert_ok!(Maildir::rename(None, current, new).await);
         assert!(!expected_current.exists());
         assert!(expected_new.exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_update_flags_onto_identical_file_is_not_reported_as_change(
+        #[future] maildir: TestMaildir,
+        metadata: LocalMailMetadata,
+    ) {
+        let maildir = maildir.maildir;
+        let mut entry = metadata;
+        let mut renamed = entry.clone();
+        renamed.set_flags(Flag::Seen | Flag::Flagged);
+        assert_ok!(fs::write(maildir.get_path_of(&entry), "content"));
+        assert_ok!(fs::write(maildir.get_path_of(&renamed), "content"));
+        let changes = maildir.clone().watch(8).await;
+
+        assert_ok!(maildir.update_flags(&mut entry, renamed.flags()).await);
+
+        assert_err!(compio::time::timeout(Duration::from_millis(300), changes.recv()).await);
+        assert!(maildir.get_path_of(&renamed).exists());
     }
 
     #[rstest]
