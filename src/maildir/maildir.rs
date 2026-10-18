@@ -66,10 +66,10 @@ impl Maildir {
 
                 let unchecked = Self::unchecked(mail_dir);
 
-                match (
-                    builder.create(unchecked.tmp.as_path()).await,
-                    builder.create(unchecked.new.as_path()).await,
-                    builder.create(unchecked.cur.as_path()).await,
+                match futures::join!(
+                    builder.create(unchecked.tmp.as_path()),
+                    builder.create(unchecked.new.as_path()),
+                    builder.create(unchecked.cur.as_path()),
                 ) {
                     (Ok(()), Ok(()), Ok(())) => Ok(unchecked),
                     (Err(e), _, _) => Err(InitError::Io(unchecked.tmp, e.kind())),
@@ -95,22 +95,32 @@ impl Maildir {
     pub async fn load(mail_dir: &Path) -> Result<Self, LoadError> {
         let mail = Self::unchecked(mail_dir);
         log::trace!("loading maildir {mail:?}");
-        match (
+        match futures::join!(
             // todo: this should check for directories (.metadata().is_dir), not just existence
             // todo: check for read/write mode
-            try_exists(&mail.new).await,
-            try_exists(&mail.cur).await,
-            try_exists(&mail.tmp).await,
+            try_exists(&mail.new),
+            try_exists(&mail.cur),
+            try_exists(&mail.tmp),
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
             (Ok(new_exists), Ok(true), Ok(tmp_exists)) => {
                 log::warn!(
                     "Found partially existing maildir with intact \"cur\" directory. Recreating \"tmp\" and \"new\"..."
                 );
-                if !new_exists && let Err(e) = compio::fs::create_dir(&mail.new).await {
-                    return Err(LoadError::Io(mail_dir.to_path_buf(), e.kind()));
-                }
-                if !tmp_exists && let Err(e) = compio::fs::create_dir(&mail.tmp).await {
+                let create_missing = |exists: bool, dir: &Path| {
+                    let dir = dir.to_path_buf();
+                    async move {
+                        if exists {
+                            Ok(())
+                        } else {
+                            compio::fs::create_dir(dir).await
+                        }
+                    }
+                };
+                if let Err(e) = futures::try_join!(
+                    create_missing(new_exists, &mail.new),
+                    create_missing(tmp_exists, &mail.tmp),
+                ) {
                     return Err(LoadError::Io(mail_dir.to_path_buf(), e.kind()));
                 }
 
@@ -446,7 +456,7 @@ impl Maildir {
 
     async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
         // todo: write and match error instead of checking if exists
-        match (try_exists(&current).await?, try_exists(&new).await?) {
+        match futures::try_join!(try_exists(&current), try_exists(&new))? {
             (true, true) => {
                 if Self::is_content_identical(current.as_path(), new.as_path()).await? {
                     log::warn!(
@@ -493,8 +503,8 @@ impl Maildir {
             current.display(),
             new.display()
         );
-        let current_content = compio::fs::read(current).await?;
-        let new_content = compio::fs::read(new).await?;
+        let (current_content, new_content) =
+            futures::try_join!(compio::fs::read(current), compio::fs::read(new))?;
 
         Ok(current_content == new_content)
     }
@@ -507,7 +517,8 @@ impl Maildir {
         let current_mail = self.get_path_of(&entry);
         let entry = entry.set_uid(new_uid);
         let new_mail = self.get_path_of(&entry);
-        Self::rename(self.watch.lock().await.as_ref(), current_mail, new_mail).await?;
+        let watch = self.watch.lock().await.clone();
+        Self::rename(watch.as_ref(), current_mail, new_mail).await?;
 
         Ok(entry)
     }
@@ -518,12 +529,8 @@ impl Maildir {
     ) -> Result<NewLocalMailMetadata, Error> {
         let current = self.get_path_of(&entry);
         let new_metadata = NewLocalMailMetadata::from(entry);
-        Self::rename(
-            self.watch.lock().await.as_ref(),
-            current,
-            self.get_path_of(&new_metadata),
-        )
-        .await?;
+        let watch = self.watch.lock().await.clone();
+        Self::rename(watch.as_ref(), current, self.get_path_of(&new_metadata)).await?;
 
         Ok(new_metadata)
     }
@@ -538,7 +545,8 @@ impl Maildir {
         entry.set_flags(new_flags);
         let new_mail = self.get_path_of(entry);
 
-        Self::rename(self.watch.lock().await.as_ref(), current_mail, new_mail).await
+        let watch = self.watch.lock().await.clone();
+        Self::rename(watch.as_ref(), current_mail, new_mail).await
     }
 
     pub async fn delete(&self, entry: &impl MaildirFile) -> io::Result<()> {

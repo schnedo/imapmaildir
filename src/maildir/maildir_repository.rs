@@ -3,6 +3,7 @@ use crossfire::{
     spsc::{self, Array},
 };
 use enumflags2::BitFlags;
+use futures::{StreamExt as _, TryStreamExt as _, future, stream};
 use std::{
     collections::{HashMap, HashSet},
     io,
@@ -24,6 +25,8 @@ use crate::{
 
 use super::Maildir;
 
+const MAX_CONCURRENT_FILE_OPS: usize = 64;
+
 #[derive(Debug)]
 pub struct MaildirRepository {
     maildir: Maildir,
@@ -40,14 +43,17 @@ impl MaildirRepository {
         mail_dir: &Path,
         state_dir: &Path,
     ) -> Result<Self, InitError> {
-        let mail = Maildir::try_init(mail_dir).await?;
-        let state = State::init(state_dir, uid_validity).await?;
+        let (mail, state) = futures::join!(
+            Maildir::try_init(mail_dir),
+            State::init(state_dir, uid_validity)
+        );
+        let (mail, state) = (mail?, state?);
 
         Ok(Self::new(mail, state))
     }
 
     pub async fn load(mail_dir: &Path, state_dir: &Path) -> Result<Self, LoadError> {
-        match (State::load(state_dir).await, Maildir::load(mail_dir).await) {
+        match futures::join!(State::load(state_dir), Maildir::load(mail_dir)) {
             (Ok(state), Ok(mail)) => {
                 let repo = Self::new(mail, state);
 
@@ -218,6 +224,32 @@ impl MaildirRepository {
         Ok(())
     }
 
+    pub async fn delete_all(&self, uids: impl Iterator<Item = Uid>) -> Result<(), DeleteError> {
+        stream::iter(uids)
+            .map(|uid| self.delete(uid))
+            .buffered(MAX_CONCURRENT_FILE_OPS)
+            .try_collect()
+            .await
+    }
+
+    pub async fn apply_remote_updates(
+        &self,
+        updates: &[RemoteMailMetadata],
+    ) -> Result<Vec<Uid>, Error> {
+        stream::iter(updates)
+            .map(|update| async move {
+                match self.update_flags(update).await {
+                    Ok(()) => Ok(None),
+                    Err(Error::NoExists { uid }) => Ok(Some(uid)),
+                    Err(e) => Err(e),
+                }
+            })
+            .buffered(MAX_CONCURRENT_FILE_OPS)
+            .try_filter_map(future::ok)
+            .try_collect()
+            .await
+    }
+
     pub async fn delete(&self, uid: Uid) -> Result<(), DeleteError> {
         log::info!("deleting mail {uid}");
         if let Some(entry) = self.state.get_by_id(uid).await? {
@@ -231,18 +263,17 @@ impl MaildirRepository {
     }
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
-        let mut news: Vec<LocalMail> = Vec::new();
         let maildir_metadata = self.maildir.list_cur()?;
 
         // todo: use Set instead of Map
         let mut maildir_mails = HashMap::new();
 
+        let mut new_metadata = Vec::new();
         while let Ok(metadata) = maildir_metadata.recv().await {
             let metadata = metadata?;
             match metadata {
                 maildir::MaildirEntry::New(new_local_mail_metadata) => {
-                    let content = self.maildir.read_content(&new_local_mail_metadata).await?;
-                    news.push(LocalMail::new(content, new_local_mail_metadata));
+                    new_metadata.push(new_local_mail_metadata);
                 }
                 maildir::MaildirEntry::MaybeTracked(local_mail_metadata) => {
                     maildir_mails.insert(local_mail_metadata.uid(), local_mail_metadata);
@@ -262,12 +293,19 @@ impl MaildirRepository {
                 }
             })
             .await?;
-        for maildata in maildir_mails.into_values() {
-            let maildata = self.maildir.remove_uid(maildata).await?;
-            // todo: return Iterator and chain here
-            let content = self.maildir.read_content(&maildata).await?;
-            news.push(LocalMail::new(content, maildata));
-        }
+        let untracked = stream::iter(maildir_mails.into_values())
+            .map(|maildata| self.maildir.remove_uid(maildata))
+            .buffered(MAX_CONCURRENT_FILE_OPS)
+            .err_into::<DetectChangesError>();
+        let news = stream::iter(new_metadata.into_iter().map(Ok))
+            .chain(untracked)
+            .map_ok(|metadata| async move {
+                let content = self.maildir.read_content(&metadata).await?;
+                Ok(LocalMail::new(content, metadata))
+            })
+            .try_buffered(MAX_CONCURRENT_FILE_OPS)
+            .try_collect()
+            .await?;
 
         let changes = LocalChanges::new(deletions, news, updates);
         log::trace!("{changes:?}");

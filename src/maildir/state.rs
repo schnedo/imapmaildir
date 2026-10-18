@@ -9,9 +9,9 @@ use std::{
 };
 
 use crossfire::{
-    AsyncTx,
+    MAsyncTx,
+    mpsc::{self, Array},
     oneshot::{TxOneshot, oneshot},
-    spsc::{self, Array},
 };
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
@@ -47,7 +47,7 @@ enum Command {
 }
 
 pub struct State {
-    jobs: AsyncTx<Array<Command>>,
+    jobs: MAsyncTx<Array<Command>>,
 }
 
 impl Debug for State {
@@ -62,7 +62,7 @@ impl State {
         open: impl FnOnce(&Path) -> Result<Connection, InitError> + Send + 'static,
     ) -> Result<Self, InitError> {
         let (ready_tx, ready_rx) = oneshot();
-        let (jobs, job_rx) = spsc::bounded_async_blocking::<Command>(JOB_QUEUE_SIZE);
+        let (jobs, job_rx) = mpsc::bounded_async_blocking::<Command>(JOB_QUEUE_SIZE);
         thread::Builder::new()
             .name(format!("state {}", state_file.display()))
             .spawn(move || {
