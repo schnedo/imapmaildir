@@ -19,7 +19,10 @@ use crossfire::{
 };
 use futures::future::OptionFuture;
 
-use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
+use crate::{
+    imap::AuthenticatedClient,
+    maildir::{LoadError, MaildirRepository},
+};
 
 pub struct Syncer {}
 
@@ -160,16 +163,16 @@ impl Syncer {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
-        let loaded = if let Ok(maildir_repository) =
-            MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await
-        {
-            let initial_sync_complete = maildir_repository
-                .is_initial_sync_complete()
-                .await
-                .expect("checking for completed initial sync should succeed");
-            Some((maildir_repository, initial_sync_complete))
-        } else {
-            None
+        let loaded = match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await {
+            Ok(maildir_repository) => {
+                let initial_sync_complete = maildir_repository
+                    .is_initial_sync_complete()
+                    .await
+                    .expect("checking for completed initial sync should succeed");
+                Some((maildir_repository, initial_sync_complete))
+            }
+            Err(LoadError::Uninitialized) => None,
+            Err(e) => panic!("loading maildir repository of {mailbox} should succeed: {e}"),
         };
 
         match loaded {
