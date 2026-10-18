@@ -1,4 +1,4 @@
-use crossfire::{AsyncTx, spsc::Array};
+use crossfire::{MAsyncTx, mpsc::Array};
 
 use crate::{
     imap::{
@@ -38,7 +38,7 @@ impl AuthenticatedClient {
         }
     }
 
-    pub async fn select(mut self, task_tx: AsyncTx<Array<Task>>, mailbox: &str) -> Selection {
+    pub async fn select(mut self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
         self.enable_qresync().await;
         let command = format!("SELECT {mailbox} (CONDSTORE)");
 
@@ -47,7 +47,7 @@ impl AuthenticatedClient {
 
     pub async fn qresync_select(
         mut self,
-        task_tx: AsyncTx<Array<Task>>,
+        task_tx: MAsyncTx<Array<Task>>,
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
@@ -69,7 +69,7 @@ impl AuthenticatedClient {
 
     async fn do_select(
         mut self,
-        task_tx: AsyncTx<Array<Task>>,
+        task_tx: MAsyncTx<Array<Task>>,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Selection {

@@ -46,7 +46,6 @@ pub trait MaildirFile {
     }
 }
 
-// todo: check if Arc covers clone use case
 #[derive(Debug, Clone)]
 pub struct Maildir {
     new: PathBuf,

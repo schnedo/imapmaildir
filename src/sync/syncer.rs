@@ -2,21 +2,28 @@ use crate::{
     imap::{
         IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
     },
-    maildir::LocalChanges,
-    repository::{SequenceSet, SequenceSetBuilder, Uid},
-    sync::{Config, task::Task},
+    maildir::{LocalChanges, LocalWatcher},
+    repository::{ModSeq, SequenceSet, Uid},
+    sync::{Config, RepositoryHandle, task::Task},
 };
 use std::{collections::HashSet, path::Path, time::Duration};
 
 use compio::runtime::JoinHandle;
 use crossfire::{
     AsyncRx,
-    spsc::{self, Array},
+    mpsc::{self, Array},
 };
 
 use crate::{imap::AuthenticatedClient, maildir::MaildirRepository};
 
 pub struct Syncer {}
+
+struct Synced {
+    client: SelectedClient,
+    task_handle: JoinHandle<()>,
+    repository: RepositoryHandle,
+    local_watcher: LocalWatcher,
+}
 
 impl Syncer {
     #[expect(clippy::missing_panics_doc)]
@@ -28,7 +35,12 @@ impl Syncer {
         config: Config,
         on_local_change: impl FnMut() + Send + 'static,
     ) {
-        let ((client, task_handle), _) = Self::sync(
+        let Synced {
+            client,
+            task_handle,
+            repository,
+            ..
+        } = Self::sync(
             mailbox,
             mail_dir,
             state_dir,
@@ -38,6 +50,7 @@ impl Syncer {
         )
         .await;
         client.logout().await;
+        drop(repository);
         task_handle
             .await
             .expect("task processing should finish successfully");
@@ -53,7 +66,12 @@ impl Syncer {
         config: Config,
         mut on_local_change: impl FnMut() + Clone + Send + 'static,
     ) -> ! {
-        let ((mut client, task_handle), maildir_repository) = Self::sync(
+        let Synced {
+            mut client,
+            task_handle,
+            repository,
+            local_watcher,
+        } = Self::sync(
             mailbox,
             mail_dir,
             state_dir,
@@ -63,11 +81,10 @@ impl Syncer {
         )
         .await;
         task_handle.detach();
-        let repo = maildir_repository.clone();
         let stop_tx = client.take_idle_stop_tx();
 
         log::info!("listening for mail changes...");
-        let local_change_rx = repo.watch().await;
+        let local_change_rx = local_watcher.watch().await;
         compio::runtime::spawn(async move {
             while let Ok(changes) = local_change_rx.recv().await {
                 log::trace!("detected local changes {changes:?}");
@@ -83,16 +100,20 @@ impl Syncer {
             match client.idle(idle_timeout).await {
                 IdleStopReason::Remote => {
                     log::info!("handling new remote changes");
-                    let current_highest_modseq = maildir_repository
-                        .highest_modseq()
-                        .await
-                        .expect("getting highest modseq should succeed");
+                    let current_highest_modseq = repository.highest_modseq().await;
                     client.fetch_since(current_highest_modseq).await;
                 }
                 IdleStopReason::Local { changes } => {
                     log::info!("handling new local changes");
-                    Self::handle_local_changes(&mut client, changes, mailbox, &maildir_repository)
-                        .await;
+                    let highest_modseq = repository.highest_modseq().await;
+                    Self::handle_local_changes(
+                        &mut client,
+                        changes,
+                        highest_modseq,
+                        mailbox,
+                        &repository,
+                    )
+                    .await;
                     on_local_change();
                 }
                 IdleStopReason::Timeout => {
@@ -113,7 +134,7 @@ impl Syncer {
         client: AuthenticatedClient,
         config: Config,
         on_local_change: impl FnMut() + Send + 'static,
-    ) -> ((SelectedClient, JoinHandle<()>), MaildirRepository) {
+    ) -> Synced {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
@@ -130,17 +151,10 @@ impl Syncer {
         };
 
         match loaded {
-            Some((maildir_repository, true)) => (
-                Self::sync_existing(
-                    &maildir_repository,
-                    client,
-                    mailbox,
-                    config,
-                    on_local_change,
-                )
-                .await,
-                maildir_repository,
-            ),
+            Some((maildir_repository, true)) => {
+                Self::sync_existing(maildir_repository, client, mailbox, config, on_local_change)
+                    .await
+            }
             Some((maildir_repository, false)) => {
                 log::info!("resuming interrupted initial sync");
                 Self::sync_initial(
@@ -171,12 +185,12 @@ impl Syncer {
     }
 
     async fn sync_existing(
-        maildir_repository: &MaildirRepository,
+        maildir_repository: MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
         config: Config,
         on_local_change: impl FnMut() + Send + 'static,
-    ) -> (SelectedClient, JoinHandle<()>) {
+    ) -> Synced {
         let uid_validity = maildir_repository
             .uid_validity()
             .await
@@ -189,13 +203,11 @@ impl Syncer {
             .detect_changes()
             .await
             .expect("detecting local changes should succeed");
-        let (task_tx, task_rx) = spsc::bounded_async(config.store_batch_size());
-        let task_handle = Self::setup_task_processing(
-            maildir_repository.clone(),
-            task_rx,
-            config,
-            on_local_change,
-        );
+        let local_watcher = maildir_repository.local_watcher();
+        let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let repository = RepositoryHandle::new(task_tx.clone());
+        let task_handle =
+            Self::setup_task_processing(maildir_repository, task_rx, config, on_local_change);
 
         let Selection {
             mut client,
@@ -212,33 +224,42 @@ impl Syncer {
         );
 
         Self::handle_conflicts(&remote_changes, &mut local_changes);
-        Self::handle_remote_changes(&mut client, maildir_repository, remote_changes).await;
+        Self::handle_remote_changes(&mut client, &repository, remote_changes).await;
         client
             .commit_highest_modseq(mailbox_data.highest_modseq())
             .await;
-        Self::handle_local_changes(&mut client, local_changes, mailbox, maildir_repository).await;
-        (client, task_handle)
+        Self::handle_local_changes(
+            &mut client,
+            local_changes,
+            highest_modseq,
+            mailbox,
+            &repository,
+        )
+        .await;
+
+        Synced {
+            client,
+            task_handle,
+            repository,
+            local_watcher,
+        }
     }
 
     async fn handle_local_changes(
         client: &mut SelectedClient,
         local_changes: LocalChanges,
+        highest_modseq: ModSeq,
         mailbox: &str,
-        maildir_repository: &MaildirRepository,
+        repository: &RepositoryHandle,
     ) {
         let LocalChanges {
-            highest_modseq,
             updates,
             deletions,
             news,
         } = local_changes;
         let mailinfos = client.store(mailbox, news.into_iter()).await;
-        // todo: parallelize these
         while let Ok((uid, metadata)) = mailinfos.recv().await {
-            maildir_repository
-                .add_synced(metadata, uid)
-                .await
-                .expect("writing back synced uid should succeed");
+            repository.add_synced(metadata, uid).await;
         }
         let updates = updates.build();
         for (change, sequence_set) in updates.iter() {
@@ -246,10 +267,7 @@ impl Syncer {
                 .store_flag_change(highest_modseq, change, sequence_set)
                 .await;
             for uid in sequence_set.iter().filter(|uid| !rejected.contains(uid)) {
-                maildir_repository
-                    .apply_flag_change(uid, change)
-                    .await
-                    .expect("updating flags in maildir_repository should succeed");
+                repository.apply_flag_change(uid, change).await;
             }
         }
         if let Ok(set) = SequenceSet::try_from(&deletions) {
@@ -259,29 +277,17 @@ impl Syncer {
 
     async fn handle_remote_changes(
         client: &mut SelectedClient,
-        maildir_repository: &MaildirRepository,
+        repository: &RepositoryHandle,
         remote_changes: RemoteChanges,
     ) {
         if let Some(set) = remote_changes.deletions {
-            for uid in set.iter() {
-                maildir_repository
-                    .delete(uid)
-                    .await
-                    .expect("deleting mails should succeed");
-            }
+            repository.delete(set).await;
         }
 
-        let mut refetch_mails = SequenceSetBuilder::default();
-        for update in &remote_changes.updates {
-            if let Err(error) = maildir_repository.update_flags(update).await {
-                match error {
-                    crate::maildir::Error::Maildir(_) => todo!("handle error"),
-                    crate::maildir::Error::State(_) => todo!("handle error"),
-                    crate::maildir::Error::NoExists { uid } => refetch_mails.add(uid),
-                }
-            }
-        }
-        if let Ok(sequence_set) = refetch_mails.build() {
+        let missing = repository
+            .apply_remote_updates(remote_changes.updates)
+            .await;
+        if let Ok(sequence_set) = SequenceSet::try_from(&missing) {
             client.fetch_mail(&sequence_set).await;
         }
     }
@@ -316,8 +322,9 @@ impl Syncer {
         mailbox: &str,
         config: Config,
         on_local_change: impl FnMut() + Send + 'static,
-    ) -> ((SelectedClient, JoinHandle<()>), MaildirRepository) {
-        let (task_tx, task_rx) = spsc::bounded_async(config.store_batch_size());
+    ) -> Synced {
+        let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let repository = RepositoryHandle::new(task_tx.clone());
         let Selection {
             mut client,
             mailbox_data,
@@ -339,17 +346,14 @@ impl Syncer {
                 .await
                 .expect("initializing maildir repository should succeed")
         };
-        let task_handle = Self::setup_task_processing(
-            maildir_repository.clone(),
-            task_rx,
-            config,
-            on_local_change,
-        );
-
         let local_uids = maildir_repository
             .uids()
             .await
             .expect("getting stored uids should succeed");
+        let local_watcher = maildir_repository.local_watcher();
+        let task_handle =
+            Self::setup_task_processing(maildir_repository, task_rx, config, on_local_change);
+
         if local_uids.is_empty() {
             client.fetch_all().await;
         } else {
@@ -360,13 +364,18 @@ impl Syncer {
                 updates,
                 deletions: SequenceSet::try_from(&deletions).ok(),
             };
-            Self::handle_remote_changes(&mut client, &maildir_repository, remote_changes).await;
+            Self::handle_remote_changes(&mut client, &repository, remote_changes).await;
         }
         client
             .complete_initial_sync(mailbox_data.highest_modseq())
             .await;
 
-        ((client, task_handle), maildir_repository)
+        Synced {
+            client,
+            task_handle,
+            repository,
+            local_watcher,
+        }
     }
 
     fn collect_store_batch(
@@ -442,6 +451,40 @@ impl Syncer {
                             .expect("completing initial sync should succeed");
                         done_tx.send(());
                     }
+                    Task::ApplyRemoteUpdates(updates, reply) => {
+                        let mut missing = Vec::new();
+                        for update in &updates {
+                            match maildir_repository.update_flags(update).await {
+                                Ok(()) => {}
+                                Err(crate::maildir::Error::NoExists { uid }) => missing.push(uid),
+                                Err(e) => panic!("updating flags should succeed: {e}"),
+                            }
+                        }
+                        if !updates.is_empty() {
+                            on_local_change();
+                        }
+                        reply.send(missing);
+                    }
+                    Task::AddSynced(metadata, uid) => {
+                        maildir_repository
+                            .add_synced(metadata, uid)
+                            .await
+                            .expect("writing back synced uid should succeed");
+                    }
+                    Task::ApplyFlagChange(uid, change) => {
+                        maildir_repository
+                            .apply_flag_change(uid, change)
+                            .await
+                            .expect("updating flags in maildir_repository should succeed");
+                    }
+                    Task::HighestModseq(reply) => {
+                        reply.send(
+                            maildir_repository
+                                .highest_modseq()
+                                .await
+                                .expect("getting highest modseq should succeed"),
+                        );
+                    }
                     Task::UpdateFlags(remote_mail_metadata) => {
                         log::debug!(
                             "Setting flags of mail {} to {}",
@@ -464,7 +507,7 @@ impl Syncer {
 #[cfg(test)]
 mod tests {
     use assertables::*;
-    use crossfire::AsyncTx;
+    use crossfire::MAsyncTx;
 
     use crate::{
         imap::{RemoteContent, RemoteMailMetadata},
@@ -486,8 +529,8 @@ mod tests {
 
     async fn queue(
         tasks: impl IntoIterator<Item = Task>,
-    ) -> (AsyncTx<Array<Task>>, AsyncRx<Array<Task>>) {
-        let (task_tx, task_rx) = spsc::bounded_async(16);
+    ) -> (MAsyncTx<Array<Task>>, AsyncRx<Array<Task>>) {
+        let (task_tx, task_rx) = mpsc::bounded_async(16);
         for task in tasks {
             assert_ok!(task_tx.send(task).await);
         }

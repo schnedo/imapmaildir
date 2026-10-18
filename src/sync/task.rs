@@ -2,7 +2,8 @@ use crossfire::oneshot::TxOneshot;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
-    repository::{ModSeq, SequenceSet},
+    maildir::{FlagChange, NewLocalMailMetadata},
+    repository::{ModSeq, SequenceSet, Uid},
 };
 
 pub enum Task {
@@ -11,4 +12,8 @@ pub enum Task {
     UpdateFlags(RemoteMailMetadata),
     SetHighestModseq(ModSeq),
     CompleteInitialSync(ModSeq, TxOneshot<()>),
+    ApplyRemoteUpdates(Vec<RemoteMailMetadata>, TxOneshot<Vec<Uid>>),
+    AddSynced(NewLocalMailMetadata, Uid),
+    ApplyFlagChange(Uid, FlagChange),
+    HighestModseq(TxOneshot<ModSeq>),
 }
