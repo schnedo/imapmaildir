@@ -1,12 +1,18 @@
 use std::{
     collections::HashSet,
     convert::Into,
-    fs::{self, create_dir_all},
+    fmt::Debug,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex},
+    sync::LazyLock,
+    thread,
 };
 
+use crossfire::{
+    MAsyncTx,
+    mpsc::{self, Array},
+    oneshot::{TxOneshot, oneshot},
+};
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
@@ -23,6 +29,7 @@ const MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
     Migrations::from_directory(&MIGRATIONS_DIR).expect("generating migrations should succeed")
 });
+const JOB_QUEUE_SIZE: usize = 64;
 
 fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     MIGRATIONS.to_latest(db)?;
@@ -32,86 +39,168 @@ fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+type Job = Box<dyn FnOnce(&mut Connection) + Send>;
+
+enum Command {
+    Run(Job),
+    Close(TxOneshot<()>),
+}
+
+#[derive(Clone)]
 pub struct State {
-    db: Arc<Mutex<Connection>>,
+    jobs: MAsyncTx<Array<Command>>,
+}
+
+impl Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State").finish_non_exhaustive()
+    }
 }
 
 impl State {
-    fn new(db: Connection) -> Self {
-        Self {
-            db: Arc::new(Mutex::new(db)),
-        }
+    async fn start(
+        state_file: PathBuf,
+        open: impl FnOnce(&Path) -> Result<Connection, InitError> + Send + 'static,
+    ) -> Result<Self, InitError> {
+        let (ready_tx, ready_rx) = oneshot();
+        let (jobs, job_rx) = mpsc::bounded_async_blocking::<Command>(JOB_QUEUE_SIZE);
+        thread::Builder::new()
+            .name(format!("state {}", state_file.display()))
+            .spawn(move || {
+                let mut db = match open(&state_file) {
+                    Ok(db) => {
+                        ready_tx.send(Ok(()));
+                        db
+                    }
+                    Err(e) => {
+                        ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                let mut closed_tx = None;
+                while let Ok(command) = job_rx.recv() {
+                    match command {
+                        Command::Run(job) => job(&mut db),
+                        Command::Close(done_tx) => {
+                            closed_tx = Some(done_tx);
+                            break;
+                        }
+                    }
+                }
+                if let Err(e) = db.execute("pragma optimize;", []) {
+                    log::warn!("could not optimize state {}: {e}", state_file.display());
+                }
+                drop(db);
+                if let Some(closed_tx) = closed_tx {
+                    closed_tx.send(());
+                }
+            })?;
+        ready_rx
+            .await
+            .expect("state thread should report whether the database could be opened")?;
+
+        Ok(Self { jobs })
     }
 
-    pub fn load(state_dir: &Path) -> Result<Self, InitError> {
-        let state_file = Self::prepare_state_file(state_dir)?;
+    async fn call<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> R + Send + 'static,
+    ) -> R {
+        let (result_tx, result_rx) = oneshot();
+        self.jobs
+            .send(Command::Run(Box::new(move |db: &mut Connection| {
+                result_tx.send(f(db));
+            })))
+            .await
+            .expect("state thread should still be running");
+        result_rx
+            .await
+            .expect("state thread should return a result")
+    }
+
+    pub async fn close(self) {
+        let (closed_tx, closed_rx) = oneshot();
+        self.jobs
+            .send(Command::Close(closed_tx))
+            .await
+            .expect("state thread should still be running");
+        closed_rx
+            .await
+            .expect("state thread should signal closing the database");
+    }
+
+    pub async fn load(state_dir: &Path) -> Result<Self, InitError> {
+        let state_file = Self::prepare_state_file(state_dir).await?;
         log::debug!(
             "try loading existing state file {}",
             state_file.to_string_lossy()
         );
-        if state_file.try_exists()? {
-            let res = Connection::open_with_flags(
-                state_file,
-                OpenFlags::SQLITE_OPEN_READ_WRITE
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                    | OpenFlags::SQLITE_OPEN_URI,
-            );
+        if try_exists(&state_file).await? {
+            Self::start(state_file, |state_file| {
+                let mut db = Connection::open_with_flags(
+                    state_file,
+                    OpenFlags::SQLITE_OPEN_READ_WRITE
+                        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                        | OpenFlags::SQLITE_OPEN_URI,
+                )?;
+                apply_migrations(&mut db)?;
 
-            let mut db = res?;
-            apply_migrations(&mut db)?;
-
-            Ok(Self::new(db))
+                Ok(db)
+            })
+            .await
         } else {
             Err(InitError::Missing(state_file))
         }
     }
 
-    pub fn init(state_dir: &Path, uid_validity: UidValidity) -> Result<Self, InitError> {
-        let state_file = Self::prepare_state_file(state_dir)?;
+    pub async fn init(state_dir: &Path, uid_validity: UidValidity) -> Result<Self, InitError> {
+        let state_file = Self::prepare_state_file(state_dir).await?;
         log::debug!("creating new state file {}", state_file.to_string_lossy());
-        let mut db = Connection::open(state_file)?;
-        apply_migrations(&mut db)?;
+        Self::start(state_file, move |state_file| {
+            let mut db = Connection::open(state_file)?;
+            apply_migrations(&mut db)?;
 
-        log::trace!("setting cached uid_validity {uid_validity}");
-        db.execute(
-            "insert or ignore into uid_validity (uid_validity) values (?1)",
-            [u32::from(uid_validity)],
-        )?;
+            log::trace!("setting cached uid_validity {uid_validity}");
+            db.execute(
+                "insert or ignore into uid_validity (uid_validity) values (?1)",
+                [u32::from(uid_validity)],
+            )?;
 
-        Ok(Self::new(db))
+            Ok(db)
+        })
+        .await
     }
 
-    pub fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), Error> {
+    pub async fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), Error> {
         log::trace!("completing initial sync with highest_modseq {highest_modseq}");
-        self.db
-            .lock()
-            .expect("state lock should not be poisoned")
-            .execute(
+        self.call(move |db| {
+            db.execute(
                 "insert into highest_modseq (highest_modseq) values (?1)",
                 [i64::from(highest_modseq)],
             )?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
-    pub fn is_initial_sync_complete(&self) -> Result<bool, Error> {
-        self.db
-            .lock()
-            .expect("state lock should not be poisoned")
-            .query_one("select exists (select 1 from highest_modseq)", [], |row| {
+    pub async fn is_initial_sync_complete(&self) -> Result<bool, Error> {
+        self.call(|db| {
+            db.query_one("select exists (select 1 from highest_modseq)", [], |row| {
                 row.get(0)
             })
             .map_err(Into::into)
+        })
+        .await
     }
 
-    pub fn remove_from(state_dir: &Path) -> io::Result<()> {
-        if state_dir.try_exists()? {
+    pub async fn remove_from(state_dir: &Path) -> io::Result<()> {
+        if try_exists(state_dir).await? {
             let state_file = state_dir.join(STATE_FILE_NAME);
-            if state_file.try_exists()? {
-                fs::remove_file(&state_file)?;
+            if try_exists(&state_file).await? {
+                compio::fs::remove_file(&state_file).await?;
             }
-            if let Err(e) = fs::remove_dir(state_dir)
+            if let Err(e) = compio::fs::remove_dir(state_dir).await
                 && e.kind() != io::ErrorKind::DirectoryNotEmpty
             {
                 log::warn!(
@@ -124,145 +213,179 @@ impl State {
         Ok(())
     }
 
-    fn prepare_state_file(state_dir: &Path) -> io::Result<PathBuf> {
-        create_dir_all(state_dir)?;
+    async fn prepare_state_file(state_dir: &Path) -> io::Result<PathBuf> {
+        compio::fs::create_dir_all(state_dir).await?;
 
         Ok(state_dir.join(STATE_FILE_NAME))
     }
 
-    pub fn uid_validity(&self) -> Result<UidValidity, Error> {
+    pub async fn uid_validity(&self) -> Result<UidValidity, Error> {
         log::trace!("getting cached uid_validity");
-        self.db
-            .lock()
-            .expect("state lock should not be poisoned")
-            .query_one("select uid_validity from uid_validity", (), |row| {
+        self.call(|db| {
+            db.query_one("select uid_validity from uid_validity", (), |row| {
                 let validity: u32 = row.get(0)?;
                 let validity = validity.try_into().map_err(Error::from);
                 Ok(validity)
             })?
+        })
+        .await
     }
 
-    pub fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
+    pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         log::trace!("check for updating highest_modseq with {value:?}");
-        let mut db = self.db.lock().expect("state lock should not be poisoned");
-        let transaction = db.transaction()?;
-        let highest_modseq = get_highest_modseq(&transaction)?;
-        if value > highest_modseq {
-            set_highest_modseq(&transaction, value)?;
-        }
-        transaction.commit()?;
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            let highest_modseq = get_highest_modseq(&transaction)?;
+            if value > highest_modseq {
+                set_highest_modseq(&transaction, value)?;
+            }
+            transaction.commit()?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
-    pub fn highest_modseq(&self) -> Result<ModSeq, Error> {
+    pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {
         log::trace!("getting cached highest_modseq");
-        get_highest_modseq(&self.db.lock().expect("state lock should not be poisoned"))
+        self.call(|db| get_highest_modseq(db)).await
     }
 
-    pub fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
+    pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         log::trace!("updating mail cache {data:?}");
-        let db = self.db.lock().expect("state lock should not be poisoned");
-        let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
-        stmt.execute((data.flags().bits(), u32::from(data.uid())))?;
+        let (flags, uid) = (data.flags().bits(), u32::from(data.uid()));
+        self.call(move |db| {
+            let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
+            stmt.execute((flags, uid))?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
-    pub fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
+    pub async fn store(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         log::trace!("storing mail cache {data:?}");
-        let uid = data.uid();
-        let db = self.db.lock().expect("state lock should not be poisoned");
-        let mut stmt = db
-            .prepare_cached("insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)")?;
-        stmt.execute((u32::from(uid), data.flags().bits(), &data.fileprefix()))?;
-
-        Ok(())
-    }
-
-    pub fn store_all<'a>(
-        &self,
-        data: &'a [LocalMailMetadata],
-    ) -> Result<Vec<&'a LocalMailMetadata>, Error> {
-        log::trace!("storing {} mail caches", data.len());
-        let mut db = self.db.lock().expect("state lock should not be poisoned");
-        let transaction = db.transaction()?;
-        let mut conflicts = Vec::new();
-        {
-            let mut stmt = transaction.prepare_cached(
+        let (uid, flags, fileprefix) = (
+            u32::from(data.uid()),
+            data.flags().bits(),
+            data.fileprefix().to_string(),
+        );
+        self.call(move |db| {
+            let mut stmt = db.prepare_cached(
                 "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
             )?;
-            for entry in data {
-                match stmt.execute((
-                    u32::from(entry.uid()),
-                    entry.flags().bits(),
-                    &entry.fileprefix(),
-                )) {
-                    Ok(_) => {}
-                    Err(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error {
-                            code: rusqlite::ErrorCode::ConstraintViolation,
-                            ..
-                        },
-                        _,
-                    )) => conflicts.push(entry),
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        }
-        transaction.commit()?;
+            stmt.execute((uid, flags, &fileprefix))?;
 
-        Ok(conflicts)
+            Ok(())
+        })
+        .await
     }
 
-    pub fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
-        log::trace!("get existing metadata with {uid:?}");
-        let db = self.db.lock().expect("state lock should not be poisoned");
-        let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
+    /// Stores all `data` in a single transaction. Returns entries, that could not be stored due
+    /// to an already existing entry with the same uid.
+    pub async fn store_all(
+        &self,
+        data: Vec<LocalMailMetadata>,
+    ) -> Result<Vec<LocalMailMetadata>, Error> {
+        log::trace!("storing {} mail caches", data.len());
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            let mut conflicts = Vec::new();
+            {
+                let mut stmt = transaction.prepare_cached(
+                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+                )?;
+                for entry in data {
+                    match stmt.execute((
+                        u32::from(entry.uid()),
+                        entry.flags().bits(),
+                        &entry.fileprefix(),
+                    )) {
+                        Ok(_) => {}
+                        Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error {
+                                code: rusqlite::ErrorCode::ConstraintViolation,
+                                ..
+                            },
+                            _,
+                        )) => conflicts.push(entry),
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+            transaction.commit()?;
 
-        stmt.query_one([u32::from(uid)], |row| row.try_into())
-            .optional()
-            .map_err(std::convert::Into::into)
+            Ok(conflicts)
+        })
+        .await
+    }
+
+    pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
+        log::trace!("get existing metadata with {uid:?}");
+        self.call(move |db| {
+            let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
+
+            stmt.query_one([u32::from(uid)], |row| row.try_into())
+                .optional()
+                .map_err(std::convert::Into::into)
+        })
+        .await
     }
 
     // todo: test deleting non existent mail should not fail
-    pub fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
+    pub async fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         log::trace!("deleting {uid:?}");
-        let db = self.db.lock().expect("state lock should not be poisoned");
-        let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
-        stmt.execute([u32::from(uid)])?;
+        self.call(move |db| {
+            let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
+            stmt.execute([u32::from(uid)])?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
-    pub fn uids(&self) -> Result<HashSet<Uid>, Error> {
+    pub async fn uids(&self) -> Result<HashSet<Uid>, Error> {
         log::trace!("getting all stored uids");
-        let db = self.db.lock().expect("state lock should not be poisoned");
-        let mut stmt = db.prepare_cached("select uid from mail_metadata;")?;
-        stmt.query_map([], |row| row.get::<_, u32>(0))?
-            .map(|uid| Uid::try_from(uid?).map_err(|_| Error::Conversion))
-            .collect()
+        self.call(|db| {
+            let mut stmt = db.prepare_cached("select uid from mail_metadata;")?;
+            stmt.query_map([], |row| row.get::<_, u32>(0))?
+                .map(|uid| Uid::try_from(uid?).map_err(|_| Error::Conversion))
+                .collect()
+        })
+        .await
     }
 
-    pub fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
+    /// Calls `cb` with all stored mail metadata. Returns the highest modseq consistent with it.
+    pub async fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
         log::trace!("getting all stored mail metadata");
-        let mut db = self.db.lock().expect("state lock should not be poisoned");
-        let db = db.transaction()?;
-        let mut stmt = db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
-        for row in stmt.query_map([], |row| LocalMailMetadata::try_from(row))? {
-            cb(row?);
+        let (entries, current_highest_modseq) = self
+            .call(|db| {
+                let db = db.transaction()?;
+                let entries = {
+                    let mut stmt =
+                        db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
+                    stmt.query_map([], |row| LocalMailMetadata::try_from(row))?
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                let current_highest_modseq = get_highest_modseq(&db)?;
+
+                Ok::<_, Error>((entries, current_highest_modseq))
+            })
+            .await?;
+        for entry in entries {
+            cb(entry);
         }
-        let current_highest_modseq = get_highest_modseq(&db)?;
 
         Ok(current_highest_modseq)
     }
 }
 
-impl Drop for State {
-    fn drop(&mut self) {
-        let db = self.db.lock().expect("state lock should not be poisoned");
-        db.execute("pragma optimize;", [])
-            .expect("sqlite should be optimizable");
+/// Async version of [`Path::try_exists`]
+async fn try_exists(path: &Path) -> io::Result<bool> {
+    match compio::fs::metadata(path).await {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -389,22 +512,30 @@ mod tests {
     }
 
     #[fixture]
-    fn incomplete_state(temp_dir: TempDir, uid_validity: UidValidity) -> TestState {
+    async fn incomplete_state(temp_dir: TempDir, uid_validity: UidValidity) -> TestState {
         TestState {
-            state: assert_ok!(State::init(temp_dir.path(), uid_validity)),
+            state: assert_ok!(State::init(temp_dir.path(), uid_validity).await),
             dir: temp_dir,
         }
     }
 
     #[fixture]
-    fn state(incomplete_state: TestState, highest_modseq: ModSeq) -> TestState {
-        assert_ok!(incomplete_state.state.complete_initial_sync(highest_modseq));
+    async fn state(#[future] incomplete_state: TestState, highest_modseq: ModSeq) -> TestState {
+        let incomplete_state = incomplete_state.await;
+        assert_ok!(
+            incomplete_state
+                .state
+                .complete_initial_sync(highest_modseq)
+                .await
+        );
         incomplete_state
     }
 
     #[fixture]
-    fn loadable_state_dir(state: TestState) -> TempDir {
-        state.dir
+    async fn loadable_state_dir(#[future] state: TestState) -> TempDir {
+        let TestState { state, dir } = state.await;
+        state.close().await;
+        dir
     }
 
     #[fixture]
@@ -417,32 +548,39 @@ mod tests {
     }
 
     #[rstest]
-    fn test_state_init_initializes_db(state: TestState) {
+    #[compio::test]
+    #[awt]
+    async fn test_state_init_initializes_db(#[future] state: TestState) {
         assert!(assert_ok!(fs::exists(
             state.dir.path().join(STATE_FILE_NAME)
         )));
     }
 
     #[rstest]
-    fn test_state_uses_write_ahead_log(state: TestState) {
+    #[compio::test]
+    #[awt]
+    async fn test_state_uses_write_ahead_log(#[future] state: TestState) {
         assert!(assert_ok!(fs::exists(
             state.dir.path().join(STATE_FILE_NAME.to_string() + "-wal")
         )));
     }
 
     #[rstest]
-    fn test_state_inits_correctly(
-        state: TestState,
+    #[compio::test]
+    #[awt]
+    async fn test_state_inits_correctly(
+        #[future] state: TestState,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
     ) {
-        let cached_modseq = assert_ok!(state.state.highest_modseq());
+        let cached_modseq = assert_ok!(state.state.highest_modseq().await);
         assert_eq!(cached_modseq, highest_modseq);
-        assert_eq!(assert_ok!(state.state.uid_validity()), uid_validity);
+        assert_eq!(assert_ok!(state.state.uid_validity().await), uid_validity);
     }
 
     #[rstest]
-    fn test_state_init_fails_on_not_creatable_state_dir(
+    #[compio::test]
+    async fn test_state_init_fails_on_not_creatable_state_dir(
         temp_dir: TempDir,
         uid_validity: UidValidity,
     ) {
@@ -451,12 +589,13 @@ mod tests {
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
         let state_dir = temp_dir.path().join("foo");
 
-        let result = assert_err!(State::init(&state_dir, uid_validity));
+        let result = assert_err!(State::init(&state_dir, uid_validity).await);
         assert_matches!(result, InitError::Io(_));
     }
 
     #[rstest]
-    fn test_state_init_fails_on_not_creatable_state_file(
+    #[compio::test]
+    async fn test_state_init_fails_on_not_creatable_state_file(
         temp_dir: TempDir,
         uid_validity: UidValidity,
     ) {
@@ -464,7 +603,7 @@ mod tests {
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
 
-        let result = assert_err!(State::init(temp_dir.path(), uid_validity));
+        let result = assert_err!(State::init(temp_dir.path(), uid_validity).await);
         assert_matches!(
             result,
             InitError::DbError(Error::Db(rusqlite::Error::SqliteFailure(_, _)))
@@ -472,143 +611,196 @@ mod tests {
     }
 
     #[rstest]
-    fn test_load_loads_correct(
-        loadable_state_dir: TempDir,
+    #[compio::test]
+    #[awt]
+    async fn test_load_loads_correct(
+        #[future] loadable_state_dir: TempDir,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
     ) {
-        let result = assert_ok!(State::load(loadable_state_dir.path()));
-        assert_eq!(assert_ok!(result.highest_modseq()), highest_modseq);
-        assert_eq!(assert_ok!(result.uid_validity()), uid_validity);
+        let result = assert_ok!(State::load(loadable_state_dir.path()).await);
+        assert_eq!(assert_ok!(result.highest_modseq().await), highest_modseq);
+        assert_eq!(assert_ok!(result.uid_validity().await), uid_validity);
     }
 
     #[rstest]
-    fn test_initial_sync_is_incomplete_after_init(incomplete_state: TestState) {
+    #[compio::test]
+    #[awt]
+    async fn test_initial_sync_is_incomplete_after_init(#[future] incomplete_state: TestState) {
         assert!(!assert_ok!(
-            incomplete_state.state.is_initial_sync_complete()
+            incomplete_state.state.is_initial_sync_complete().await
         ));
-        assert_err!(incomplete_state.state.highest_modseq());
+        assert_err!(incomplete_state.state.highest_modseq().await);
     }
 
     #[rstest]
-    fn test_complete_initial_sync_completes_initial_sync(
-        incomplete_state: TestState,
+    #[compio::test]
+    #[awt]
+    async fn test_complete_initial_sync_completes_initial_sync(
+        #[future] incomplete_state: TestState,
         highest_modseq: ModSeq,
         uid_validity: UidValidity,
     ) {
-        assert_ok!(incomplete_state.state.complete_initial_sync(highest_modseq));
+        assert_ok!(
+            incomplete_state
+                .state
+                .complete_initial_sync(highest_modseq)
+                .await
+        );
 
         assert!(assert_ok!(
-            incomplete_state.state.is_initial_sync_complete()
+            incomplete_state.state.is_initial_sync_complete().await
         ));
         assert_eq!(
-            assert_ok!(incomplete_state.state.highest_modseq()),
+            assert_ok!(incomplete_state.state.highest_modseq().await),
             highest_modseq
         );
         assert_eq!(
-            assert_ok!(incomplete_state.state.uid_validity()),
+            assert_ok!(incomplete_state.state.uid_validity().await),
             uid_validity
         );
     }
 
     #[rstest]
-    fn test_uids_returns_stored_uids(state: TestState, metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
+    #[compio::test]
+    #[awt]
+    async fn test_uids_returns_stored_uids(
+        #[future] state: TestState,
+        metadata: LocalMailMetadata,
+    ) {
+        assert_ok!(state.state.store(&metadata).await);
 
         assert_eq!(
-            assert_ok!(state.state.uids()),
+            assert_ok!(state.state.uids().await),
             HashSet::from([metadata.uid()])
         );
     }
 
     #[rstest]
-    fn test_load_errors_on_unreadable_state_file(loadable_state_dir: TempDir) {
+    #[compio::test]
+    #[awt]
+    async fn test_load_errors_on_unreadable_state_file(#[future] loadable_state_dir: TempDir) {
         let mut permissions = assert_ok!(fs::metadata(loadable_state_dir.path())).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(loadable_state_dir.path(), permissions));
-        let result = assert_err!(State::load(loadable_state_dir.path()));
+        let result = assert_err!(State::load(loadable_state_dir.path()).await);
         assert_matches!(result, InitError::Io(_));
     }
 
     #[rstest]
-    fn test_load_errors_on_missing_state_file(temp_dir: TempDir) {
-        let result = assert_err!(State::load(temp_dir.path()));
+    #[compio::test]
+    async fn test_load_errors_on_missing_state_file(temp_dir: TempDir) {
+        let result = assert_err!(State::load(temp_dir.path()).await);
         assert_matches!(result, InitError::Missing(_));
     }
 
     #[rstest]
-    fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
+    #[compio::test]
+    #[awt]
+    async fn test_update_highest_modseq_updates_highest_modseq_if_value_is_higher(
+        #[future] state: TestState,
+    ) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
         let new_modseq = assert_ok!(ModSeq::try_from(i64::MAX));
         assert_gt!(new_modseq, initial_modseq);
-        assert_ok!(state.state.update_highest_modseq(new_modseq));
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
 
-        assert_eq!(assert_ok!(state.state.highest_modseq()), new_modseq);
+        assert_eq!(assert_ok!(state.state.highest_modseq().await), new_modseq);
     }
 
     #[rstest]
-    fn test_update_highest_modseq_does_not_update_if_value_is_lower(state: TestState) {
-        let initial_modseq = assert_ok!(state.state.highest_modseq());
+    #[compio::test]
+    #[awt]
+    async fn test_update_highest_modseq_does_not_update_if_value_is_lower(
+        #[future] state: TestState,
+    ) {
+        let initial_modseq = assert_ok!(state.state.highest_modseq().await);
         let new_modseq = assert_ok!(ModSeq::try_from(1));
         assert_le!(new_modseq, initial_modseq);
-        assert_ok!(state.state.update_highest_modseq(new_modseq));
+        assert_ok!(state.state.update_highest_modseq(new_modseq).await);
 
-        assert_eq!(assert_ok!(state.state.highest_modseq()), initial_modseq);
+        assert_eq!(
+            assert_ok!(state.state.highest_modseq().await),
+            initial_modseq
+        );
     }
 
     #[rstest]
-    fn test_storing_metadata_succeeds(state: TestState, metadata: LocalMailMetadata) {
-        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid())));
-        assert_ok!(state.state.store(&metadata));
-        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+    #[compio::test]
+    #[awt]
+    async fn test_storing_metadata_succeeds(
+        #[future] state: TestState,
+        metadata: LocalMailMetadata,
+    ) {
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_ok!(state.state.store(&metadata).await);
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
 
     #[rstest]
-    fn test_updating_metadata_succeeds(state: TestState, mut metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
+    #[compio::test]
+    #[awt]
+    async fn test_updating_metadata_succeeds(
+        #[future] state: TestState,
+        mut metadata: LocalMailMetadata,
+    ) {
+        assert_ok!(state.state.store(&metadata).await);
         let flags = Flag::Seen | Flag::Deleted;
         assert_ne!(flags, metadata.flags());
         metadata.set_flags(flags);
-        assert_ok!(state.state.update(&metadata));
-        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+        assert_ok!(state.state.update(&metadata).await);
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
 
     #[rstest]
-    fn test_delete_by_uid_succeeds(state: TestState, metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
-        assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
-        assert_ok!(state.state.delete_by_id(metadata.uid()));
-        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid())));
+    #[compio::test]
+    #[awt]
+    async fn test_delete_by_uid_succeeds(#[future] state: TestState, metadata: LocalMailMetadata) {
+        assert_ok!(state.state.store(&metadata).await);
+        assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_ok!(state.state.delete_by_id(metadata.uid()).await);
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
     }
 
     #[rstest]
-    fn test_foreach_fails_with_invalid_uid_in_state(state: TestState) {
-        let db = state
-            .state
-            .db
-            .lock()
-            .expect("state lock should not be poisoned");
-        assert_ok!(db.execute_batch(
-            "insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")"
-        ));
-        drop(db);
-        assert_err!(state.state.fore_each(|_| {}));
+    #[compio::test]
+    #[awt]
+    async fn test_foreach_fails_with_invalid_uid_in_state(#[future] state: TestState) {
+        assert_ok!(
+            state
+                .state
+                .call(|db| db.execute_batch(
+                    "insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")"
+                ))
+                .await
+        );
+        assert_err!(state.state.fore_each(|_| {}).await);
     }
 
     #[rstest]
-    fn test_foreach_gets_all_stored_data(state: TestState, metadata: LocalMailMetadata) {
-        assert_ok!(state.state.store(&metadata));
-        let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+    #[compio::test]
+    #[awt]
+    async fn test_foreach_gets_all_stored_data(
+        #[future] state: TestState,
+        metadata: LocalMailMetadata,
+    ) {
+        assert_ok!(state.state.store(&metadata).await);
+        let stored_first = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         let metadata = metadata.set_uid(assert_ok!(Uid::try_from(9)));
-        assert_ok!(state.state.store(&metadata));
-        let stored_second = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid())));
+        assert_ok!(state.state.store(&metadata).await);
+        let stored_second = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
 
         let mut stored = HashSet::new();
-        assert_ok!(state.state.fore_each(|data| {
-            stored.insert(data);
-        }));
+        assert_ok!(
+            state
+                .state
+                .fore_each(|data| {
+                    stored.insert(data);
+                })
+                .await
+        );
         assert_contains!(stored, &stored_first);
         assert_contains!(stored, &stored_second);
     }
@@ -634,51 +826,64 @@ mod tests {
     }
 
     #[rstest]
-    fn test_delete_from_deletes_state_file(loadable_state_dir: TempDir) {
-        assert_ok!(State::remove_from(loadable_state_dir.path()));
+    #[compio::test]
+    #[awt]
+    async fn test_delete_from_deletes_state_file(#[future] loadable_state_dir: TempDir) {
+        assert_ok!(State::remove_from(loadable_state_dir.path()).await);
         let state_file = loadable_state_dir.path().join(STATE_FILE_NAME);
         assert!(!assert_ok!(state_file.try_exists()));
     }
 
     #[rstest]
-    fn test_delete_from_deletes_state_dir_if_empty(loadable_state_dir: TempDir) {
-        assert_ok!(State::remove_from(loadable_state_dir.path()));
+    #[compio::test]
+    #[awt]
+    async fn test_delete_from_deletes_state_dir_if_empty(#[future] loadable_state_dir: TempDir) {
+        assert_ok!(State::remove_from(loadable_state_dir.path()).await);
         assert!(!assert_ok!(loadable_state_dir.path().try_exists()));
     }
 
     #[rstest]
-    fn test_delete_from_keeps_state_dir_if_not_empty(loadable_state_dir: TempDir) {
+    #[compio::test]
+    #[awt]
+    async fn test_delete_from_keeps_state_dir_if_not_empty(#[future] loadable_state_dir: TempDir) {
         assert_ok!(fs::write(loadable_state_dir.path().join("afasdfas"), ""));
-        assert_ok!(State::remove_from(loadable_state_dir.path()));
+        assert_ok!(State::remove_from(loadable_state_dir.path()).await);
         assert!(assert_ok!(loadable_state_dir.path().try_exists()));
     }
 
     #[rstest]
-    fn test_delete_from_errors_if_state_file_cannot_be_accessed(loadable_state_dir: TempDir) {
+    #[compio::test]
+    #[awt]
+    async fn test_delete_from_errors_if_state_file_cannot_be_accessed(
+        #[future] loadable_state_dir: TempDir,
+    ) {
         let mut permissions = assert_ok!(loadable_state_dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(&loadable_state_dir, permissions));
 
-        let result = assert_err!(State::remove_from(loadable_state_dir.path()));
+        let result = assert_err!(State::remove_from(loadable_state_dir.path()).await);
 
         assert_matches!(result, io::Error { .. });
     }
 
     #[rstest]
-    fn test_delete_from_errors_if_state_dir_cannot_be_accessed(temp_dir: TempDir) {
+    #[compio::test]
+    async fn test_delete_from_errors_if_state_dir_cannot_be_accessed(temp_dir: TempDir) {
         let state_dir = temp_dir.path().join("kljlkfsajd");
         assert_ok!(fs::create_dir(&state_dir));
         let mut permissions = assert_ok!(temp_dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(&temp_dir, permissions));
 
-        let result = assert_err!(State::remove_from(&state_dir));
+        let result = assert_err!(State::remove_from(&state_dir).await);
 
         assert_matches!(result, io::Error { .. });
     }
 
     #[rstest]
-    fn test_drop_does_not_panic_if_database_file_already_deleted(state: TestState) {
+    #[compio::test]
+    #[awt]
+    async fn test_drop_does_not_panic_if_database_file_already_deleted(#[future] state: TestState) {
         let TestState { state, dir } = state;
         drop(dir);
         drop(state);

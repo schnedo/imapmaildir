@@ -85,6 +85,7 @@ impl Syncer {
                     log::info!("handling new remote changes");
                     let current_highest_modseq = maildir_repository
                         .highest_modseq()
+                        .await
                         .expect("getting highest modseq should succeed");
                     client.fetch_since(current_highest_modseq).await;
                 }
@@ -116,25 +117,31 @@ impl Syncer {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
-        match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await {
-            Ok(maildir_repository)
-                if maildir_repository
-                    .is_initial_sync_complete()
-                    .expect("checking for completed initial sync should succeed") =>
-            {
-                (
-                    Self::sync_existing(
-                        &maildir_repository,
-                        client,
-                        mailbox,
-                        config,
-                        on_local_change,
-                    )
-                    .await,
-                    maildir_repository,
+        let loaded = if let Ok(maildir_repository) =
+            MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await
+        {
+            let initial_sync_complete = maildir_repository
+                .is_initial_sync_complete()
+                .await
+                .expect("checking for completed initial sync should succeed");
+            Some((maildir_repository, initial_sync_complete))
+        } else {
+            None
+        };
+
+        match loaded {
+            Some((maildir_repository, true)) => (
+                Self::sync_existing(
+                    &maildir_repository,
+                    client,
+                    mailbox,
+                    config,
+                    on_local_change,
                 )
-            }
-            Ok(maildir_repository) => {
+                .await,
+                maildir_repository,
+            ),
+            Some((maildir_repository, false)) => {
                 log::info!("resuming interrupted initial sync");
                 Self::sync_initial(
                     Some(maildir_repository),
@@ -147,7 +154,7 @@ impl Syncer {
                 )
                 .await
             }
-            Err(_) => {
+            None => {
                 log::info!("no existing maildir found. Running inital sync");
                 Self::sync_initial(
                     None,
@@ -172,9 +179,11 @@ impl Syncer {
     ) -> (SelectedClient, JoinHandle<()>) {
         let uid_validity = maildir_repository
             .uid_validity()
+            .await
             .expect("getting uid_validity should succeed");
         let highest_modseq = maildir_repository
             .highest_modseq()
+            .await
             .expect("getting highest_modseq should succeed");
         let mut local_changes = maildir_repository
             .detect_changes()
@@ -319,6 +328,7 @@ impl Syncer {
             assert_eq!(
                 maildir_repository
                     .uid_validity()
+                    .await
                     .expect("getting uid_validity should succeed"),
                 mailbox_data.uid_validity(),
                 "remote uid validity should be the same as local"
@@ -338,6 +348,7 @@ impl Syncer {
 
         let local_uids = maildir_repository
             .uids()
+            .await
             .expect("getting stored uids should succeed");
         if local_uids.is_empty() {
             client.fetch_all().await;
@@ -420,12 +431,14 @@ impl Syncer {
                         log::debug!("Setting highest modseq to {modseq}");
                         maildir_repository
                             .update_highest_modseq(modseq)
+                            .await
                             .expect("setting highest_modseq should succeed");
                     }
                     Task::CompleteInitialSync(modseq, done_tx) => {
                         log::debug!("Completing initial sync with highest modseq {modseq}");
                         maildir_repository
                             .complete_initial_sync(modseq)
+                            .await
                             .expect("completing initial sync should succeed");
                         done_tx.send(());
                     }
