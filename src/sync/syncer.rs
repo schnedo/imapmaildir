@@ -2,11 +2,15 @@ use crate::{
     imap::{
         IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
     },
-    maildir::{LocalChanges, LocalWatcher, MaildirRepositoryError},
+    maildir::{FlagChange, LocalChanges, LocalWatcher, MaildirRepositoryError},
     repository::{ModSeq, SequenceSet, Uid},
     sync::{Config, RepositoryHandle, task::Task},
 };
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    time::Duration,
+};
 
 use compio::runtime::JoinHandle;
 use crossfire::{
@@ -274,20 +278,81 @@ impl Syncer {
             repository.add_synced(synced).await;
         }
         let updates = updates.build();
+        let mut rejected = Vec::new();
         for (change, sequence_set) in updates.iter() {
-            let rejected = client
+            let rejected_uids = client
                 .store_flag_change(highest_modseq, change, sequence_set)
                 .await;
             let accepted: Vec<Uid> = sequence_set
                 .iter()
-                .filter(|uid| !rejected.contains(uid))
+                .filter(|uid| !rejected_uids.contains(uid))
                 .collect();
             if !accepted.is_empty() {
                 repository.apply_flag_changes(accepted, change).await;
             }
+            rejected.extend(rejected_uids.into_iter().map(|uid| (uid, Some(change))));
         }
         if let Ok(set) = SequenceSet::try_from(&deletions) {
-            client.delete(highest_modseq, &set).await;
+            let rejected_uids = client.delete(highest_modseq, &set).await;
+            rejected.extend(rejected_uids.into_iter().map(|uid| (uid, None)));
+        }
+        if !rejected.is_empty() {
+            Self::retry_rejected_changes(client, repository, rejected).await;
+        }
+    }
+
+    async fn retry_rejected_changes(
+        client: &mut SelectedClient,
+        repository: &RepositoryHandle,
+        rejected: Vec<(Uid, Option<FlagChange>)>,
+    ) {
+        let uids: Vec<Uid> = rejected.iter().map(|(uid, _)| *uid).collect();
+        let set = SequenceSet::try_from(&uids).expect("rejected changes should not be empty");
+        let remote: HashMap<Uid, RemoteMailMetadata> = client
+            .fetch_metadata(&set)
+            .await
+            .into_iter()
+            .map(|metadata| (metadata.uid(), metadata))
+            .collect();
+        let local = repository.flags(uids).await;
+        let mut conflicts = Vec::new();
+        for (uid, change) in rejected {
+            let Some(remote_mail) = remote.get(&uid) else {
+                continue;
+            };
+            let set = SequenceSet::from(uid);
+            let still_rejected = if local.get(&uid) == Some(&remote_mail.flags()) {
+                match change {
+                    Some(change) => !client
+                        .store_flag_change(remote_mail.modseq(), change, &set)
+                        .await
+                        .is_empty(),
+                    None => !client.delete(remote_mail.modseq(), &set).await.is_empty(),
+                }
+            } else {
+                true
+            };
+            match (change, still_rejected) {
+                (Some(change), false) => repository.apply_flag_changes(vec![uid], change).await,
+                (Some(change), true) => {
+                    log::warn!("mail {uid} changed on server. Discarding local flag change");
+                    repository.apply_flag_changes(vec![uid], change).await;
+                    conflicts.push(remote_mail.clone());
+                }
+                (None, false) => {}
+                (None, true) => {
+                    log::warn!("mail {uid} changed on server. Restoring locally deleted mail");
+                    repository.delete(set).await;
+                    conflicts.push(remote_mail.clone());
+                }
+            }
+        }
+        if !conflicts.is_empty() {
+            let remote_changes = RemoteChanges {
+                updates: conflicts,
+                deletions: None,
+            };
+            Self::handle_remote_changes(client, repository, remote_changes).await;
         }
     }
 
@@ -424,6 +489,90 @@ impl Syncer {
         (batch, None)
     }
 
+    async fn process_task(
+        maildir_repository: &MaildirRepository,
+        task: Task,
+        on_local_change: &mut impl FnMut(),
+    ) {
+        match task {
+            Task::NewMail(_) => unreachable!("new mail should be handled in batches"),
+            Task::Delete(sequence_set) => {
+                maildir_repository
+                    .delete_all(sequence_set.iter())
+                    .await
+                    .expect("deleting mails should succeed");
+                on_local_change();
+            }
+            Task::SetHighestModseq(modseq) => {
+                log::debug!("Setting highest modseq to {modseq}");
+                maildir_repository
+                    .update_highest_modseq(modseq)
+                    .await
+                    .expect("setting highest_modseq should succeed");
+            }
+            Task::CompleteInitialSync(modseq, done_tx) => {
+                log::debug!("Completing initial sync with highest modseq {modseq}");
+                maildir_repository
+                    .complete_initial_sync(modseq)
+                    .await
+                    .expect("completing initial sync should succeed");
+                done_tx.send(());
+            }
+            Task::ApplyRemoteUpdates(updates, reply) => {
+                let missing = maildir_repository
+                    .apply_remote_updates(&updates)
+                    .await
+                    .unwrap_or_else(|e| panic!("updating flags should succeed: {e}"));
+                if !updates.is_empty() {
+                    on_local_change();
+                }
+                reply.send(missing);
+            }
+            Task::AddSynced(synced) => {
+                maildir_repository
+                    .add_synced_all(synced)
+                    .await
+                    .expect("writing back synced uids should succeed");
+            }
+            Task::ApplyFlagChanges(uids, change) => {
+                maildir_repository
+                    .apply_flag_changes(&uids, change)
+                    .await
+                    .expect("updating flags in maildir_repository should succeed");
+            }
+            Task::Flags(uids, reply) => {
+                reply.send(
+                    maildir_repository
+                        .flags(uids)
+                        .await
+                        .expect("getting flags should succeed"),
+                );
+            }
+            Task::HighestModseq(reply) => {
+                reply.send(
+                    maildir_repository
+                        .highest_modseq()
+                        .await
+                        .expect("getting highest modseq should succeed"),
+                );
+            }
+            Task::UpdateFlags(remote_mail_metadata) => {
+                log::debug!(
+                    "Setting flags of mail {} to {}",
+                    remote_mail_metadata.uid(),
+                    remote_mail_metadata.flags()
+                );
+                match maildir_repository.update_flags(&remote_mail_metadata).await {
+                    Ok(()) => on_local_change(),
+                    Err(MaildirRepositoryError::NoExists { uid }) => {
+                        log::warn!("ignoring flag update of locally missing mail {uid}");
+                    }
+                    Err(e) => panic!("updating flags should succeed: {e}"),
+                }
+            }
+        }
+    }
+
     fn setup_task_processing(
         maildir_repository: MaildirRepository,
         task_rx: AsyncRx<Array<Task>>,
@@ -452,74 +601,8 @@ impl Syncer {
                             .expect("storing new mail should succeed");
                         on_local_change();
                     }
-                    Task::Delete(sequence_set) => {
-                        maildir_repository
-                            .delete_all(sequence_set.iter())
-                            .await
-                            .expect("deleting mails should succeed");
-                        on_local_change();
-                    }
-                    Task::SetHighestModseq(modseq) => {
-                        log::debug!("Setting highest modseq to {modseq}");
-                        maildir_repository
-                            .update_highest_modseq(modseq)
-                            .await
-                            .expect("setting highest_modseq should succeed");
-                    }
-                    Task::CompleteInitialSync(modseq, done_tx) => {
-                        log::debug!("Completing initial sync with highest modseq {modseq}");
-                        maildir_repository
-                            .complete_initial_sync(modseq)
-                            .await
-                            .expect("completing initial sync should succeed");
-                        done_tx.send(());
-                    }
-                    Task::ApplyRemoteUpdates(updates, reply) => {
-                        let missing = maildir_repository
-                            .apply_remote_updates(&updates)
-                            .await
-                            .unwrap_or_else(|e| panic!("updating flags should succeed: {e}"));
-                        if !updates.is_empty() {
-                            on_local_change();
-                        }
-                        reply.send(missing);
-                    }
-                    Task::AddSynced(synced) => {
-                        maildir_repository
-                            .add_synced_all(synced)
-                            .await
-                            .expect("writing back synced uids should succeed");
-                    }
-                    Task::ApplyFlagChanges(uids, change) => {
-                        maildir_repository
-                            .apply_flag_changes(&uids, change)
-                            .await
-                            .expect("updating flags in maildir_repository should succeed");
-                    }
-                    Task::HighestModseq(reply) => {
-                        reply.send(
-                            maildir_repository
-                                .highest_modseq()
-                                .await
-                                .expect("getting highest modseq should succeed"),
-                        );
-                    }
-                    Task::UpdateFlags(remote_mail_metadata) => {
-                        log::debug!(
-                            "Setting flags of mail {} to {}",
-                            remote_mail_metadata.uid(),
-                            remote_mail_metadata.flags()
-                        );
-                        match maildir_repository
-                            .update_flags(&remote_mail_metadata)
-                            .await
-                        {
-                            Ok(()) => on_local_change(),
-                            Err(MaildirRepositoryError::NoExists { uid }) => {
-                                log::warn!("ignoring flag update of locally missing mail {uid}");
-                            }
-                            Err(e) => panic!("updating flags should succeed: {e}"),
-                        }
+                    task => {
+                        Self::process_task(&maildir_repository, task, &mut on_local_change).await;
                     }
                 }
             }

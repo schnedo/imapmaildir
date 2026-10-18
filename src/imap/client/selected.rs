@@ -83,8 +83,14 @@ impl SelectedClient {
     }
 
     pub async fn fetch_changes_since(&mut self, modseq: ModSeq) -> Vec<RemoteMailMetadata> {
-        let command = format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq} VANISHED)");
+        let command =
+            format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq} VANISHED)");
         self.collect_metadata(command).await
+    }
+
+    pub async fn fetch_metadata(&mut self, sequence_set: &SequenceSet) -> Vec<RemoteMailMetadata> {
+        self.collect_metadata(format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS)"))
+            .await
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Vec<RemoteMailMetadata> {
@@ -103,7 +109,9 @@ impl SelectedClient {
             metadata,
             highest_sequence,
         } = handler.0;
-        self.mailbox_handler.message_count.on_fetch(highest_sequence);
+        self.mailbox_handler
+            .message_count
+            .on_fetch(highest_sequence);
 
         metadata
     }
@@ -253,7 +261,11 @@ impl SelectedClient {
         (modified, handler.0.highest_modseq)
     }
 
-    pub async fn delete(&mut self, highest_modseq: ModSeq, sequence_set: &SequenceSet) {
+    pub async fn delete(
+        &mut self,
+        highest_modseq: ModSeq,
+        sequence_set: &SequenceSet,
+    ) -> HashSet<Uid> {
         let (modified, _) = self
             .store_flags(highest_modseq, '+', Flag::Deleted.into(), sequence_set)
             .await;
@@ -266,6 +278,8 @@ impl SelectedClient {
             .send(command.into_bytes(), &mut self.mailbox_handler)
             .await
             .expect("sending uid expunge should succeed");
+
+        modified
     }
 
     pub async fn logout(mut self) {

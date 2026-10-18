@@ -180,6 +180,14 @@ impl TryFrom<&Vec<RangeInclusive<u32>>> for SequenceSet {
     }
 }
 
+impl From<Uid> for SequenceSet {
+    fn from(uid: Uid) -> Self {
+        Self {
+            ranges: vec![SequenceRange::single(uid)],
+        }
+    }
+}
+
 impl TryFrom<&Vec<Uid>> for SequenceSet {
     type Error = EmptySetError;
 
