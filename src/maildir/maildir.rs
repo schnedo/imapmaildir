@@ -345,19 +345,9 @@ impl Maildir {
                         match filename {
                             Err(err) => list_tx.send(Err(err)).await?,
                             Ok(filename) => {
-                                match (
-                                    LocalMailMetadata::from_str(&filename),
-                                    NewLocalMailMetadata::from_str(&filename),
-                                ) {
-                                    (Ok(metadata), _) => {
-                                        list_tx
-                                            .send(Ok(MaildirEntry::MaybeTracked(metadata)))
-                                            .await?;
-                                    }
-                                    (_, Ok(metadata)) => {
-                                        list_tx.send(Ok(MaildirEntry::New(metadata))).await?;
-                                    }
-                                    (Err(_), Err(_)) => {
+                                match filename.parse() {
+                                    Ok(entry) => list_tx.send(Ok(entry)).await?,
+                                    Err(_) => {
                                         match Self::handle_new_unstructured_file(
                                             &watch, &cur, filename,
                                         )
@@ -719,14 +709,9 @@ impl FromStr for MaildirEntry {
     type Err = ParseLocalMailMetadataError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match (
-            LocalMailMetadata::from_str(s),
-            NewLocalMailMetadata::from_str(s),
-        ) {
-            (Ok(metadata), _) => Ok(Self::MaybeTracked(metadata)),
-            (_, Ok(metadata)) => Ok(Self::New(metadata)),
-            (Err(_), Err(e)) => Err(e),
-        }
+        LocalMailMetadata::from_str(s)
+            .map(Self::MaybeTracked)
+            .or_else(|_| NewLocalMailMetadata::from_str(s).map(Self::New))
     }
 }
 

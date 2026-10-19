@@ -343,7 +343,7 @@ impl Syncer {
         } = local_changes;
         let mut news = news.into_iter().peekable();
         while news.peek().is_some() {
-            let mut batch = Vec::new();
+            let mut batch = Vec::with_capacity(config.store_batch_size());
             let mut bytes = 0;
             while batch.len() < config.store_batch_size()
                 && bytes < config.store_batch_max_bytes()

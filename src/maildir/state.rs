@@ -259,10 +259,11 @@ impl State {
     pub async fn store_all(
         &self,
         data: Vec<LocalMailMetadata>,
-    ) -> Result<Vec<LocalMailMetadata>, Error> {
+    ) -> Result<(Vec<LocalMailMetadata>, Vec<LocalMailMetadata>), Error> {
         log::trace!("storing {} mail caches", data.len());
         self.call(move |db| {
             let transaction = db.transaction()?;
+            let mut stored = Vec::with_capacity(data.len());
             let mut conflicts = Vec::new();
             {
                 let mut stmt = transaction.prepare_cached(
@@ -274,7 +275,7 @@ impl State {
                         entry.flags().bits(),
                         &entry.fileprefix(),
                     )) {
-                        Ok(_) => {}
+                        Ok(_) => stored.push(entry),
                         Err(rusqlite::Error::SqliteFailure(
                             rusqlite::ffi::Error {
                                 code: rusqlite::ErrorCode::ConstraintViolation,
@@ -288,7 +289,7 @@ impl State {
             }
             transaction.commit()?;
 
-            Ok(conflicts)
+            Ok((stored, conflicts))
         })
         .await
     }
