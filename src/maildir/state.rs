@@ -30,6 +30,13 @@ static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
     Migrations::from_directory(&MIGRATIONS_DIR).expect("generating migrations should succeed")
 });
 const JOB_QUEUE_SIZE: usize = 64;
+const GET_ALL_BY_ID_CHUNK_SIZE: usize = 256;
+static GET_ALL_BY_ID_QUERY: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "select uid,flags,fileprefix from mail_metadata where uid in ({})",
+        vec!["?"; GET_ALL_BY_ID_CHUNK_SIZE].join(",")
+    )
+});
 
 fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     MIGRATIONS.to_latest(db)?;
@@ -309,14 +316,14 @@ impl State {
     pub async fn get_all_by_id(&self, uids: Vec<Uid>) -> Result<Vec<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata of {} mails", uids.len());
         self.call(move |db| {
-            let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
+            let mut stmt = db.prepare_cached(&GET_ALL_BY_ID_QUERY)?;
             let mut entries = Vec::with_capacity(uids.len());
-            for uid in uids {
-                if let Some(entry) = stmt
-                    .query_one([u32::from(uid)], |row| row.try_into())
-                    .optional()?
-                {
-                    entries.push(entry);
+            for chunk in uids.chunks(GET_ALL_BY_ID_CHUNK_SIZE) {
+                let params = (0..GET_ALL_BY_ID_CHUNK_SIZE)
+                    .map(|i| u32::from(chunk.get(i).unwrap_or(&chunk[0]).to_owned()));
+                let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+                while let Some(row) = rows.next()? {
+                    entries.push(row.try_into()?);
                 }
             }
 
@@ -596,6 +603,25 @@ mod tests {
             Flag::all(),
             Some("prefix".to_string()),
         )
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_get_all_by_id_returns_existing_entries_across_chunks(
+        #[future] state: TestState,
+    ) {
+        let uid = |uid: u32| assert_ok!(Uid::try_from(uid));
+        let stored: Vec<_> = (1..=600)
+            .map(|i| LocalMailMetadata::new(uid(i), Flag::Seen.into(), Some(i.to_string())))
+            .collect();
+        assert_is_empty!(assert_ok!(state.state.store_all(stored.clone()).await).1);
+        let requested = (300..=700).map(uid).collect();
+
+        let mut entries = assert_ok!(state.state.get_all_by_id(requested).await);
+
+        entries.sort_by_key(LocalMailMetadata::uid);
+        assert_eq!(entries, stored[299..]);
     }
 
     #[rstest]
