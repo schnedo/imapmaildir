@@ -2,7 +2,10 @@ use crate::{
     imap::{
         IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
     },
-    maildir::{FlagChange, LocalChanges, LocalEvent, LocalWatcher, MaildirRepositoryError},
+    maildir::{
+        FlagChange, LocalChanges, LocalEvent, LocalMail, LocalWatcher, MaildirRepositoryError,
+        NewLocalMailMetadata,
+    },
     repository::{ModSeq, SequenceSet, Uid, UidValidity},
     sync::{Config, Error, RepositoryHandle, task::Task},
 };
@@ -341,29 +344,19 @@ impl Syncer {
             deletions,
             news,
         } = local_changes;
-        let mut news = news.into_iter().peekable();
-        while news.peek().is_some() {
-            let mut batch = Vec::with_capacity(config.store_batch_size());
-            let mut bytes = 0;
-            while batch.len() < config.store_batch_size()
-                && bytes < config.store_batch_max_bytes()
-                && let Some(metadata) = news.next()
-            {
-                if let Some(mail) = repository.read_mail(metadata).await? {
-                    bytes += mail.content().len();
-                    batch.push(mail);
-                }
-            }
-            if batch.is_empty() {
-                continue;
-            }
-            let synced = client
-                .store(mailbox, batch)
-                .await?
+        let mut news = news.into_iter();
+        let mut batch = Self::read_store_batch(&mut news, repository, config).await?;
+        while !batch.is_empty() {
+            let (stored, next_batch) = futures::join!(
+                client.store(mailbox, batch),
+                Self::read_store_batch(&mut news, repository, config)
+            );
+            let synced = stored?
                 .into_iter()
                 .map(|(uid, metadata)| (metadata, uid))
                 .collect();
             repository.add_synced(synced).await?;
+            batch = next_batch?;
         }
         let updates = updates.build();
         let mut rejected = Vec::new();
@@ -389,6 +382,26 @@ impl Syncer {
         }
 
         Ok(())
+    }
+
+    async fn read_store_batch(
+        news: &mut impl Iterator<Item = NewLocalMailMetadata>,
+        repository: &RepositoryHandle,
+        config: Config,
+    ) -> Result<Vec<LocalMail>, Error> {
+        let mut batch = Vec::with_capacity(config.store_batch_size());
+        let mut bytes = 0;
+        while batch.len() < config.store_batch_size()
+            && bytes < config.store_batch_max_bytes()
+            && let Some(metadata) = news.next()
+        {
+            if let Some(mail) = repository.read_mail(metadata).await? {
+                bytes += mail.content().len();
+                batch.push(mail);
+            }
+        }
+
+        Ok(batch)
     }
 
     async fn retry_rejected_changes(
