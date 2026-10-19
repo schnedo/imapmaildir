@@ -14,7 +14,10 @@ use crossfire::{
 };
 use enumflags2::BitFlags;
 use futures::lock::Mutex;
-use rustix::path::Arg;
+use rustix::{
+    fs::{CWD, RenameFlags},
+    path::Arg,
+};
 use thiserror::Error;
 
 use crate::{
@@ -96,11 +99,10 @@ impl Maildir {
         let mail = Self::unchecked(mail_dir);
         log::trace!("loading maildir {mail:?}");
         match futures::join!(
-            // todo: this should check for directories (.metadata().is_dir), not just existence
             // todo: check for read/write mode
-            try_exists(&mail.new),
-            try_exists(&mail.cur),
-            try_exists(&mail.tmp),
+            dir_exists(&mail.new),
+            dir_exists(&mail.cur),
+            dir_exists(&mail.tmp),
         ) {
             (Ok(true), Ok(true), Ok(true)) => Ok(mail),
             (Ok(new_exists), Ok(true), Ok(tmp_exists)) => {
@@ -479,9 +481,14 @@ impl Maildir {
     }
 
     async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
-        // todo: write and match error instead of checking if exists
-        match futures::try_join!(try_exists(&current), try_exists(&new))? {
-            (true, true) => {
+        log::trace!("renaming {:} to {:}", current.display(), new.display());
+        let rename = async {
+            rustix::fs::renameat_with(CWD, &current, CWD, &new, RenameFlags::NOREPLACE)
+                .map_err(io::Error::from)
+        };
+        match Self::ignoring(watch, &new, rename).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 if Self::is_content_identical(current.as_path(), new.as_path()).await? {
                     log::warn!(
                         "Removing {} during rename to {}: target name is already present with identical content",
@@ -498,22 +505,20 @@ impl Maildir {
                     })
                 }
             }
-            (true, false) => {
-                log::trace!("renaming {:} to {:}", current.display(), new.display());
-                Self::ignoring(watch, &new, compio::fs::rename(&current, &new)).await?;
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                if try_exists(&new).await? {
+                    log::warn!(
+                        "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
+                        current.to_string_lossy(),
+                        new.to_string_lossy()
+                    );
 
-                Ok(())
+                    Ok(())
+                } else {
+                    Err(Error::Missing(current))
+                }
             }
-            (false, true) => {
-                log::warn!(
-                    "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
-                    current.to_string_lossy(),
-                    new.to_string_lossy()
-                );
-
-                Ok(())
-            }
-            (false, false) => Err(Error::Missing(current)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -600,6 +605,15 @@ impl Maildir {
         Self::rename_new_mail(watch.lock().await.as_ref(), current, new).await?;
 
         Ok(metadata)
+    }
+}
+
+async fn dir_exists(path: &Path) -> io::Result<bool> {
+    match compio::fs::metadata(path).await {
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(io::ErrorKind::NotADirectory.into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -694,8 +708,8 @@ impl From<io::Error> for Error {
     }
 }
 
-// todo: remove Eq, PartialEq and Hash
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Eq, PartialEq, Hash))]
 pub enum MaildirEntry {
     New(NewLocalMailMetadata),
     MaybeTracked(LocalMailMetadata),
@@ -1330,5 +1344,22 @@ mod tests {
         let result = assert_err!(maildir.remove_uid(metadata).await);
         assert_matches!(result, Error::Existing { .. });
         assert!(assert_ok!(fs::exists(maildir.get_path_of(&old_metadata))));
+    }
+
+    #[rstest]
+    #[compio::test]
+    async fn test_load_errors_if_cur_is_no_directory(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        for dir in ["new", "tmp"] {
+            assert_ok!(fs::create_dir(maildir_path.join(dir)));
+        }
+        assert_ok!(fs::write(maildir_path.join("cur"), ""));
+
+        let result = assert_err!(Maildir::load(maildir_path).await);
+
+        assert_eq!(
+            result,
+            LoadError::Io(maildir_path.join("cur"), io::ErrorKind::NotADirectory)
+        );
     }
 }

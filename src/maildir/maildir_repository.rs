@@ -187,7 +187,6 @@ impl MaildirRepository {
     pub async fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
         let uid = mail_metadata.uid();
 
-        // todo: should this be transactional?
         if let Some(mut entry) = self.state.get_by_id(uid).await? {
             log::info!(
                 "update flags of mail {uid}: {} -> {}",
@@ -384,7 +383,6 @@ impl MaildirRepository {
         self.maildir.move_new_to_cur().await?;
         let maildir_metadata = self.maildir.list_cur()?;
 
-        // todo: use Set instead of Map
         let mut maildir_mails = HashMap::new();
 
         let mut new_metadata = Vec::new();

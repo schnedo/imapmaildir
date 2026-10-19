@@ -407,7 +407,6 @@ impl State {
         .await
     }
 
-    // todo: test deleting non existent mail should not fail
     pub async fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
         log::trace!("deleting {uid:?}");
         self.call(move |db| {
@@ -838,6 +837,17 @@ mod tests {
         assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_ok!(state.state.delete_by_id(metadata.uid()).await);
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_delete_by_uid_of_missing_mail_succeeds(
+        #[future] state: TestState,
+        metadata: LocalMailMetadata,
+    ) {
+        assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_ok!(state.state.delete_by_id(metadata.uid()).await);
     }
 
     #[rstest]
