@@ -10,15 +10,16 @@ use crossfire::{
 use enumflags2::BitFlags;
 use futures::FutureExt as _;
 
-use crate::maildir::LocalChanges;
+use crate::maildir::{LocalChanges, MaildirError};
 use crate::{
     imap::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
+        client::Error,
         client::capability::{Capabilities, Capability},
         client::encoding,
         client::fetch::FetchAttributes,
         client::message_count::MessageCount,
-        transport::{Chain, Connection, ResponseData, ResponseHandler},
+        transport::{self, Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
@@ -30,6 +31,7 @@ pub enum IdleStopReason {
     Remote,
     Local { changes: LocalChanges },
     Rescan,
+    LocalError(MaildirError),
 }
 
 #[derive(Debug)]
@@ -46,18 +48,15 @@ impl SelectedClient {
         capabilities: &Capabilities,
         task_tx: MAsyncTx<mpsc::Array<Task>>,
         exists: u32,
-    ) -> Self {
-        assert!(
-            capabilities.contains(Capability::LiteralPlus),
-            "server should support LITERAL+ capability"
-        );
-        assert!(
-            capabilities.contains(Capability::UidPlus),
-            "server should support UIDPLUS capability"
-        );
+    ) -> Result<Self, Error> {
+        for capability in [Capability::LiteralPlus, Capability::UidPlus] {
+            if !capabilities.contains(capability) {
+                return Err(Error::MissingCapability(capability));
+            }
+        }
         let (idle_stop_tx, idle_stop_rx) = spsc::bounded_async(1);
 
-        Self {
+        Ok(Self {
             connection,
             mailbox_handler: MailboxHandler {
                 task_tx,
@@ -66,50 +65,58 @@ impl SelectedClient {
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
-        }
+        })
     }
 
-    pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) {
+    pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
         let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, BODY.PEEK[])");
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut self.mailbox_handler)
-            .await
-            .expect("fetching mails should succeed");
+            .await?;
+
+        Ok(())
     }
 
-    pub async fn fetch_all(&mut self) {
+    pub async fn fetch_all(&mut self) -> Result<(), Error> {
         let command = "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[])";
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut self.mailbox_handler)
-            .await
-            .expect("fetching mails should succeed");
+            .await?;
+
+        Ok(())
     }
 
-    pub async fn fetch_changes_since(&mut self, modseq: ModSeq) -> Vec<RemoteMailMetadata> {
+    pub async fn fetch_changes_since(
+        &mut self,
+        modseq: ModSeq,
+    ) -> Result<Vec<RemoteMailMetadata>, Error> {
         let command =
             format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq} VANISHED)");
         self.collect_metadata(command).await
     }
 
-    pub async fn fetch_metadata(&mut self, sequence_set: &SequenceSet) -> Vec<RemoteMailMetadata> {
+    pub async fn fetch_metadata(
+        &mut self,
+        sequence_set: &SequenceSet,
+    ) -> Result<Vec<RemoteMailMetadata>, Error> {
         self.collect_metadata(format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS)"))
             .await
     }
 
-    pub async fn fetch_all_metadata(&mut self) -> Vec<RemoteMailMetadata> {
+    pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
         self.collect_metadata("UID FETCH 1:* (UID, ModSeq, FLAGS)".to_string())
             .await
     }
 
-    async fn collect_metadata(&mut self, command: String) -> Vec<RemoteMailMetadata> {
+    async fn collect_metadata(
+        &mut self,
+        command: String,
+    ) -> Result<Vec<RemoteMailMetadata>, Error> {
         log::debug!("{command}");
         let mut handler = Chain(MetadataCollector::default(), &mut self.mailbox_handler);
-        self.connection
-            .send(command.into(), &mut handler)
-            .await
-            .expect("fetching mail metadata should succeed");
+        self.connection.send(command.into(), &mut handler).await?;
         let MetadataCollector {
             metadata,
             highest_sequence,
@@ -118,48 +125,46 @@ impl SelectedClient {
             .message_count
             .on_fetch(highest_sequence);
 
-        metadata
+        Ok(metadata)
     }
 
-    pub async fn complete_initial_sync(&mut self, modseq: ModSeq) {
+    pub async fn complete_initial_sync(&mut self, modseq: ModSeq) -> Result<(), Error> {
         let (done_tx, done_rx) = oneshot();
         self.mailbox_handler
             .task_tx
             .send(Task::CompleteInitialSync(modseq, done_tx))
             .await
-            .expect("task channel should still be open");
-        done_rx
-            .await
-            .expect("task processing should signal completion of initial sync");
+            .map_err(|_| Error::TaskProcessingStopped)?;
+        done_rx.await.map_err(|_| Error::TaskProcessingStopped)
     }
 
-    pub async fn commit_highest_modseq(&mut self, modseq: ModSeq) {
+    pub async fn commit_highest_modseq(&mut self, modseq: ModSeq) -> Result<(), Error> {
         self.mailbox_handler
             .task_tx
             .send(Task::SetHighestModseq(modseq))
             .await
-            .expect("task channel should still be open");
+            .map_err(|_| Error::TaskProcessingStopped)
     }
 
     pub async fn store(
         &mut self,
         mailbox: &str,
         mails: impl Iterator<Item = LocalMail>,
-    ) -> Vec<(Uid, NewLocalMailMetadata)> {
+    ) -> Result<Vec<(Uid, NewLocalMailMetadata)>, Error> {
         let mailbox = encoding::mailbox(mailbox);
         let mut stored = Vec::new();
         let mut metadatas = Vec::new();
         if self.multiappend {
             self.append(&mailbox, mails, &mut metadatas, &mut stored)
-                .await;
+                .await?;
         } else {
             for mail in mails {
                 self.append(&mailbox, std::iter::once(mail), &mut metadatas, &mut stored)
-                    .await;
+                    .await?;
             }
         }
 
-        stored
+        Ok(stored)
     }
 
     async fn append(
@@ -168,40 +173,41 @@ impl SelectedClient {
         mails: impl Iterator<Item = LocalMail>,
         metadatas: &mut Vec<NewLocalMailMetadata>,
         stored: &mut Vec<(Uid, NewLocalMailMetadata)>,
-    ) {
+    ) -> Result<(), Error> {
         log::debug!("APPEND {mailbox}");
         let mut command = b"APPEND ".to_vec();
         command.extend_from_slice(mailbox.as_bytes());
         metadatas.extend(mails.map(|mail| mail.append_to(&mut command)));
 
+        // todo: check reason and move failing mails out of cur
         let response = self
             .connection
             .send(command, &mut self.mailbox_handler)
-            .await
-            // todo: check reason and move failing mails out of cur
-            .expect("storing new mail should succeed");
+            .await?;
 
-        if let Some(imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members)) =
+        let Some(imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members)) =
             response.unsafe_get_tagged_response_code()
-        {
-            let appended = uid_set_members
-                .iter()
-                .map(|member| match member {
-                    imap_proto::rfc4315::UidSetMember::UidRange(range) => {
-                        range.end() - range.start() + 1
-                    }
-                    imap_proto::rfc4315::UidSetMember::Uid(_) => 1,
-                })
-                .sum();
-            self.mailbox_handler.message_count.on_append(appended);
+        else {
+            return Err(Error::MissingAppendUid);
+        };
+        let appended = uid_set_members
+            .iter()
+            .map(|member| match member {
+                imap_proto::rfc4315::UidSetMember::UidRange(range) => {
+                    range.end() - range.start() + 1
+                }
+                imap_proto::rfc4315::UidSetMember::Uid(_) => 1,
+            })
+            .sum();
+        self.mailbox_handler.message_count.on_append(appended);
 
-            let uids = uid_set_members.iter().flat_map(|member| {
-                SequenceRange::try_from(member).expect("received uids should be valid")
-            });
-            stored.extend(uids.zip(metadatas.drain(..)));
-        } else {
-            unreachable!("response to APPEND should have AppendUid response code");
-        }
+        let ranges = uid_set_members
+            .iter()
+            .map(SequenceRange::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        stored.extend(ranges.into_iter().flatten().zip(metadatas.drain(..)));
+
+        Ok(())
     }
 
     pub async fn store_flag_change(
@@ -209,7 +215,7 @@ impl SelectedClient {
         highest_modseq: ModSeq,
         change: FlagChange,
         sequence_set: &SequenceSet,
-    ) -> HashSet<Uid> {
+    ) -> Result<HashSet<Uid>, Error> {
         let mut rejected = HashSet::new();
         let mut pending: HashMap<Uid, ModSeq> = sequence_set
             .iter()
@@ -227,7 +233,7 @@ impl SelectedClient {
                 let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
                 let (modified, modseqs) = self
                     .store_flags(unchanged_since, operation, flags, &set)
-                    .await;
+                    .await?;
                 for (uid, modseq) in modseqs {
                     if let Some(pending_modseq) = pending.get_mut(&uid) {
                         *pending_modseq = modseq;
@@ -240,7 +246,7 @@ impl SelectedClient {
             }
         }
 
-        rejected
+        Ok(rejected)
     }
 
     async fn store_flags(
@@ -249,7 +255,7 @@ impl SelectedClient {
         operation: char,
         flags: BitFlags<Flag>,
         sequence_set: &SequenceSet,
-    ) -> (HashSet<Uid>, HashMap<Uid, ModSeq>) {
+    ) -> Result<(HashSet<Uid>, HashMap<Uid, ModSeq>), Error> {
         let flags = Flag::format(flags).unwrap_or_default();
         let command = format!(
             "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}FLAGS.SILENT ({flags})"
@@ -260,24 +266,23 @@ impl SelectedClient {
         let response = self
             .connection
             .send(command.into_bytes(), &mut handler)
-            .await
-            .expect("sending of flag update should succeed");
-        let modified = modified_uids(&response);
+            .await?;
+        let modified = modified_uids(&response)?;
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not updating their flags");
         }
 
-        (modified, handler.0.modseqs)
+        Ok((modified, handler.0.modseqs))
     }
 
     pub async fn delete(
         &mut self,
         highest_modseq: ModSeq,
         sequence_set: &SequenceSet,
-    ) -> HashSet<Uid> {
+    ) -> Result<HashSet<Uid>, Error> {
         let (modified, _) = self
             .store_flags(highest_modseq, '+', Flag::Deleted.into(), sequence_set)
-            .await;
+            .await?;
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not deleting them");
         }
@@ -285,19 +290,19 @@ impl SelectedClient {
         log::debug!("{command}");
         self.connection
             .send(command.into_bytes(), &mut self.mailbox_handler)
-            .await
-            .expect("sending uid expunge should succeed");
+            .await?;
 
-        modified
+        Ok(modified)
     }
 
-    pub async fn logout(mut self) {
+    pub async fn logout(mut self) -> Result<(), Error> {
         let command = "LOGOUT";
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut self.mailbox_handler)
-            .await
-            .expect("logging out should succeed");
+            .await?;
+
+        Ok(())
     }
 
     /// Sender to stop idling with a local reason. Can only be taken once.
@@ -310,10 +315,10 @@ impl SelectedClient {
             .expect("idle stop sender should only be taken once")
     }
 
-    pub async fn idle(&mut self, timeout: Duration) -> IdleStopReason {
+    pub async fn idle(&mut self, timeout: Duration) -> Result<IdleStopReason, Error> {
         if self.mailbox_handler.message_count.has_unknown() {
             log::debug!("not idling due to unfetched remote mail");
-            return IdleStopReason::Remote;
+            return Ok(IdleStopReason::Remote);
         }
         let command = "IDLE";
         log::debug!("{command}");
@@ -322,16 +327,16 @@ impl SelectedClient {
         let idle_stop_rx = &self.idle_stop_rx;
         let handler = &mut self.mailbox_handler;
 
-        let tag = connection.write_command(command.into()).await;
+        let tag = connection.write_command(command.into()).await?;
         loop {
-            let response = connection.next_response().await;
+            let response = connection.next_response().await?;
             match response.parsed() {
                 imap_proto::Response::Continue(_) => {
                     log::trace!("idling for up to {} seconds", timeout.as_secs());
                     break;
                 }
-                imap_proto::Response::Done { .. } => panic!("server should accept IDLE"),
-                _ => handler.handle_or_log(response).await,
+                imap_proto::Response::Done { .. } => return Err(Error::IdleRejected),
+                _ => handler.handle_or_log(response).await?,
             }
         }
 
@@ -342,17 +347,16 @@ impl SelectedClient {
             }
             let event = compio::time::timeout_at(deadline, async {
                 futures::select_biased! {
-                    stop = idle_stop_rx.recv().fuse() => {
-                        IdleEvent::Stop(stop.expect("idle stop channel should still be open"))
-                    }
+                    stop = idle_stop_rx.recv().fuse() => IdleEvent::Stop(stop.ok()),
                     response = connection.next_response().fuse() => IdleEvent::Response(response),
                 }
             })
             .await;
             match event {
-                Ok(IdleEvent::Stop(reason)) => break reason,
+                Ok(IdleEvent::Stop(Some(reason))) => break reason,
+                Ok(IdleEvent::Stop(None)) => return Err(Error::IdleStopClosed),
                 Ok(IdleEvent::Response(response)) => {
-                    handler.handle_or_log(response).await;
+                    handler.handle_or_log(response?).await?;
                 }
                 Err(_) => {
                     log::debug!("idle timed out");
@@ -363,19 +367,16 @@ impl SelectedClient {
 
         let command = "DONE";
         log::debug!("{command}");
-        connection.write_continuation(command.into()).await;
-        connection
-            .receive_completion(&tag, handler)
-            .await
-            .expect("idle should succeed");
+        connection.write_continuation(command.into()).await?;
+        connection.receive_completion(&tag, handler).await?;
 
-        stop_reason
+        Ok(stop_reason)
     }
 }
 
 enum IdleEvent {
-    Stop(IdleStopReason),
-    Response(ResponseData),
+    Stop(Option<IdleStopReason>),
+    Response(Result<ResponseData, transport::Error>),
 }
 
 #[derive(Default)]
@@ -385,20 +386,29 @@ struct MetadataCollector {
 }
 
 impl ResponseHandler for MetadataCollector {
-    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
-        std::future::ready(
-            if let imap_proto::Response::Fetch(sequence, attributes) = response.parsed()
-                && let parsed = FetchAttributes::parse(attributes)
-                && parsed.body.is_none()
-                && let Some(metadata) = parsed.metadata()
-            {
-                self.highest_sequence = self.highest_sequence.max(*sequence);
-                self.metadata.push(metadata);
-                None
-            } else {
-                Some(response)
-            },
-        )
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(self.collect(response))
+    }
+}
+
+impl MetadataCollector {
+    fn collect(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
+        if let imap_proto::Response::Fetch(sequence, attributes) = response.parsed()
+            && let parsed = FetchAttributes::parse(attributes)
+            && parsed.body.is_none()
+            && let Some(metadata) = parsed.metadata()?
+        {
+            self.highest_sequence = self.highest_sequence.max(*sequence);
+            self.metadata.push(metadata);
+            Ok(None)
+        } else {
+            Ok(Some(response))
+        }
     }
 }
 
@@ -408,29 +418,38 @@ struct StoreHandler {
 }
 
 impl ResponseHandler for StoreHandler {
-    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
-        std::future::ready(
-            if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
-                && let FetchAttributes {
-                    uid: Some(uid),
-                    modseq: Some(modseq),
-                    flags: None,
-                    body: None,
-                } = FetchAttributes::parse(attributes)
-            {
-                self.modseqs.insert(
-                    uid.try_into().expect("received uid should be valid"),
-                    modseq.try_into().expect("received modseq should be valid"),
-                );
-                None
-            } else {
-                Some(response)
-            },
-        )
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(self.collect(response))
     }
 }
 
-fn modified_uids(response: &ResponseData) -> HashSet<Uid> {
+impl StoreHandler {
+    fn collect(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
+        if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
+            && let FetchAttributes {
+                uid: Some(uid),
+                modseq: Some(modseq),
+                flags: None,
+                body: None,
+            } = FetchAttributes::parse(attributes)
+        {
+            self.modseqs.insert(
+                uid.try_into()?,
+                modseq.try_into().map_err(Error::InvalidModSeq)?,
+            );
+            Ok(None)
+        } else {
+            Ok(Some(response))
+        }
+    }
+}
+
+fn modified_uids(response: &ResponseData) -> Result<HashSet<Uid>, Error> {
     if let imap_proto::Response::Done {
         outcome:
             imap_proto::Outcome {
@@ -446,20 +465,25 @@ fn modified_uids(response: &ResponseData) -> HashSet<Uid> {
     {
         parse_uid_set(uids)
     } else {
-        HashSet::new()
+        Ok(HashSet::new())
     }
 }
 
-fn parse_uid_set(uids: &str) -> HashSet<Uid> {
-    let parse = |uid: &str| -> u32 { uid.parse().expect("received uid should be a number") };
-    uids.split(',')
-        .flat_map(|range| {
-            let (start, end) = range.split_once(':').unwrap_or((range, range));
-            let (start, end) = (parse(start), parse(end));
-            start.min(end)..=start.max(end)
-        })
-        .map(|uid| Uid::try_from(uid).expect("received uid should be nonzero"))
-        .collect()
+fn parse_uid_set(uids: &str) -> Result<HashSet<Uid>, Error> {
+    let parse = |uid: &str| -> Result<u32, Error> {
+        uid.parse()
+            .map_err(|_| Error::InvalidUidSet(uids.to_string()))
+    };
+    let mut parsed = HashSet::new();
+    for range in uids.split(',') {
+        let (start, end) = range.split_once(':').unwrap_or((range, range));
+        let (start, end) = (parse(start)?, parse(end)?);
+        for uid in start.min(end)..=start.max(end) {
+            parsed.insert(Uid::try_from(uid)?);
+        }
+    }
+
+    Ok(parsed)
 }
 
 #[derive(Debug)]
@@ -469,26 +493,27 @@ struct MailboxHandler {
 }
 
 impl ResponseHandler for MailboxHandler {
-    async fn handle(&mut self, response: ResponseData) -> Option<ResponseData> {
+    type Error = Error;
+
+    async fn handle(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
         match response.parsed() {
             imap_proto::Response::Fetch(sequence, attributes) => {
                 self.message_count.on_fetch(*sequence);
                 let parsed = FetchAttributes::parse(attributes);
                 log::trace!("FETCH {parsed:?}");
-                let task = match (parsed.metadata(), parsed.body) {
+                let task = match (parsed.metadata()?, parsed.body) {
                     (Some(metadata), Some(Some(content))) => {
                         let content = RemoteContent::new(response.bytes_of(content));
                         Task::NewMail(RemoteMail::new(metadata, content))
                     }
-                    (Some(_), Some(None)) => unreachable!("mail without content"),
+                    (Some(metadata), Some(None)) => {
+                        return Err(Error::MissingContent(metadata.uid()));
+                    }
                     (Some(metadata), None) => Task::UpdateFlags(metadata),
-                    (None, _) => return Some(response),
+                    (None, _) => return Ok(Some(response)),
                 };
-                self.task_tx
-                    .send(task)
-                    .await
-                    .expect("task channel should still be open");
-                None
+                self.send(task).await?;
+                Ok(None)
             }
             imap_proto::Response::Vanished { earlier, uids } => {
                 log::trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
@@ -499,26 +524,29 @@ impl ResponseHandler for MailboxHandler {
                         .sum();
                     self.message_count.on_expunge(count);
                 }
-                self.task_tx
-                    .send(Task::Delete(
-                        uids.try_into()
-                            .expect("received uid ranges should start with valid uid"),
-                    ))
-                    .await
-                    .expect("task channel should still be open");
-                None
+                self.send(Task::Delete(uids.try_into()?)).await?;
+                Ok(None)
             }
             imap_proto::Response::MailboxData(imap_proto::MailboxDatum::Exists(exists)) => {
                 log::trace!("mailbox contains {exists} messages");
                 self.message_count.on_exists(*exists);
-                None
+                Ok(None)
             }
             imap_proto::Response::Expunge(_) => {
                 self.message_count.on_expunge(1);
-                None
+                Ok(None)
             }
-            _ => Some(response),
+            _ => Ok(Some(response)),
         }
+    }
+}
+
+impl MailboxHandler {
+    async fn send(&self, task: Task) -> Result<(), Error> {
+        self.task_tx
+            .send(task)
+            .await
+            .map_err(|_| Error::TaskProcessingStopped)
     }
 }
 
@@ -570,6 +598,6 @@ mod tests {
             .map(|uid: u32| assertables::assert_ok!(Uid::try_from(uid)))
             .collect();
 
-        assert_eq!(parse_uid_set("1,3:5,9"), expected);
+        assert_eq!(assertables::assert_ok!(parse_uid_set("1,3:5,9")), expected);
     }
 }

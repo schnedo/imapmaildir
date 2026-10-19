@@ -28,7 +28,7 @@ impl Capabilities {
                 self.capabilities.insert(Capability::Imap4rev1);
             }
             imap_proto::Capability::Auth(_) => {
-                panic!("tried inserting auth capability in capabilities");
+                unreachable!("tried inserting auth capability in capabilities");
             }
             imap_proto::Capability::Atom(cow) => match cow.as_ref() {
                 "CONDSTORE" => {
@@ -87,7 +87,7 @@ impl AuthCapabilities {
                 }
             },
             _ => {
-                panic!("tried inserting non-auth capability in auth_capabilities");
+                unreachable!("tried inserting non-auth capability in auth_capabilities");
             }
         }
     }

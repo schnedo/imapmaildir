@@ -2,7 +2,7 @@ use crate::{
     config::{self, Auth},
     imap::{
         client::{
-            AuthenticatedClient,
+            AuthenticatedClient, Error,
             capability::{AuthCapabilities, AuthCapability, Capabilities},
             encoding,
         },
@@ -17,24 +17,25 @@ pub struct Client {
 }
 
 impl Client {
+    /// # Errors
+    /// If connecting to or authenticating with the server fails or the server lacks required
+    /// capabilities
     pub async fn login(
         connection_config: &config::Connection,
         tls: &Tls,
         auth_config: &Auth,
-    ) -> AuthenticatedClient {
-        let connected = Self::connect(connection_config, tls).await;
+    ) -> Result<AuthenticatedClient, Error> {
+        let connected = Self::connect(connection_config, tls).await?;
         connected.authenticate(auth_config).await
     }
 
-    async fn connect(connection_config: &config::Connection, tls: &Tls) -> Self {
-        let mut connection = Connection::start(connection_config, tls)
-            .await
-            .expect("creating a connection should succeed");
+    async fn connect(connection_config: &config::Connection, tls: &Tls) -> Result<Self, Error> {
+        let mut connection = Connection::start(connection_config, tls).await?;
 
         let mut capabilities = Capabilities::default();
         let mut auth_capabilities = AuthCapabilities::default();
 
-        let greeting = connection.next_response().await;
+        let greeting = connection.next_response().await?;
         match greeting.parsed() {
             imap_proto::Response::Data {
                 status: imap_proto::Status::Ok,
@@ -51,41 +52,40 @@ impl Client {
                         &mut capabilities,
                         &mut auth_capabilities,
                     )
-                    .await;
+                    .await?;
                 }
             }
             imap_proto::Response::Data {
                 status: imap_proto::Status::Bad,
-                outcome: _,
+                outcome: imap_proto::Outcome { information, .. },
             } => {
-                todo!("handle server rejecting connection");
+                return Err(Error::ConnectionRejected(
+                    information.as_ref().map(ToString::to_string),
+                ));
             }
             imap_proto::Response::Data {
                 status: imap_proto::Status::PreAuth,
                 outcome: _,
             } => {
-                todo!("handle pre-authenticated state");
+                return Err(Error::PreAuthUnsupported);
             }
-            _ => {
-                panic!("greeting should only ever be ok, bad or preauth, as per specification")
-            }
+            _ => return Err(Error::InvalidGreeting),
         }
 
-        Self {
+        Ok(Self {
             connection,
             capabilities,
             auth_capabilities,
-        }
+        })
     }
 
-    async fn authenticate(mut self, auth_config: &Auth) -> AuthenticatedClient {
+    async fn authenticate(mut self, auth_config: &Auth) -> Result<AuthenticatedClient, Error> {
         match auth_config {
             Auth::Plain(plain_auth_config) => {
-                assert!(
-                    self.auth_capabilities.contains(AuthCapability::Plain),
-                    "server should support PLAIN auth capability"
-                );
-                let password = plain_auth_config.password().await;
+                if !self.auth_capabilities.contains(AuthCapability::Plain) {
+                    return Err(Error::MissingAuthCapability(AuthCapability::Plain));
+                }
+                let password = plain_auth_config.password().await?;
                 log::debug!("LOGIN <user> <password>");
                 let response = self
                     .connection
@@ -101,8 +101,7 @@ impl Client {
                             auth_capabilities: &mut self.auth_capabilities,
                         },
                     )
-                    .await
-                    .expect("login should succeed");
+                    .await?;
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
                     response.unsafe_get_tagged_response_code()
                 {
@@ -113,7 +112,7 @@ impl Client {
                         &mut self.capabilities,
                         &mut self.auth_capabilities,
                     )
-                    .await;
+                    .await?;
                 }
 
                 AuthenticatedClient::new(self.connection, self.capabilities)
@@ -126,7 +125,7 @@ async fn request_capabilities(
     connection: &mut Connection,
     capabilities: &mut Capabilities,
     auth_capabilities: &mut AuthCapabilities,
-) {
+) -> Result<(), Error> {
     let command = "CAPABILITY";
     log::debug!("{command}");
     connection
@@ -137,8 +136,9 @@ async fn request_capabilities(
                 auth_capabilities,
             },
         )
-        .await
-        .expect("capability request should succeed");
+        .await?;
+
+    Ok(())
 }
 
 struct CapabilityHandler<'a> {
@@ -147,15 +147,20 @@ struct CapabilityHandler<'a> {
 }
 
 impl ResponseHandler for CapabilityHandler<'_> {
-    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
-        std::future::ready(
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(Ok(
             if let imap_proto::Response::Capabilities(caps) = response.parsed() {
                 update_capabilities(self.capabilities, self.auth_capabilities, caps);
                 None
             } else {
                 Some(response)
             },
-        )
+        ))
     }
 }
 

@@ -5,6 +5,7 @@ mod transport;
 
 pub use client::AuthenticatedClient;
 pub use client::Client;
+pub use client::Error as ClientError;
 pub use client::IdleStopReason;
 pub use client::SelectedClient;
 pub use remote_changes::RemoteChanges;
@@ -12,4 +13,5 @@ pub use remote_changes::Selection;
 pub use remote_mail::RemoteContent;
 pub use remote_mail::RemoteMail;
 pub use remote_mail::RemoteMailMetadata;
+pub use transport::Error as TransportError;
 pub use transport::Tls;

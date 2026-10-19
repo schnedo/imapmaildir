@@ -80,11 +80,11 @@ pub fn init(level: LevelFilter) {
         let subtle = AnsiColor::BrightBlack.on_default();
         builder.format(move |buf, record| {
             let now = SystemTime::now();
-            write!(buf, "{subtle}[{subtle:#}").expect("logging buffer should be writable");
+            write!(buf, "{subtle}[{subtle:#}")?;
             if let Ok(now) = jiff::Timestamp::try_from(now) {
-                write!(buf, "{now:.3} ").expect("logging buffer should be writable");
+                write!(buf, "{now:.3} ")?;
             } else {
-                write!(buf, "timestamp_error ").expect("logging buffer should be writable");
+                write!(buf, "timestamp_error ")?;
             }
             let level_style = match record.level() {
                 log::Level::Error => AnsiColor::Red.on_default().effects(Effects::BOLD),
@@ -103,12 +103,11 @@ pub fn init(level: LevelFilter) {
                 "{level_style}{}{level_style:#} {mailbox}{}",
                 record.level(),
                 record.target(),
-            )
-            .expect("logging buffer should be writable");
+            )?;
             if let Some(line) = record.line() {
-                write!(buf, ":{line}").expect("logging buffer should be writable");
+                write!(buf, ":{line}")?;
             }
-            write!(buf, "{subtle}]{subtle:#} ").expect("logging buffer should be writable");
+            write!(buf, "{subtle}]{subtle:#} ")?;
             writeln!(buf, "{}", record.args())
         });
         panic::set_hook(Box::new(|info| {

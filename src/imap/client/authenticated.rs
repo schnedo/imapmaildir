@@ -6,9 +6,10 @@ use crate::{
     imap::{
         RemoteChanges, RemoteMailMetadata, Selection,
         client::{
-            SelectedClient,
+            Error, SelectedClient,
             capability::{Capabilities, Capability},
             encoding,
+            fetch::FetchAttributes,
         },
         transport::{Connection, ResponseData, ResponseHandler, Unhandled},
     },
@@ -22,31 +23,37 @@ pub struct AuthenticatedClient {
 }
 
 impl AuthenticatedClient {
-    pub fn new(connection: Connection, capabilities: Capabilities) -> Self {
-        assert!(
-            capabilities.contains(Capability::Condstore),
-            "server should support CONDSTORE capability"
-        );
-        assert!(
-            capabilities.contains(Capability::Enable),
-            "server should support ENABLE capability"
-        );
-        assert!(
-            capabilities.contains(Capability::QResync),
-            "server should support QRESYNC capability"
-        );
-        Self {
+    pub fn new(connection: Connection, capabilities: Capabilities) -> Result<Self, Error> {
+        for capability in [
+            Capability::Condstore,
+            Capability::Enable,
+            Capability::QResync,
+        ] {
+            if !capabilities.contains(capability) {
+                return Err(Error::MissingCapability(capability));
+            }
+        }
+
+        Ok(Self {
             connection,
             capabilities,
+        })
+    }
+
+    pub fn require_idle(&self) -> Result<(), Error> {
+        if self.capabilities.contains(Capability::Idle) {
+            Ok(())
+        } else {
+            Err(Error::MissingCapability(Capability::Idle))
         }
     }
 
-    pub fn supports_idle(&self) -> bool {
-        self.capabilities.contains(Capability::Idle)
-    }
-
-    pub async fn select(mut self, task_tx: MAsyncTx<Array<Task>>, mailbox: &str) -> Selection {
-        self.enable_qresync().await;
+    pub async fn select(
+        mut self,
+        task_tx: MAsyncTx<Array<Task>>,
+        mailbox: &str,
+    ) -> Result<Selection, Error> {
+        self.enable_qresync().await?;
         let command = format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox));
 
         self.do_select(task_tx, &command, None).await
@@ -58,8 +65,8 @@ impl AuthenticatedClient {
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
-    ) -> Selection {
-        self.enable_qresync().await;
+    ) -> Result<Selection, Error> {
+        self.enable_qresync().await?;
         let command = format!(
             "SELECT {} (QRESYNC ({uid_validity} {highest_modseq}))",
             encoding::mailbox(mailbox)
@@ -68,13 +75,12 @@ impl AuthenticatedClient {
         self.do_select(task_tx, &command, Some(uid_validity)).await
     }
 
-    async fn enable_qresync(&mut self) {
+    async fn enable_qresync(&mut self) -> Result<(), Error> {
         let command = "ENABLE QRESYNC";
         log::debug!("{command}");
-        self.connection
-            .send(command.into(), &mut Unhandled)
-            .await
-            .expect("enabling qresync should succeed");
+        self.connection.send(command.into(), &mut Unhandled).await?;
+
+        Ok(())
     }
 
     async fn do_select(
@@ -82,7 +88,7 @@ impl AuthenticatedClient {
         task_tx: MAsyncTx<Array<Task>>,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
-    ) -> Selection {
+    ) -> Result<Selection, Error> {
         log::debug!("{command}");
 
         let mut handler = SelectHandler {
@@ -93,10 +99,7 @@ impl AuthenticatedClient {
             deletions: None,
             exists: None,
         };
-        self.connection
-            .send(command.into(), &mut handler)
-            .await
-            .expect("selecting a mailbox should succeed");
+        self.connection.send(command.into(), &mut handler).await?;
         let SelectHandler {
             new_mailbox,
             updates,
@@ -105,9 +108,7 @@ impl AuthenticatedClient {
             ..
         } = handler;
 
-        let mailbox_data = new_mailbox
-            .build()
-            .expect("mailbox data should be all available at this point");
+        let mailbox_data = new_mailbox.build().map_err(Error::IncompleteMailboxData)?;
         log::trace!("selected_mailbox = {mailbox_data:?}");
         log::trace!("mail updates = {updates:?}");
         log::trace!("mail deletions = {deletions:?}");
@@ -116,14 +117,14 @@ impl AuthenticatedClient {
             self.connection,
             &self.capabilities,
             task_tx,
-            exists.expect("server should send EXISTS on SELECT"),
-        );
+            exists.ok_or(Error::MissingExists)?,
+        )?;
 
-        Selection {
+        Ok(Selection {
             client,
             remote_changes: RemoteChanges { updates, deletions },
             mailbox_data,
-        }
+        })
     }
 }
 
@@ -137,15 +138,19 @@ struct SelectHandler<'a> {
 }
 
 impl ResponseHandler for SelectHandler<'_> {
-    fn handle(&mut self, response: ResponseData) -> impl Future<Output = Option<ResponseData>> {
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
         std::future::ready(self.handle_response(response))
     }
 }
 
 impl SelectHandler<'_> {
-    fn add_deletions(&mut self, uids: &Vec<RangeInclusive<u32>>) {
-        let vanished =
-            SequenceSet::try_from(uids).expect("received ranges should start with valid uid");
+    fn add_deletions(&mut self, uids: &Vec<RangeInclusive<u32>>) -> Result<(), Error> {
+        let vanished = SequenceSet::try_from(uids)?;
         self.deletions = Some(if let Some(deletions) = self.deletions.take() {
             let mut builder = SequenceSetBuilder::default();
             for uid in deletions.iter().chain(vanished.iter()) {
@@ -157,9 +162,11 @@ impl SelectHandler<'_> {
         } else {
             vanished
         });
+
+        Ok(())
     }
 
-    fn handle_response(&mut self, response: ResponseData) -> Option<ResponseData> {
+    fn handle_response(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
         match response.parsed() {
             imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
                 imap_proto::MailboxDatum::Exists(exists) => {
@@ -206,20 +213,20 @@ impl SelectHandler<'_> {
                     },
             } => match code {
                 imap_proto::ResponseCode::UidValidity(validity) => {
-                    let validity = validity
-                        .try_into()
-                        .expect("received uid validity should be spec compliant");
-                    if let Some(cached) = self.cached_uid_validity {
-                        assert_eq!(cached, validity);
+                    let validity = validity.try_into().map_err(Error::InvalidUidValidity)?;
+                    if let Some(cached) = self.cached_uid_validity
+                        && cached != validity
+                    {
+                        return Err(Error::UidValidityMismatch {
+                            local: cached,
+                            remote: validity,
+                        });
                     }
                     self.new_mailbox.uid_validity(validity);
                 }
                 imap_proto::ResponseCode::HighestModSeq(modseq) => {
-                    self.new_mailbox.highest_modseq(
-                        modseq
-                            .try_into()
-                            .expect("Project expects RFC 4551 compatible IMAP server"),
-                    );
+                    self.new_mailbox
+                        .highest_modseq(modseq.try_into().map_err(Error::InvalidModSeq)?);
                 }
                 imap_proto::ResponseCode::PermanentFlags(flags) => {
                     log::trace!("not handling Data response PermanentFlags {flags:?}");
@@ -240,19 +247,22 @@ impl SelectHandler<'_> {
             },
             imap_proto::Response::Fetch(_, attributes) => {
                 log::trace!("handling fetch with attributes {attributes:?}");
-                self.updates
-                    .push(RemoteMailMetadata::from_fetch(attributes));
+                self.updates.push(
+                    FetchAttributes::parse(attributes)
+                        .metadata()?
+                        .ok_or(Error::IncompleteMetadata)?,
+                );
             }
             imap_proto::Response::Vanished { earlier, uids } => {
                 debug_assert!(
                     earlier,
                     "earlier should always be true during select (see https://datatracker.ietf.org/doc/html/rfc7162#section-3.2.10)"
                 );
-                self.add_deletions(uids);
+                self.add_deletions(uids)?;
             }
-            _ => return Some(response),
+            _ => return Ok(Some(response)),
         }
-        None
+        Ok(None)
     }
 }
 
@@ -274,12 +284,12 @@ mod tests {
             exists: None,
         };
 
-        assert_none!(
-            handler.handle_response(ResponseData::from_raw(b"* VANISHED (EARLIER) 1:3\r\n"))
-        );
-        assert_none!(
-            handler.handle_response(ResponseData::from_raw(b"* VANISHED (EARLIER) 7\r\n"))
-        );
+        assert_none!(assert_ok!(handler.handle_response(ResponseData::from_raw(
+            b"* VANISHED (EARLIER) 1:3\r\n"
+        ))));
+        assert_none!(assert_ok!(handler.handle_response(ResponseData::from_raw(
+            b"* VANISHED (EARLIER) 7\r\n"
+        ))));
 
         let deletions: Vec<u32> = assert_some!(handler.deletions)
             .iter()
