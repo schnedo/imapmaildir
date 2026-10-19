@@ -223,6 +223,28 @@ async fn test_unknown_local_flags_are_kept(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
+async fn test_adding_more_new_mails_than_fit_in_a_batch_works(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let initial_server_mails = server_mailbox.mails().await;
+    let new_mails = 70;
+    for i in 0..new_mails {
+        let path = client_mail.dir().join(format!("INBOX/cur/new{i}:2,S"));
+        assert_ok!(std::fs::write(path, format!("new {i}")));
+    }
+
+    mail_setup.sync("INBOX").await;
+
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails.len(), initial_server_mails.len() + new_mails);
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
 async fn test_mail_rejected_by_server_is_skipped(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");

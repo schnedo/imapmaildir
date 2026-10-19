@@ -26,7 +26,6 @@ static PID_AND_HOSTNAME: LazyLock<(u32, String)> = LazyLock::new(|| {
 #[derive(PartialEq, Clone)]
 pub struct LocalMail {
     metadata: NewLocalMailMetadata,
-    // todo: consider streaming this
     content: Vec<u8>,
 }
 

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use enumflags2::BitFlags;
 
 use crate::{
-    maildir::{LocalMail, LocalMailMetadata},
+    maildir::{LocalMailMetadata, NewLocalMailMetadata},
     repository::{Flag, SequenceSet, SequenceSetBuilder, Uid},
 };
 
@@ -72,13 +72,13 @@ pub struct LocalChanges {
     pub updates: LocalFlagChangesBuilder,
     pub extra_flag_updates: Vec<LocalMailMetadata>,
     pub deletions: Vec<Uid>,
-    pub news: Vec<LocalMail>,
+    pub news: Vec<NewLocalMailMetadata>,
 }
 
 impl LocalChanges {
     pub fn new(
         deletions: Vec<Uid>,
-        news: Vec<LocalMail>,
+        news: Vec<NewLocalMailMetadata>,
         updates: LocalFlagChangesBuilder,
         extra_flag_updates: Vec<LocalMailMetadata>,
     ) -> Self {
@@ -191,8 +191,7 @@ mod tests {
         let deletions = vec![Uid::MAX];
         let flags = BitFlags::all();
         let metadata = NewLocalMailMetadata::new(flags, "prefix".to_string());
-        let mail = LocalMail::new(Vec::new(), metadata);
-        let news = vec![mail];
+        let news = vec![metadata];
 
         let changes =
             LocalChanges::new(deletions.clone(), news.clone(), builder.clone(), Vec::new());

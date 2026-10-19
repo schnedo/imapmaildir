@@ -5,7 +5,7 @@ use enumflags2::BitFlags;
 
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
-    maildir::{FlagChange, LocalChanges, LocalMailMetadata, NewLocalMailMetadata},
+    maildir::{FlagChange, LocalChanges, LocalMail, LocalMailMetadata, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceSet, Uid},
 };
 
@@ -19,6 +19,7 @@ pub enum Task {
     AddSynced(Vec<(NewLocalMailMetadata, Uid)>),
     ApplyFlagChanges(Vec<Uid>, FlagChange),
     UpdateExtraFlags(Vec<LocalMailMetadata>),
+    ReadMail(NewLocalMailMetadata, TxOneshot<Option<LocalMail>>),
     Flags(Vec<Uid>, TxOneshot<HashMap<Uid, BitFlags<Flag>>>),
     HighestModseq(TxOneshot<ModSeq>),
     DetectChanges(TxOneshot<LocalChanges>),
