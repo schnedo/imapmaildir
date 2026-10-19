@@ -181,48 +181,6 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
-async fn test_unknown_local_flags_are_kept(#[future] mail_setup: MailSetup) {
-    let client_mail = mail_setup.client_mail();
-    let client_mailbox = client_mail.mailbox("INBOX");
-    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
-    let initial_server_mails = server_mailbox.mails().await;
-    let mut client_mails = client_mailbox.mails().await;
-    let mail = assert_some!(client_mails.iter_mut().find(|mail| !mail.has_flag('R')));
-    let uid = mail.uid();
-    assert!(mail.add_flag('P'));
-    assert!(mail.add_flag('a'));
-
-    mail_setup.sync("INBOX").await;
-
-    let client_mails = client_mailbox.mails().await;
-    let mail = assert_some!(client_mails.iter().find(|mail| mail.uid() == uid));
-    assert!(mail.has_flag('P'));
-    assert!(mail.has_flag('a'));
-    assert_eq!(
-        server_mailbox.mails().await.len(),
-        initial_server_mails.len()
-    );
-
-    let mut client_mails = client_mailbox.mails().await;
-    let mail = assert_some!(client_mails.iter_mut().find(|mail| mail.uid() == uid));
-    assert!(mail.add_flag('R'));
-
-    mail_setup.sync("INBOX").await;
-
-    let client_mails = client_mailbox.mails().await;
-    assert_eq!(client_mails.len(), initial_server_mails.len());
-    let mail = assert_some!(client_mails.iter().find(|mail| mail.uid() == uid));
-    assert!(mail.has_flag('P'));
-    assert!(mail.has_flag('R'));
-    let server_mails = server_mailbox.mails().await;
-    assert_eq!(server_mails.len(), initial_server_mails.len());
-    let server_mail = assert_some!(server_mails.iter().find(|mail| mail.uid() == uid));
-    assert!(server_mail.has_flag('R'));
-}
-
-#[rstest]
-#[compio::test]
-#[awt]
 async fn test_adding_more_new_mails_than_fit_in_a_batch_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");

@@ -338,13 +338,9 @@ impl Syncer {
     ) -> Result<(), Error> {
         let LocalChanges {
             updates,
-            extra_flag_updates,
             deletions,
             news,
         } = local_changes;
-        if !extra_flag_updates.is_empty() {
-            repository.update_extra_flags(extra_flag_updates).await?;
-        }
         let mut news = news.into_iter().peekable();
         while news.peek().is_some() {
             let mut batch = Vec::new();
@@ -621,9 +617,6 @@ impl Syncer {
             }
             Task::ReadMail(metadata, reply) => {
                 reply.send(maildir_repository.read_mail(metadata).await?);
-            }
-            Task::UpdateExtraFlags(entries) => {
-                maildir_repository.update_extra_flags(entries).await?;
             }
             Task::Flags(uids, reply) => {
                 reply.send(maildir_repository.flags(uids).await?);

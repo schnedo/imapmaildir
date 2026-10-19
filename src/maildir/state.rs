@@ -266,14 +266,13 @@ impl State {
             let mut conflicts = Vec::new();
             {
                 let mut stmt = transaction.prepare_cached(
-                    "insert into mail_metadata (uid,flags,fileprefix,extra_flags) values (?1,?2,?3,?4)",
+                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
                 )?;
                 for entry in data {
                     match stmt.execute((
                         u32::from(entry.uid()),
                         entry.flags().bits(),
                         &entry.fileprefix(),
-                        &entry.extra_flags(),
                     )) {
                         Ok(_) => {}
                         Err(rusqlite::Error::SqliteFailure(
@@ -297,9 +296,7 @@ impl State {
     pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata with {uid:?}");
         self.call(move |db| {
-            let mut stmt = db.prepare_cached(
-                "select uid,flags,fileprefix,extra_flags from mail_metadata where uid = ?1",
-            )?;
+            let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
 
             stmt.query_one([u32::from(uid)], |row| row.try_into())
                 .optional()
@@ -311,9 +308,7 @@ impl State {
     pub async fn get_all_by_id(&self, uids: Vec<Uid>) -> Result<Vec<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata of {} mails", uids.len());
         self.call(move |db| {
-            let mut stmt = db.prepare_cached(
-                "select uid,flags,fileprefix,extra_flags from mail_metadata where uid = ?1",
-            )?;
+            let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
             let mut entries = Vec::with_capacity(uids.len());
             for uid in uids {
                 if let Some(entry) = stmt
@@ -347,38 +342,19 @@ impl State {
         .await
     }
 
-    pub async fn update_extra_flags_all(&self, data: Vec<LocalMailMetadata>) -> Result<(), Error> {
-        log::trace!("updating extra flags of {} mail caches", data.len());
-        self.call(move |db| {
-            let transaction = db.transaction()?;
-            {
-                let mut stmt = transaction
-                    .prepare_cached("update mail_metadata set extra_flags=?1 where uid=?2")?;
-                for entry in data {
-                    stmt.execute((entry.extra_flags(), u32::from(entry.uid())))?;
-                }
-            }
-            transaction.commit()?;
-
-            Ok(())
-        })
-        .await
-    }
-
     pub async fn insert_all(&self, data: Vec<LocalMailMetadata>) -> Result<(), Error> {
         log::trace!("inserting {} mail caches", data.len());
         self.call(move |db| {
             let transaction = db.transaction()?;
             {
                 let mut stmt = transaction.prepare_cached(
-                    "insert into mail_metadata (uid,flags,fileprefix,extra_flags) values (?1,?2,?3,?4)",
+                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
                 )?;
                 for entry in data {
                     stmt.execute((
                         u32::from(entry.uid()),
                         entry.flags().bits(),
                         &entry.fileprefix(),
-                        &entry.extra_flags(),
                     ))?;
                 }
             }
@@ -435,9 +411,8 @@ impl State {
             .call(|db| {
                 let db = db.transaction()?;
                 let entries = {
-                    let mut stmt = db.prepare_cached(
-                        "select uid,flags,fileprefix,extra_flags from mail_metadata;",
-                    )?;
+                    let mut stmt =
+                        db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
                     stmt.query_map([], |row| LocalMailMetadata::try_from(row))?
                         .collect::<Result<Vec<_>, _>>()?
                 };
@@ -476,7 +451,7 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
             )
         })?;
         let flags = Flag::from_bits_truncate(value.get(1)?);
-        Ok(Self::new(uid, flags, value.get(2)?).with_extra_flags(value.get(3)?))
+        Ok(Self::new(uid, flags, value.get(2)?))
     }
 }
 
@@ -848,29 +823,6 @@ mod tests {
     ) {
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_ok!(state.state.delete_by_id(metadata.uid()).await);
-    }
-
-    #[rstest]
-    #[compio::test]
-    #[awt]
-    async fn test_extra_flags_are_stored_and_updated(
-        #[future] state: TestState,
-        metadata: LocalMailMetadata,
-    ) {
-        let metadata = metadata.with_extra_flags("P".to_string());
-        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
-        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
-        assert_eq!(stored.extra_flags(), "P");
-
-        let metadata = metadata.with_extra_flags("Pa".to_string());
-        assert_ok!(
-            state
-                .state
-                .update_extra_flags_all(vec![metadata.clone()])
-                .await
-        );
-        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
-        assert_eq!(stored, metadata);
     }
 
     #[rstest]
