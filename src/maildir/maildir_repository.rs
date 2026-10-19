@@ -83,10 +83,14 @@ impl MaildirRepository {
 
     fn update_flag_changes(
         flag_changes_builder: &mut LocalFlagChangesBuilder,
+        extra_flag_updates: &mut Vec<LocalMailMetadata>,
         old: &LocalMailMetadata,
         new: &LocalMailMetadata,
     ) {
         debug_assert_eq!(old.uid(), new.uid());
+        if old.extra_flags() != new.extra_flags() {
+            extra_flag_updates.push(new.clone());
+        }
         flag_changes_builder.insert(
             new.uid(),
             FlagChange {
@@ -199,6 +203,13 @@ impl MaildirRepository {
         } else {
             Err(Error::NoExists { uid })
         }
+    }
+
+    pub async fn update_extra_flags(
+        &self,
+        entries: Vec<LocalMailMetadata>,
+    ) -> Result<(), state::Error> {
+        self.state.update_extra_flags_all(entries).await
     }
 
     pub async fn apply_flag_changes(&self, uids: &[Uid], change: FlagChange) -> Result<(), Error> {
@@ -375,13 +386,14 @@ impl MaildirRepository {
             }
         }
         let mut updates = LocalFlagChangesBuilder::default();
+        let mut extra_flag_updates = Vec::new();
         let mut missing = Vec::new();
 
         self.state
             .fore_each(|entry| {
                 let uid = entry.uid();
                 if let Some(data) = maildir_mails.remove(&uid) {
-                    Self::update_flag_changes(&mut updates, &entry, &data);
+                    Self::update_flag_changes(&mut updates, &mut extra_flag_updates, &entry, &data);
                 } else {
                     missing.push(entry);
                 }
@@ -409,7 +421,7 @@ impl MaildirRepository {
             .try_collect()
             .await?;
 
-        let changes = LocalChanges::new(deletions, news, updates);
+        let changes = LocalChanges::new(deletions, news, updates, extra_flag_updates);
         log::trace!("{changes:?}");
 
         Ok(changes)
@@ -439,6 +451,7 @@ impl LocalWatcher {
                 let mut deletions = Vec::new();
                 let mut news = Vec::new();
                 let mut updates = LocalFlagChangesBuilder::default();
+                let mut extra_flag_updates = Vec::new();
                 let mut overflowed = false;
                 let mut error = None;
                 let mut handle_change = |change| match change {
@@ -449,7 +462,12 @@ impl LocalWatcher {
                         news.push(mail);
                     }
                     Change::Rename { from, to } => {
-                        MaildirRepository::update_flag_changes(&mut updates, &from, &to);
+                        MaildirRepository::update_flag_changes(
+                            &mut updates,
+                            &mut extra_flag_updates,
+                            &from,
+                            &to,
+                        );
                     }
                     Change::Overflow => {
                         overflowed = true;
@@ -471,11 +489,12 @@ impl LocalWatcher {
                     (LocalEvent::Overflow, false)
                 } else {
                     (
-                        LocalEvent::Changes(LocalChanges {
-                            updates,
+                        LocalEvent::Changes(LocalChanges::new(
                             deletions,
                             news,
-                        }),
+                            updates,
+                            extra_flag_updates,
+                        )),
                         false,
                     )
                 };

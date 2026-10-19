@@ -328,9 +328,13 @@ impl Syncer {
     ) -> Result<(), Error> {
         let LocalChanges {
             updates,
+            extra_flag_updates,
             deletions,
             news,
         } = local_changes;
+        if !extra_flag_updates.is_empty() {
+            repository.update_extra_flags(extra_flag_updates).await?;
+        }
         if !news.is_empty() {
             let synced = client
                 .store(mailbox, news)
@@ -589,6 +593,9 @@ impl Syncer {
             }
             Task::ApplyFlagChanges(uids, change) => {
                 maildir_repository.apply_flag_changes(&uids, change).await?;
+            }
+            Task::UpdateExtraFlags(entries) => {
+                maildir_repository.update_extra_flags(entries).await?;
             }
             Task::Flags(uids, reply) => {
                 reply.send(maildir_repository.flags(uids).await?);

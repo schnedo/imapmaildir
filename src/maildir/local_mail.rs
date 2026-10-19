@@ -56,20 +56,47 @@ impl Debug for LocalMail {
     }
 }
 
+fn parse_flags(flags: &str) -> (BitFlags<Flag>, String) {
+    let mut known = BitFlags::empty();
+    let mut extra: Vec<char> = Vec::new();
+    for flag in flags.chars() {
+        if let Ok(flag) = Flag::try_from(flag) {
+            known |= flag;
+        } else {
+            extra.push(flag);
+        }
+    }
+    extra.sort_unstable();
+    extra.dedup();
+
+    (known, extra.into_iter().collect())
+}
+
+fn format_flags(flags: BitFlags<Flag>, extra_flags: &str) -> String {
+    let mut chars: Vec<char> = flags
+        .iter()
+        .map(char::from)
+        .chain(extra_flags.chars())
+        .collect();
+    chars.sort_unstable();
+
+    chars.into_iter().collect()
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct NewLocalMailMetadata {
-    // todo: add modseq to handle highest_modseq transactional
     flags: BitFlags<Flag>,
-    // todo: Cow?
+    extra_flags: String,
     fileprefix: String,
 }
 
 impl NewLocalMailMetadata {
     pub fn new(flags: BitFlags<Flag>, fileprefix: String) -> Self {
-        Self { flags, fileprefix }
-    }
-    fn string_flags(&self) -> String {
-        self.flags.iter().map(char::from).collect()
+        Self {
+            flags,
+            extra_flags: String::new(),
+            fileprefix,
+        }
     }
 }
 
@@ -77,6 +104,7 @@ impl From<LocalMailMetadata> for NewLocalMailMetadata {
     fn from(value: LocalMailMetadata) -> Self {
         Self {
             flags: value.flags,
+            extra_flags: value.extra_flags,
             fileprefix: value.fileprefix,
         }
     }
@@ -91,6 +119,7 @@ impl MaildirFile for NewLocalMailMetadata {
         LocalMailMetadata {
             uid,
             flags: self.flags,
+            extra_flags: self.extra_flags,
             fileprefix: self.fileprefix,
         }
     }
@@ -106,7 +135,7 @@ impl MaildirFile for NewLocalMailMetadata {
 
 impl Display for NewLocalMailMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let string_flags = self.string_flags();
+        let string_flags = format_flags(self.flags, &self.extra_flags);
         write!(f, "{}:2,{string_flags}", self.fileprefix)
     }
 }
@@ -115,19 +144,16 @@ impl FromStr for NewLocalMailMetadata {
     type Err = ParseLocalMailMetadataError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some((head, flags)) = s.rsplit_once(":2,")
-            && let Ok(flags) = flags
-                .chars()
-                .map(Flag::try_from)
-                .collect::<Result<BitFlags<Flag>, _>>()
-        {
+        if let Some((head, flags)) = s.rsplit_once(":2,") {
+            let (flags, extra_flags) = parse_flags(flags);
             Ok(Self {
                 flags,
+                extra_flags,
                 fileprefix: head.into(),
             })
         } else {
             Err(ParseLocalMailMetadataError {
-                message: "cannot parse maildir flags",
+                message: "filename should contain :2,",
             })
         }
     }
@@ -135,11 +161,10 @@ impl FromStr for NewLocalMailMetadata {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
-    // todo: different struct for new local mail that has no uid yet
     uid: Uid,
     // todo: add modseq to handle highest_modseq transactional
     flags: BitFlags<Flag>,
-    // todo: Cow?
+    extra_flags: String,
     fileprefix: String,
 }
 
@@ -150,12 +175,24 @@ impl LocalMailMetadata {
         Self {
             uid,
             flags,
+            extra_flags: String::new(),
             fileprefix,
         }
     }
 
+    #[must_use]
+    pub fn with_extra_flags(mut self, extra_flags: String) -> Self {
+        self.extra_flags = extra_flags;
+
+        self
+    }
+
     pub fn fileprefix(&self) -> &str {
         &self.fileprefix
+    }
+
+    pub fn extra_flags(&self) -> &str {
+        &self.extra_flags
     }
 
     fn generate_file_prefix() -> String {
@@ -173,7 +210,7 @@ impl LocalMailMetadata {
     }
 
     fn string_flags(&self) -> String {
-        self.flags().iter().map(char::from).collect()
+        format_flags(self.flags, &self.extra_flags)
     }
 
     pub fn has_flag(&self, flag: Flag) -> bool {
@@ -221,15 +258,7 @@ impl FromStr for LocalMailMetadata {
         let (head, flags) = s.rsplit_once(":2,").ok_or(ParseLocalMailMetadataError {
             message: "filename should contain :2,",
         })?;
-        let flags: Result<BitFlags<Flag>, ParseLocalMailMetadataError> = flags
-            .chars()
-            .map(|flag| {
-                Flag::try_from(flag).map_err(|_| ParseLocalMailMetadataError {
-                    message: "char flag should be parsable",
-                })
-            })
-            .collect();
-        let flags = flags?;
+        let (flags, extra_flags) = parse_flags(flags);
         if let Some((fileprefix, uid)) = head.rsplit_once(",U=")
             && let Ok(uid) = u32::from_str(uid)
             && let Ok(uid) = uid.try_into()
@@ -237,6 +266,7 @@ impl FromStr for LocalMailMetadata {
             Ok(Self {
                 uid,
                 flags,
+                extra_flags,
                 fileprefix: fileprefix.to_string(),
             })
         } else {
@@ -318,10 +348,30 @@ mod tests {
     }
 
     #[rstest]
-    fn test_new_metadata_from_str_errors_on_unparsable_flag() {
-        let filename = "foo:2,s";
-        let result = assert_err!(NewLocalMailMetadata::from_str(filename));
+    fn test_new_metadata_from_str_errors_without_info() {
+        let result = assert_err!(NewLocalMailMetadata::from_str("foo"));
         assert_matches!(result, ParseLocalMailMetadataError { .. });
+    }
+
+    #[rstest]
+    fn test_metadata_keeps_unknown_flags(
+        #[values("prefix,U=3:2,PSa", "prefix,U=3:2,aSP")] filename: &str,
+    ) {
+        let metadata = assert_ok!(LocalMailMetadata::from_str(filename));
+        assert_eq!(metadata.flags(), Flag::Seen);
+        assert_eq!(metadata.extra_flags(), "Pa");
+        assert_eq!(metadata.filename(), "prefix,U=3:2,PSa");
+    }
+
+    #[rstest]
+    fn test_new_metadata_keeps_unknown_flags() {
+        let mut metadata = assert_ok!(NewLocalMailMetadata::from_str("foo:2,PS"));
+        assert_eq!(metadata.flags(), Flag::Seen);
+        metadata.set_flags(Flag::Seen | Flag::Answered);
+        assert_eq!(metadata.filename(), "foo:2,PRS");
+        let tracked = metadata.set_uid(assert_ok!(Uid::try_from(4)));
+        assert_eq!(tracked.extra_flags(), "P");
+        assert_eq!(tracked.filename(), "foo,U=4:2,PRS");
     }
 
     #[rstest]
