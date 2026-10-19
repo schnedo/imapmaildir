@@ -72,7 +72,6 @@ pub fn sync_all(config: Account, idle: bool) -> Result<(), Error> {
         .map(|mailbox| {
             let config = config.clone();
             let tls = tls.clone();
-            // todo: Cow instead of cloning String multiple times
             let mailbox_clone = mailbox.clone();
             let thread_builder = thread::Builder::new().name(mailbox.clone());
             let handle = thread_builder

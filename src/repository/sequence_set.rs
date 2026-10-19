@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use crate::repository::{Uid, uid::UidRangeInclusiveIterator};
 
-// todo: does this need to be pub?
 #[derive(Debug, PartialEq)]
 pub struct SequenceRange {
     start: Uid,
@@ -131,7 +130,6 @@ impl SequenceSetBuilder {
 
 #[derive(Debug, PartialEq)]
 pub struct SequenceSet {
-    // todo: use nonempty-collections
     ranges: Vec<SequenceRange>,
 }
 
