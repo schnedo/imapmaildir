@@ -20,7 +20,7 @@ use thiserror::Error;
 use crate::{
     imap::RemoteMail,
     maildir::{
-        LocalMail, LocalMailMetadata,
+        LocalMailMetadata,
         local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
         watcher::{self, Watch},
     },
@@ -254,11 +254,8 @@ impl Maildir {
             MaildirEntry::New(entry) => entry,
             MaildirEntry::MaybeTracked(to) => self.remove_uid(to).await?,
         };
-        let content = self.read_content(&to).await?;
 
-        Ok(change_tx
-            .send(Change::New(LocalMail::new(content, to)))
-            .await)
+        Ok(change_tx.send(Change::New(to)).await)
     }
 
     async fn send_new_unstructured_change(
@@ -268,11 +265,8 @@ impl Maildir {
         filename: String,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         let metadata = Self::handle_new_unstructured_file(watch, cur, filename).await?;
-        let content = compio::fs::read(cur.join(metadata.filename())).await?;
 
-        Ok(change_tx
-            .send(Change::New(LocalMail::new(content, metadata)))
-            .await)
+        Ok(change_tx.send(Change::New(metadata)).await)
     }
 
     // Algorithm
@@ -621,7 +615,7 @@ async fn try_exists(path: &Path) -> io::Result<bool> {
 #[derive(Debug)]
 pub enum Change {
     Deletion(LocalMailMetadata),
-    New(LocalMail),
+    New(NewLocalMailMetadata),
     Rename {
         from: LocalMailMetadata,
         to: LocalMailMetadata,

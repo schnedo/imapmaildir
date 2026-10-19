@@ -123,6 +123,7 @@ impl Syncer {
                 &repository,
                 mailbox,
                 idle_timeout,
+                config,
                 &mut on_local_change,
             )
             .await
@@ -139,6 +140,7 @@ impl Syncer {
         repository: &RepositoryHandle,
         mailbox: &str,
         idle_timeout: Duration,
+        config: Config,
         on_local_change: &mut impl FnMut(),
     ) -> Result<(), Error> {
         match client.idle(idle_timeout).await? {
@@ -165,8 +167,15 @@ impl Syncer {
                     repository.detect_changes().await?
                 };
                 let highest_modseq = repository.highest_modseq().await?;
-                Self::handle_local_changes(client, changes, highest_modseq, mailbox, repository)
-                    .await?;
+                Self::handle_local_changes(
+                    client,
+                    changes,
+                    highest_modseq,
+                    mailbox,
+                    repository,
+                    config,
+                )
+                .await?;
                 on_local_change();
             }
             IdleStopReason::LocalError(e) => return Err(e.into()),
@@ -303,6 +312,7 @@ impl Syncer {
                 highest_modseq,
                 mailbox,
                 &repository,
+                config,
             )
             .await
         }
@@ -325,6 +335,7 @@ impl Syncer {
         highest_modseq: ModSeq,
         mailbox: &str,
         repository: &RepositoryHandle,
+        config: Config,
     ) -> Result<(), Error> {
         let LocalChanges {
             updates,
@@ -335,9 +346,24 @@ impl Syncer {
         if !extra_flag_updates.is_empty() {
             repository.update_extra_flags(extra_flag_updates).await?;
         }
-        if !news.is_empty() {
+        let mut news = news.into_iter().peekable();
+        while news.peek().is_some() {
+            let mut batch = Vec::new();
+            let mut bytes = 0;
+            while batch.len() < config.store_batch_size()
+                && bytes < config.store_batch_max_bytes()
+                && let Some(metadata) = news.next()
+            {
+                if let Some(mail) = repository.read_mail(metadata).await? {
+                    bytes += mail.content().len();
+                    batch.push(mail);
+                }
+            }
+            if batch.is_empty() {
+                continue;
+            }
             let synced = client
-                .store(mailbox, news)
+                .store(mailbox, batch)
                 .await?
                 .into_iter()
                 .map(|(uid, metadata)| (metadata, uid))
@@ -593,6 +619,9 @@ impl Syncer {
             }
             Task::ApplyFlagChanges(uids, change) => {
                 maildir_repository.apply_flag_changes(&uids, change).await?;
+            }
+            Task::ReadMail(metadata, reply) => {
+                reply.send(maildir_repository.read_mail(metadata).await?);
             }
             Task::UpdateExtraFlags(entries) => {
                 maildir_repository.update_extra_flags(entries).await?;
