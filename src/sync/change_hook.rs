@@ -17,9 +17,8 @@ fn debounce<F: Future<Output = ()>>(
     let debounced = move || {
         let call = call_tx.clone();
         compio::runtime::spawn(async move {
-            call.send(())
-                .await
-                .expect("debounce channel should still be open");
+            // debounce task being gone means nobody listens for changes anymore
+            let _ = call.send(()).await;
         })
         .detach();
     };

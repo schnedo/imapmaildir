@@ -408,6 +408,8 @@ impl MailSetup {
         }
     }
 
+    /// # Panics
+    /// If logging in or syncing fails
     pub async fn sync(&self, mailbox: &str) -> () {
         let config = self.config();
         let client = Client::login(
@@ -416,6 +418,7 @@ impl MailSetup {
             config.auth(),
         )
         .await;
+        let client = client.unwrap_or_else(|e| panic!("login failed: {e}"));
 
         Syncer::sync_once(
             mailbox,
@@ -425,9 +428,12 @@ impl MailSetup {
             config.sync(),
             || {},
         )
-        .await;
+        .await
+        .unwrap_or_else(|e| panic!("sync failed: {e}"));
     }
 
+    /// # Panics
+    /// If logging in or syncing fails
     pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
         let (call_tx, call_rx) = mpsc::bounded_async(1);
         let config = self.config();
@@ -441,9 +447,10 @@ impl MailSetup {
             config.auth(),
         )
         .await;
+        let client = client.unwrap_or_else(|e| panic!("login failed: {e}"));
         let mailbox = mailbox.to_string();
         let handle = compio::runtime::spawn(async move {
-            Syncer::sync_continuously(
+            let Err(e) = Syncer::sync_continuously(
                 &mailbox,
                 &maildir_base_path,
                 &state_dir,
@@ -460,6 +467,7 @@ impl MailSetup {
                 },
             )
             .await;
+            panic!("continuous sync failed: {e}");
         });
 
         (handle, call_rx)

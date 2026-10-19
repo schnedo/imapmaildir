@@ -94,38 +94,32 @@ impl State {
                     closed_tx.send(());
                 }
             })?;
-        ready_rx
-            .await
-            .expect("state thread should report whether the database could be opened")?;
+        ready_rx.await.map_err(|_| Error::ThreadStopped)??;
 
         Ok(Self { jobs })
     }
 
-    async fn call<R: Send + 'static>(
+    async fn call<T: Send + 'static, E: From<Error> + Send + 'static>(
         &self,
-        f: impl FnOnce(&mut Connection) -> R + Send + 'static,
-    ) -> R {
+        f: impl FnOnce(&mut Connection) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E> {
         let (result_tx, result_rx) = oneshot();
         self.jobs
             .send(Command::Run(Box::new(move |db: &mut Connection| {
                 result_tx.send(f(db));
             })))
             .await
-            .expect("state thread should still be running");
-        result_rx
-            .await
-            .expect("state thread should return a result")
+            .map_err(|_| Error::ThreadStopped)?;
+        result_rx.await.map_err(|_| Error::ThreadStopped)?
     }
 
-    pub async fn close(self) {
+    pub async fn close(self) -> Result<(), Error> {
         let (closed_tx, closed_rx) = oneshot();
         self.jobs
             .send(Command::Close(closed_tx))
             .await
-            .expect("state thread should still be running");
-        closed_rx
-            .await
-            .expect("state thread should signal closing the database");
+            .map_err(|_| Error::ThreadStopped)?;
+        closed_rx.await.map_err(|_| Error::ThreadStopped)
     }
 
     pub async fn load(state_dir: &Path) -> Result<Self, InitError> {
@@ -468,6 +462,8 @@ pub enum Error {
     Conversion,
     #[error("Error with db call: {0}")]
     Db(rusqlite::Error),
+    #[error("State thread stopped")]
+    ThreadStopped,
 }
 
 impl From<<ModSeq as TryFrom<i64>>::Error> for Error {
@@ -589,7 +585,7 @@ mod tests {
     #[fixture]
     async fn loadable_state_dir(#[future] state: TestState) -> TempDir {
         let TestState { state, dir } = state.await;
-        state.close().await;
+        assert_ok!(state.close().await);
         dir
     }
 
@@ -826,9 +822,11 @@ mod tests {
         assert_ok!(
             state
                 .state
-                .call(|db| db.execute_batch(
-                    "insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")"
-                ))
+                .call(|db| db
+                    .execute_batch(
+                        "insert into mail_metadata (uid,flags,fileprefix) values (0,0,\"foo\")"
+                    )
+                    .map_err(Error::from))
                 .await
         );
         assert_err!(state.state.fore_each(|_| {}).await);

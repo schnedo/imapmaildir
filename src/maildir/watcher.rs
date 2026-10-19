@@ -9,13 +9,17 @@ use std::{
 };
 
 use compio::runtime::fd::PollFd;
-use crossfire::{AsyncRx, AsyncTx, MAsyncTx, mpsc, spsc};
+use crossfire::{AsyncRx, MAsyncTx, SendError, mpsc};
 use futures::lock::Mutex;
 use inotify::{EventMask, Inotify, WatchMask};
+use thiserror::Error;
+
+type ChangeTx = MAsyncTx<mpsc::Array<Change>>;
 
 enum WatchEvent {
     Inotify(inotify::Event<OsString>),
     MoveTimeout(u32, EventMask),
+    Error(Error),
 }
 
 pub async fn move_new_to_cur(new: &Path, cur: &Path) -> io::Result<()> {
@@ -41,35 +45,57 @@ async fn move_to_cur(new: &Path, cur: &Path, filename: &OsStr) -> io::Result<()>
     }
 }
 
-pub fn watch_new(new: PathBuf, cur: PathBuf) {
-    let inotify = Inotify::init().expect("initializing inotify should succeed");
-    inotify
-        .watches()
-        .add(&new, WatchMask::MOVED_TO | WatchMask::CLOSE_WRITE)
-        .expect("adding new watch should succeed");
+fn init_inotify(path: &Path, mask: WatchMask) -> Result<Inotify, Error> {
+    let setup_error = |e| Error::Setup(path.to_path_buf(), e);
+    let inotify = Inotify::init().map_err(setup_error)?;
+    inotify.watches().add(path, mask).map_err(setup_error)?;
+
+    Ok(inotify)
+}
+
+fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Error> {
+    let inotify = init_inotify(&new, WatchMask::MOVED_TO | WatchMask::CLOSE_WRITE)?;
     let (event_tx, event_rx) = mpsc::bounded_async(32);
-    Watch::spawn_inotify_reader(inotify, event_tx);
+    Watch::spawn_inotify_reader(inotify, event_tx)?;
 
     compio::runtime::spawn(async move {
-        move_new_to_cur(&new, &cur)
-            .await
-            .expect("moving mails from new to cur should succeed");
-        while let Ok(WatchEvent::Inotify(event)) = event_rx.recv().await {
-            log::trace!("{event:?}");
-            if event.mask.contains(EventMask::ISDIR) {
-                continue;
-            }
-            let result = match (event.mask, event.name) {
-                (EventMask::IGNORED, _) => panic!("watched maildir should not be removed"),
-                (EventMask::MOVED_TO | EventMask::CLOSE_WRITE, Some(name)) => {
-                    move_to_cur(&new, &cur, &name).await
+        let error = async {
+            move_new_to_cur(&new, &cur)
+                .await
+                .map_err(Error::MoveToCur)?;
+            while let Ok(watch_event) = event_rx.recv().await {
+                let event = match watch_event {
+                    WatchEvent::Inotify(event) => event,
+                    WatchEvent::Error(e) => return Err(e),
+                    WatchEvent::MoveTimeout(..) => {
+                        unreachable!("new watch should not time out moves")
+                    }
+                };
+                log::trace!("{event:?}");
+                if event.mask.contains(EventMask::ISDIR) {
+                    continue;
                 }
-                _ => move_new_to_cur(&new, &cur).await,
-            };
-            result.expect("moving mail from new to cur should succeed");
+                match (event.mask, event.name) {
+                    (EventMask::IGNORED, _) => return Err(Error::WatchedDirRemoved(new)),
+                    (EventMask::MOVED_TO | EventMask::CLOSE_WRITE, Some(name)) => {
+                        move_to_cur(&new, &cur, &name).await
+                    }
+                    _ => move_new_to_cur(&new, &cur).await,
+                }
+                .map_err(Error::MoveToCur)?;
+            }
+
+            Ok(())
+        }
+        .await;
+        if let Err(e) = error {
+            // receiver being gone means nobody is interested in the error anymore
+            let _ = change_tx.send(Change::Error(e)).await;
         }
     })
     .detach();
+
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -77,146 +103,157 @@ pub struct Watch {
     ignore_files: Arc<Mutex<HashSet<OsString>>>,
 }
 impl Watch {
-    pub fn new(path: &Path, buffer_size: usize) -> (Self, AsyncRx<spsc::Array<Change>>) {
-        let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
+    /// Watches `cur` for changes and moves mail delivered to `new` into `cur`
+    pub fn new(
+        new: PathBuf,
+        cur: &Path,
+        buffer_size: usize,
+    ) -> Result<(Self, AsyncRx<mpsc::Array<Change>>), Error> {
+        let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
         let ignore_files = Arc::new(Mutex::new(HashSet::new()));
-        let inotify = Inotify::init().expect("initializing inotify should succeed");
-        inotify
-            .watches()
-            .add(
-                path,
-                WatchMask::CREATE | WatchMask::CLOSE_WRITE | WatchMask::MOVE | WatchMask::DELETE,
-            )
-            .expect("adding cur watch should succeed");
+        let inotify = init_inotify(
+            cur,
+            WatchMask::CREATE | WatchMask::CLOSE_WRITE | WatchMask::MOVE | WatchMask::DELETE,
+        )?;
 
         let (event_tx, event_rx) = mpsc::bounded_async(32);
-        Self::spawn_inotify_reader(inotify, event_tx.clone());
+        Self::spawn_inotify_reader(inotify, event_tx.clone())?;
+        watch_new(new, cur.to_path_buf(), change_tx.clone())?;
 
         let ignored = ignore_files.clone();
+        let cur = cur.to_path_buf();
         compio::runtime::spawn(async move {
             let mut move_matches: HashMap<u32, OsString> = HashMap::new();
             let mut created: HashSet<OsString> = HashSet::new();
             while let Ok(watch_event) = event_rx.recv().await {
-                match watch_event {
-                    WatchEvent::MoveTimeout(cookie, mask) => {
-                        log::trace!("file {cookie:?} timed out");
-                        if let Some(filename) = move_matches.remove(&cookie) {
-                            let change = match mask {
-                                EventMask::MOVED_TO => Change::New,
-                                EventMask::MOVED_FROM => Change::Deletion,
-                                _ => unreachable!("mask should only be defined values"),
-                            };
-                            Self::send_unless_ignored(filename, &ignored, &change_tx, change).await;
-                        }
-                    }
-                    WatchEvent::Inotify(event) => {
-                        log::trace!("{event:?}");
-                        if event.mask.contains(EventMask::ISDIR) {
-                            continue;
-                        }
-                        match event.mask {
-                            EventMask::MOVED_FROM | EventMask::MOVED_TO => {
-                                Self::handle_move_event(
-                                    event,
-                                    &mut move_matches,
-                                    &change_tx,
-                                    &event_tx,
-                                    &ignored,
-                                )
-                                .await;
-                            }
-                            EventMask::DELETE => {
-                                let filename = event
-                                    .name
-                                    .expect("name should always be present in delete event");
-                                Self::send_unless_ignored(
-                                    filename,
-                                    &ignored,
-                                    &change_tx,
-                                    Change::Deletion,
-                                )
-                                .await;
-                            }
-                            EventMask::CREATE => {
-                                created.insert(
-                                    event
-                                        .name
-                                        .expect("name should always be present in create event"),
-                                );
-                            }
-                            EventMask::CLOSE_WRITE => {
-                                let filename = event
-                                    .name
-                                    .expect("name should always be present in close event");
-                                if created.remove(&filename) {
-                                    Self::send_unless_ignored(
-                                        filename,
-                                        &ignored,
-                                        &change_tx,
-                                        Change::New,
-                                    )
-                                    .await;
-                                }
-                            }
-                            EventMask::Q_OVERFLOW => {
-                                log::warn!("inotify event queue overflowed");
-                                move_matches.clear();
-                                created.clear();
-                                change_tx
-                                    .send(Change::Overflow)
-                                    .await
-                                    .expect("change channel should still be open");
-                            }
-                            EventMask::IGNORED => panic!("watched maildir should not be removed"),
-                            _ => unreachable!(
-                                "should never recieve unregistered inotify event {event:?}"
-                            ),
-                        }
+                let result = Self::handle_watch_event(
+                    watch_event,
+                    &cur,
+                    &mut move_matches,
+                    &mut created,
+                    &change_tx,
+                    &event_tx,
+                    &ignored,
+                )
+                .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(SendError(_))) => break,
+                    Err(e) => {
+                        let _ = change_tx.send(Change::Error(e)).await;
+                        break;
                     }
                 }
             }
         })
         .detach();
 
-        (Self { ignore_files }, change_rx)
+        Ok((Self { ignore_files }, change_rx))
+    }
+
+    /// Outer error: watching failed, inner error: change receiver is gone
+    async fn handle_watch_event(
+        watch_event: WatchEvent,
+        cur: &Path,
+        move_matches: &mut HashMap<u32, OsString>,
+        created: &mut HashSet<OsString>,
+        change_tx: &ChangeTx,
+        event_tx: &MAsyncTx<mpsc::Array<WatchEvent>>,
+        ignored: &Arc<Mutex<HashSet<OsString>>>,
+    ) -> Result<Result<(), SendError<Change>>, Error> {
+        match watch_event {
+            WatchEvent::Error(e) => Err(e),
+            WatchEvent::MoveTimeout(cookie, mask) => {
+                log::trace!("file {cookie:?} timed out");
+                if let Some(filename) = move_matches.remove(&cookie) {
+                    let change = match mask {
+                        EventMask::MOVED_TO => Change::New,
+                        EventMask::MOVED_FROM => Change::Deletion,
+                        _ => unreachable!("mask should only be defined values"),
+                    };
+                    Self::send_unless_ignored(filename, ignored, change_tx, change).await
+                } else {
+                    Ok(Ok(()))
+                }
+            }
+            WatchEvent::Inotify(event) => {
+                log::trace!("{event:?}");
+                if event.mask.contains(EventMask::ISDIR) {
+                    return Ok(Ok(()));
+                }
+                match event.mask {
+                    EventMask::MOVED_FROM | EventMask::MOVED_TO => {
+                        Self::handle_move_event(event, move_matches, change_tx, event_tx, ignored)
+                            .await
+                    }
+                    EventMask::DELETE => {
+                        let filename = event.name.ok_or(Error::MissingName(event.mask))?;
+                        Self::send_unless_ignored(filename, ignored, change_tx, Change::Deletion)
+                            .await
+                    }
+                    EventMask::CREATE => {
+                        created.insert(event.name.ok_or(Error::MissingName(event.mask))?);
+                        Ok(Ok(()))
+                    }
+                    EventMask::CLOSE_WRITE => {
+                        let filename = event.name.ok_or(Error::MissingName(event.mask))?;
+                        if created.remove(&filename) {
+                            Self::send_unless_ignored(filename, ignored, change_tx, Change::New)
+                                .await
+                        } else {
+                            Ok(Ok(()))
+                        }
+                    }
+                    EventMask::Q_OVERFLOW => {
+                        log::warn!("inotify event queue overflowed");
+                        move_matches.clear();
+                        created.clear();
+                        Ok(change_tx.send(Change::Overflow).await)
+                    }
+                    EventMask::IGNORED => Err(Error::WatchedDirRemoved(cur.to_path_buf())),
+                    mask => Err(Error::UnexpectedEvent(mask)),
+                }
+            }
+        }
     }
 
     async fn send_unless_ignored(
         filename: OsString,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
-        change_tx: &AsyncTx<spsc::Array<Change>>,
+        change_tx: &ChangeTx,
         change: fn(String) -> Change,
-    ) {
-        if !ignored.lock().await.remove(&filename) {
-            let filename = filename
-                .into_string()
-                .expect("filename should be valid utf8");
-            change_tx
-                .send(change(filename))
-                .await
-                .expect("change channel should still be open");
+    ) -> Result<Result<(), SendError<Change>>, Error> {
+        if ignored.lock().await.remove(&filename) {
+            Ok(Ok(()))
+        } else {
+            let filename = into_string(filename)?;
+            Ok(change_tx.send(change(filename)).await)
         }
     }
 
-    fn spawn_inotify_reader(mut inotify: Inotify, event_tx: MAsyncTx<mpsc::Array<WatchEvent>>) {
-        let inotify_fd = PollFd::new(
-            inotify
-                .as_fd()
-                .try_clone_to_owned()
-                .expect("duplicating inotify fd should succeed"),
-        )
-        .expect("polling inotify fd should be possible");
+    fn spawn_inotify_reader(
+        mut inotify: Inotify,
+        event_tx: MAsyncTx<mpsc::Array<WatchEvent>>,
+    ) -> Result<(), Error> {
+        let inotify_fd = inotify
+            .as_fd()
+            .try_clone_to_owned()
+            .and_then(PollFd::new)
+            .map_err(Error::Read)?;
         compio::runtime::spawn(async move {
             let mut buf = [0; 1024];
             loop {
-                inotify_fd
-                    .read_ready()
-                    .await
-                    .expect("waiting for inotify events should succeed");
+                if let Err(e) = inotify_fd.read_ready().await {
+                    let _ = event_tx.send(WatchEvent::Error(Error::Read(e))).await;
+                    return;
+                }
                 let events = match inotify.read_events(&mut buf) {
                     Ok(events) => events,
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                    Err(e) => panic!("reading inotify events should succeed: {e}"),
+                    Err(e) => {
+                        let _ = event_tx.send(WatchEvent::Error(Error::Read(e))).await;
+                        return;
+                    }
                 };
                 for event in events {
                     if event_tx
@@ -230,16 +267,15 @@ impl Watch {
             }
         })
         .detach();
+
+        Ok(())
     }
 
     pub async fn ignore_next_update_for_file(&self, file: &Path) {
-        let mut ignored = self.ignore_files.lock().await;
-        log::trace!("ignoring next update of {}", file.display());
-        ignored.insert(
-            file.file_name()
-                .expect("ignored file should have a name")
-                .to_os_string(),
-        );
+        if let Some(name) = file.file_name() {
+            log::trace!("ignoring next update of {}", file.display());
+            self.ignore_files.lock().await.insert(name.to_os_string());
+        }
     }
 
     pub async fn unignore_file(&self, file: &Path) {
@@ -251,53 +287,72 @@ impl Watch {
     async fn handle_move_event(
         event: inotify::Event<OsString>,
         move_matches: &mut HashMap<u32, OsString>,
-        change_tx: &AsyncTx<spsc::Array<Change>>,
+        change_tx: &ChangeTx,
         event_tx: &MAsyncTx<mpsc::Array<WatchEvent>>,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
-    ) {
-        let filename = event
-            .name
-            .expect("name should always be present in move event");
+    ) -> Result<Result<(), SendError<Change>>, Error> {
+        let filename = event.name.ok_or(Error::MissingName(event.mask))?;
         if let Some(stored_name) = move_matches.remove(&event.cookie) {
             let mut ignored = ignored.lock().await;
             let filename_ignored = ignored.remove(&filename);
             let stored_name_ignored = ignored.remove(&stored_name);
-            if !(filename_ignored || stored_name_ignored) {
-                let filename = filename
-                    .into_string()
-                    .expect("filename should be valid utf8");
-                let stored_name = stored_name
-                    .into_string()
-                    .expect("filename should be valid utf8");
-                let change = match event.mask {
-                    EventMask::MOVED_FROM => Change::Rename {
-                        from: filename,
-                        to: stored_name,
-                    },
-                    EventMask::MOVED_TO => Change::Rename {
-                        from: stored_name,
-                        to: filename,
-                    },
-                    _ => unreachable!("this function should only be called with moved masks"),
-                };
-                change_tx
-                    .send(change)
-                    .await
-                    .expect("change channel should still be open");
+            drop(ignored);
+            if filename_ignored || stored_name_ignored {
+                return Ok(Ok(()));
             }
+            let filename = into_string(filename)?;
+            let stored_name = into_string(stored_name)?;
+            let change = match event.mask {
+                EventMask::MOVED_FROM => Change::Rename {
+                    from: filename,
+                    to: stored_name,
+                },
+                EventMask::MOVED_TO => Change::Rename {
+                    from: stored_name,
+                    to: filename,
+                },
+                _ => unreachable!("this function should only be called with moved masks"),
+            };
+            Ok(change_tx.send(change).await)
         } else {
             move_matches.insert(event.cookie, filename);
             let event_tx = event_tx.clone();
             compio::runtime::spawn(async move {
                 compio::time::sleep(Duration::from_millis(50)).await;
-                event_tx
+                // watch task being gone means nobody waits for the timeout anymore
+                let _ = event_tx
                     .send(WatchEvent::MoveTimeout(event.cookie, event.mask))
-                    .await
-                    .expect("watch event channel should still be open");
+                    .await;
             })
             .detach();
+
+            Ok(Ok(()))
         }
     }
+}
+
+fn into_string(filename: OsString) -> Result<String, Error> {
+    filename
+        .into_string()
+        .map_err(|filename| Error::InvalidFilename(filename.to_string_lossy().into_owned()))
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Cannot watch {0}: {1}")]
+    Setup(PathBuf, io::Error),
+    #[error("Cannot read inotify events: {0}")]
+    Read(io::Error),
+    #[error("Watched maildir directory {0} was removed")]
+    WatchedDirRemoved(PathBuf),
+    #[error("Received unexpected inotify event {0:?}")]
+    UnexpectedEvent(EventMask),
+    #[error("Received inotify event {0:?} without file name")]
+    MissingName(EventMask),
+    #[error("Non utf-8 filename {0}")]
+    InvalidFilename(String),
+    #[error("Cannot move mail from new to cur: {0}")]
+    MoveToCur(io::Error),
 }
 
 #[derive(Debug)]
@@ -306,4 +361,5 @@ pub enum Change {
     New(String),
     Rename { from: String, to: String },
     Overflow,
+    Error(Error),
 }

@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 
-use crate::{imap::RemoteMailMetadata, repository::Flag};
+use crate::{
+    imap::{RemoteMailMetadata, client::Error},
+    repository::Flag,
+};
 
 #[derive(Debug, Default)]
 pub struct FetchAttributes<'a> {
@@ -26,18 +29,16 @@ impl<'a> FetchAttributes<'a> {
         parsed
     }
 
-    pub fn metadata(&self) -> Option<RemoteMailMetadata> {
+    pub fn metadata(&self) -> Result<Option<RemoteMailMetadata>, Error> {
         let (Some(uid), Some(modseq), Some(flags)) = (self.uid, self.modseq, self.flags) else {
-            return None;
+            return Ok(None);
         };
 
-        Some(RemoteMailMetadata::new(
-            uid.try_into().expect("received uid should be nonzero"),
+        Ok(Some(RemoteMailMetadata::new(
+            uid.try_into()?,
             Flag::into_bitflags(flags),
-            modseq
-                .try_into()
-                .expect("received modseq should be nonzero"),
-        ))
+            modseq.try_into().map_err(Error::InvalidModSeq)?,
+        )))
     }
 }
 
@@ -62,7 +63,7 @@ mod tests {
 
         let parsed = FetchAttributes::parse(&attributes);
 
-        let metadata = assert_some!(parsed.metadata());
+        let metadata = assert_some!(assert_ok!(parsed.metadata()));
         assert_eq!(u32::from(metadata.uid()), 3);
         assert_eq!(metadata.flags(), Flag::Seen);
         assert_eq!(
@@ -77,7 +78,7 @@ mod tests {
 
         let parsed = FetchAttributes::parse(&attributes);
 
-        assert_none!(parsed.metadata());
+        assert_none!(assert_ok!(parsed.metadata()));
         assert_some!(parsed.uid);
     }
 }

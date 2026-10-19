@@ -1,8 +1,9 @@
 use ::std::env;
-use std::{fs::read_to_string, path::PathBuf, str::FromStr, time::Duration};
+use std::{fs::read_to_string, io, path::PathBuf, time::Duration};
 
 use derive_getters::Getters;
 use serde::Deserialize;
+use thiserror::Error;
 
 use crate::{config::auth::Auth, sync};
 
@@ -85,29 +86,27 @@ impl Account {
         }
     }
 
-    #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
-    #[must_use]
-    pub fn load_from_file(account: &str) -> Self {
-        let mut config_home = config_home();
+    /// # Errors
+    /// If the config or data directory cannot be determined or the account config cannot be
+    /// read or parsed
+    pub fn load_from_file(account: &str) -> Result<Self, Error> {
+        let mut config_home = config_home()?;
         config_home.push("accounts");
         let mut config_file_name = account.to_string();
         config_file_name.push_str(".toml");
         config_home.push(&config_file_name);
-        let contents = read_to_string(config_home).expect("account config should be readable");
+        let contents =
+            read_to_string(&config_home).map_err(|e| Error::Read(config_home.clone(), e))?;
         let config: AccountConfigFile =
-            toml::from_str(&contents).expect("account config should be parsable");
+            toml::from_str(&contents).map_err(|e| Error::Parse(config_home, e))?;
 
-        let maildir_base_path = config.maildir_base_path.unwrap_or_else(|| {
-            let mut data_home = data_home();
-            data_home.push(account);
+        let data_home = data_home()?;
+        let maildir_base_path = config
+            .maildir_base_path
+            .unwrap_or_else(|| data_home.join(account));
+        let state_dir = data_home.join(account);
 
-            data_home
-        });
-
-        let mut state_dir = data_home();
-        state_dir.push(account);
-
-        Self {
+        Ok(Self {
             auth: config.auth,
             connection: Connection::new(config.host, config.port, config.server_certificate_file),
             mailboxes: config.mailboxes,
@@ -126,37 +125,48 @@ impl Account {
                         .unwrap_or(default.store_batch_max_bytes()),
                 )
             },
-        }
+        })
     }
 }
 
-fn config_home() -> PathBuf {
-    let mut config_dir = if let Ok(config_home) = env::var("XDG_CONFIG_HOME") {
-        PathBuf::from_str(&config_home).expect("XDG_CONFIG_HOME should be a parseable path")
+fn config_home() -> Result<PathBuf, Error> {
+    let mut config_dir = if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
+        PathBuf::from(config_home)
     } else {
-        let mut config_home = home();
+        let mut config_home = home()?;
         config_home.push(".config/");
         config_home
     };
     config_dir.push(env!("CARGO_PKG_NAME"));
 
-    config_dir
+    Ok(config_dir)
 }
 
-fn home() -> PathBuf {
-    PathBuf::from_str(&env::var("HOME").expect("HOME should be set"))
-        .expect("HOME should be a parseable path")
+fn home() -> Result<PathBuf, Error> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or(Error::HomeUnset)
 }
 
-fn data_home() -> PathBuf {
-    let mut data_home = if let Ok(data_home) = env::var("XDG_DATA_HOME") {
-        PathBuf::from_str(&data_home).expect("XDG_DATA_HOME should be a parseable path")
+fn data_home() -> Result<PathBuf, Error> {
+    let mut data_home = if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
+        PathBuf::from(data_home)
     } else {
-        let mut data_home = home();
+        let mut data_home = home()?;
         data_home.push(".local/share/");
         data_home
     };
     data_home.push(env!("CARGO_PKG_NAME"));
 
-    data_home
+    Ok(data_home)
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("HOME is not set")]
+    HomeUnset,
+    #[error("Cannot read account config {0}: {1}")]
+    Read(PathBuf, io::Error),
+    #[error("Cannot parse account config {0}: {1}")]
+    Parse(PathBuf, toml::de::Error),
 }

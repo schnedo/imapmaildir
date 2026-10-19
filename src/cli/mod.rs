@@ -1,11 +1,16 @@
 mod nuke;
 mod sync;
 
-use std::io::stdin;
+use std::io::{self, stdin};
 
 use clap::{Parser, Subcommand};
-use imapmaildir::{Tls, config::Account, logging};
+use imapmaildir::{
+    ClientError, SyncError, Tls, TransportError,
+    config::{Account, AccountError},
+    logging,
+};
 use log::LevelFilter;
+use thiserror::Error;
 
 use crate::{
     cli::nuke::nuke,
@@ -46,9 +51,9 @@ pub struct SyncArgs {
     idle: bool,
 }
 
-pub fn run(cli: &Cli) {
+pub fn run(cli: &Cli) -> Result<(), Error> {
     logging::init(cli.log_level);
-    let config = Account::load_from_file(&cli.account);
+    let config = Account::load_from_file(&cli.account).map_err(Error::Config)?;
     log::debug!("parsed config: {config:?}");
 
     match &cli.command {
@@ -56,26 +61,46 @@ pub fn run(cli: &Cli) {
             if !nuke_args.yes {
                 println!("Nuke account {} [Y]es/[N]o?", cli.account);
                 let mut input = String::new();
-                stdin()
-                    .read_line(&mut input)
-                    .expect("reading user input should succeed");
+                stdin().read_line(&mut input).map_err(Error::Input)?;
                 let input = input.trim().to_ascii_lowercase();
                 if input != "y" && input != "yes" {
-                    return;
+                    return Ok(());
                 }
             }
-            nuke(&config);
+            nuke(&config).map_err(Error::Nuke)
         }
         Command::Sync(sync_args) => {
             if sync_args.idle {
                 exit_on_panic();
             }
             if let Some(mailbox) = &sync_args.mailbox {
-                let tls = Tls::new(config.connection()).expect("setting up TLS should succeed");
-                sync_mailbox(&config, &tls, mailbox, sync_args.idle);
+                let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
+                sync_mailbox(&config, &tls, mailbox, sync_args.idle)
             } else {
-                sync_all(config, sync_args.idle);
+                sync_all(config, sync_args.idle)
             }
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("{0}")]
+    Config(AccountError),
+    #[error("Cannot set up TLS: {0}")]
+    Tls(TransportError),
+    #[error("Cannot read user input: {0}")]
+    Input(io::Error),
+    #[error("Cannot nuke account: {0}")]
+    Nuke(io::Error),
+    #[error("Cannot build async runtime: {0}")]
+    Runtime(io::Error),
+    #[error("Cannot log in: {0}")]
+    Login(ClientError),
+    #[error("Syncing mailbox {mailbox} failed: {cause}")]
+    Sync { mailbox: String, cause: SyncError },
+    #[error("Cannot spawn sync thread for mailbox {mailbox}: {cause}")]
+    Spawn { mailbox: String, cause: io::Error },
+    #[error("Syncing mailboxes {0:?} failed")]
+    SyncAll(Vec<String>),
 }

@@ -19,13 +19,6 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-pub enum TaggedResponseError {
-    No {},
-    Bad {},
-}
-pub type SendReturnValue = Result<ResponseData, TaggedResponseError>;
-
 const READ_BUFFER_SIZE: usize = 256 * 1024;
 
 pub struct Connection {
@@ -89,48 +82,48 @@ impl Connection {
         })
     }
 
-    pub async fn next_response(&mut self) -> ResponseData {
+    pub async fn next_response(&mut self) -> Result<ResponseData, Error> {
         self.stream
             .next()
             .await
-            .expect("connection to server should still be open")
-            .expect("response should be receivable")
+            .ok_or(Error::Closed)?
+            .map_err(Error::Receive)
     }
 
-    pub async fn send(
+    pub async fn send<H: ResponseHandler>(
         &mut self,
         command: Vec<u8>,
-        handler: &mut impl ResponseHandler,
-    ) -> SendReturnValue {
-        let tag = self.write_command(command).await;
+        handler: &mut H,
+    ) -> Result<ResponseData, H::Error> {
+        let tag = self.write_command(command).await?;
         self.receive_completion(&tag, handler).await
     }
 
-    pub async fn write_command(&mut self, command: Vec<u8>) -> String {
+    pub async fn write_command(&mut self, command: Vec<u8>) -> Result<String, Error> {
         let tag = self.tag_generator.next();
-        self.write(&tag, &command).await;
-        tag
+        self.write(&tag, &command).await?;
+        Ok(tag)
     }
 
-    pub async fn write_continuation(&mut self, data: Vec<u8>) {
-        self.write("", &data).await;
+    pub async fn write_continuation(&mut self, data: Vec<u8>) -> Result<(), Error> {
+        self.write("", &data).await
     }
 
-    async fn write(&mut self, tag: &str, data: &[u8]) {
+    async fn write(&mut self, tag: &str, data: &[u8]) -> Result<(), Error> {
         log::trace!("{tag:?}: sending");
         self.stream
             .send((tag.as_bytes(), data))
             .await
-            .expect("sending command should succeed");
+            .map_err(Error::Send)
     }
 
-    pub async fn receive_completion(
+    pub async fn receive_completion<H: ResponseHandler>(
         &mut self,
         tag: &str,
-        handler: &mut impl ResponseHandler,
-    ) -> SendReturnValue {
+        handler: &mut H,
+    ) -> Result<ResponseData, H::Error> {
         loop {
-            let response = self.next_response().await;
+            let response = self.next_response().await?;
             match response.parsed() {
                 imap_proto::Response::Done {
                     tag: response_tag,
@@ -141,26 +134,27 @@ impl Connection {
                     if let Some(information) = information {
                         log::debug!("Done response information: {information}");
                     }
-                    assert_eq!(
-                        response_tag.0, tag,
-                        "tagged response should belong to running command"
-                    );
+                    if response_tag.0 != tag {
+                        return Err(Error::UnexpectedTag {
+                            expected: tag.to_string(),
+                            received: response_tag.0.clone(),
+                        }
+                        .into());
+                    }
+                    let information = information.as_ref().map(ToString::to_string);
                     return match status {
                         imap_proto::Status::Ok => Ok(response),
-                        imap_proto::Status::No => Err(TaggedResponseError::No {}),
-                        imap_proto::Status::Bad => Err(TaggedResponseError::Bad {}),
-                        imap_proto::Status::PreAuth => unreachable!(
-                            "receiving tagged PreAuth response is not possible per specification"
-                        ),
-                        imap_proto::Status::Bye => unreachable!(
-                            "receiving tagged Bye response is not possible per specification"
-                        ),
+                        imap_proto::Status::No => Err(Error::No(information).into()),
+                        imap_proto::Status::Bad => Err(Error::Bad(information).into()),
+                        imap_proto::Status::PreAuth | imap_proto::Status::Bye => {
+                            Err(Error::UnexpectedTaggedStatus(format!("{status:?}")).into())
+                        }
                     };
                 }
                 imap_proto::Response::Continue(imap_proto::Outcome { code, information }) => {
                     log::warn!("ignoring unexpected continuation request {code:?} {information:?}");
                 }
-                _ => handler.handle_or_log(response).await,
+                _ => handler.handle_or_log(response).await?,
             }
         }
     }
@@ -190,6 +184,20 @@ pub enum Error {
         port: u16,
         cause: io::Error,
     },
+    #[error("Connection closed by server")]
+    Closed,
+    #[error("Cannot receive response: {0}")]
+    Receive(io::Error),
+    #[error("Cannot send command: {0}")]
+    Send(io::Error),
+    #[error("Server rejected command: {}", .0.as_deref().unwrap_or("NO"))]
+    No(Option<String>),
+    #[error("Server reported protocol error: {}", .0.as_deref().unwrap_or("BAD"))]
+    Bad(Option<String>),
+    #[error("Received tagged response {received} while expecting {expected}")]
+    UnexpectedTag { expected: String, received: String },
+    #[error("Received invalid tagged {0} response")]
+    UnexpectedTaggedStatus(String),
 }
 
 #[cfg(test)]

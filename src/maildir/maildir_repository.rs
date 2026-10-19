@@ -67,7 +67,10 @@ impl MaildirRepository {
                     log::warn!(
                         "encountered missing maildir for existing state. Reinitilizing state and maildir..."
                     );
-                    state.close().await;
+                    state
+                        .close()
+                        .await
+                        .map_err(|e| LoadError::State(e.into()))?;
                     State::remove_from(state_dir).await?;
 
                     Err(LoadError::Uninitialized)
@@ -421,21 +424,23 @@ pub struct LocalWatcher {
 pub enum LocalEvent {
     Changes(LocalChanges),
     Overflow,
+    Error(maildir::Error),
 }
 
 impl LocalWatcher {
-    pub async fn watch(self) -> AsyncRx<Array<LocalEvent>> {
+    pub async fn watch(self) -> Result<AsyncRx<Array<LocalEvent>>, maildir::Error> {
         log::debug!("listening for maildir mail changes");
         let (changes_tx, changes_rx) = spsc::bounded_async(1);
         let size = 32;
-        let rx = self.maildir.watch(size).await;
+        let rx = self.maildir.watch(size).await?;
 
         compio::runtime::spawn(async move {
-            loop {
+            while let Ok(change) = rx.recv().await {
                 let mut deletions = Vec::new();
                 let mut news = Vec::new();
                 let mut updates = LocalFlagChangesBuilder::default();
                 let mut overflowed = false;
+                let mut error = None;
                 let mut handle_change = |change| match change {
                     Change::Deletion(entry) => {
                         deletions.push(entry.uid());
@@ -449,8 +454,10 @@ impl LocalWatcher {
                     Change::Overflow => {
                         overflowed = true;
                     }
+                    Change::Error(e) => {
+                        error = Some(e);
+                    }
                 };
-                let change = rx.recv().await.expect("changes_rx should still be open");
                 handle_change(change);
 
                 while let Ok(Ok(change)) =
@@ -458,24 +465,28 @@ impl LocalWatcher {
                 {
                     handle_change(change);
                 }
-                let event = if overflowed {
-                    LocalEvent::Overflow
+                let (event, stop) = if let Some(error) = error {
+                    (LocalEvent::Error(error), true)
+                } else if overflowed {
+                    (LocalEvent::Overflow, false)
                 } else {
-                    LocalEvent::Changes(LocalChanges {
-                        updates,
-                        deletions,
-                        news,
-                    })
+                    (
+                        LocalEvent::Changes(LocalChanges {
+                            updates,
+                            deletions,
+                            news,
+                        }),
+                        false,
+                    )
                 };
-                changes_tx
-                    .send(event)
-                    .await
-                    .expect("changes_tx should still be open");
+                if changes_tx.send(event).await.is_err() || stop {
+                    break;
+                }
             }
         })
         .detach();
 
-        changes_rx
+        Ok(changes_rx)
     }
 }
 

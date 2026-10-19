@@ -1,9 +1,10 @@
-use std::process::Stdio;
+use std::{io, process::Stdio, string::FromUtf8Error};
 
 use compio::process::Command;
 
 use derive_getters::Getters;
 use serde::Deserialize;
+use thiserror::Error;
 
 #[derive(Deserialize, Getters, Debug)]
 #[serde(deny_unknown_fields)]
@@ -19,32 +20,37 @@ impl PlainAuth {
         Self { user, password_cmd }
     }
 
-    #[expect(clippy::missing_panics_doc)] // todo: use in IDLE
-    pub async fn password(&self) -> String {
+    /// # Errors
+    /// If `password_cmd` is empty, cannot be executed or does not output a utf8 password
+    pub async fn password(&self) -> Result<String, Error> {
         let mut cmd_parts = self.password_cmd.iter();
-        let mut cmd = Command::new(
-            cmd_parts
-                .next()
-                .expect("password_cmd should specify a program"),
-        );
+        let mut cmd = Command::new(cmd_parts.next().ok_or(Error::NoProgram)?);
         cmd.args(cmd_parts);
         let Ok(_) = cmd.stdin(Stdio::null());
         let Ok(_) = cmd.stdout(Stdio::piped());
-        let output = cmd
-            .output()
-            .await
-            .expect("password_cmd should be executable");
+        let output = cmd.output().await.map_err(Error::Execution)?;
 
-        assert!(
-            !output.stdout.is_empty(),
-            "could not retrieve password from password_cmd"
-        );
+        if output.stdout.is_empty() {
+            return Err(Error::EmptyOutput);
+        }
 
-        String::from_utf8(output.stdout)
-            .expect("password_cmd should evaluate to password")
+        Ok(String::from_utf8(output.stdout)
+            .map_err(Error::InvalidOutput)?
             .trim_end()
-            .to_string()
+            .to_string())
     }
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("password_cmd should specify a program")]
+    NoProgram,
+    #[error("Cannot execute password_cmd: {0}")]
+    Execution(io::Error),
+    #[error("Could not retrieve password from password_cmd")]
+    EmptyOutput,
+    #[error("password_cmd output is no valid utf8: {0}")]
+    InvalidOutput(FromUtf8Error),
 }
 
 #[derive(Deserialize, Debug)]
@@ -64,6 +70,6 @@ mod tests {
             vec!["echo".to_string(), "secret".to_string()],
         );
 
-        assert_eq!(auth.password().await, "secret");
+        assert_eq!(assertables::assert_ok!(auth.password().await), "secret");
     }
 }
