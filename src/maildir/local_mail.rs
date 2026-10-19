@@ -59,7 +59,6 @@ impl Debug for LocalMail {
 pub struct NewLocalMailMetadata {
     // todo: add modseq to handle highest_modseq transactional
     flags: BitFlags<Flag>,
-    // todo: Cow?
     fileprefix: String,
 }
 
@@ -134,11 +133,9 @@ impl FromStr for NewLocalMailMetadata {
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
-    // todo: different struct for new local mail that has no uid yet
     uid: Uid,
     // todo: add modseq to handle highest_modseq transactional
     flags: BitFlags<Flag>,
-    // todo: Cow?
     fileprefix: String,
 }
 
