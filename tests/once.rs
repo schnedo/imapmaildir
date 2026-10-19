@@ -181,6 +181,28 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
+async fn test_mail_rejected_by_server_is_skipped(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let initial_server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    let rejected = client_mail.dir().join("INBOX/cur/empty:2,S");
+    assert_ok!(std::fs::write(&rejected, b""));
+    client_mailbox.add_mail(b"new");
+
+    mail_setup.sync("INBOX").await;
+
+    assert!(assert_ok!(rejected.try_exists()));
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails.len(), initial_server_mails.len() + 1);
+    assert_ok!(std::fs::remove_file(&rejected));
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
 async fn test_syncing_new_mail_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");

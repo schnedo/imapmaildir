@@ -39,6 +39,10 @@ impl LocalMail {
         &self.metadata
     }
 
+    pub fn content(&self) -> &[u8] {
+        &self.content
+    }
+
     pub fn unpack(self) -> (NewLocalMailMetadata, Vec<u8>) {
         (self.metadata, self.content)
     }
