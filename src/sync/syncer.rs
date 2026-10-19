@@ -333,7 +333,7 @@ impl Syncer {
         } = local_changes;
         if !news.is_empty() {
             let synced = client
-                .store(mailbox, news.into_iter())
+                .store(mailbox, news)
                 .await?
                 .into_iter()
                 .map(|(uid, metadata)| (metadata, uid))

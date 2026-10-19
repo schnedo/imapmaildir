@@ -149,37 +149,53 @@ impl SelectedClient {
     pub async fn store(
         &mut self,
         mailbox: &str,
-        mails: impl Iterator<Item = LocalMail>,
+        mails: Vec<LocalMail>,
     ) -> Result<Vec<(Uid, NewLocalMailMetadata)>, Error> {
         let mailbox = encoding::mailbox(mailbox);
-        let mut stored = Vec::new();
-        let mut metadatas = Vec::new();
-        if self.multiappend {
-            self.append(&mailbox, mails, &mut metadatas, &mut stored)
-                .await?;
-        } else {
-            for mail in mails {
-                self.append(&mailbox, std::iter::once(mail), &mut metadatas, &mut stored)
-                    .await?;
+        if self.multiappend && mails.len() > 1 {
+            match self.append(&mailbox, &mails).await {
+                Ok(uids) => return Ok(uids.into_iter().zip(Self::metadatas(mails)).collect()),
+                Err(Error::Transport(transport::Error::No(reason))) => {
+                    log::warn!(
+                        "server rejected appending {} mails ({}), appending them one by one",
+                        mails.len(),
+                        reason.as_deref().unwrap_or("NO")
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        let mut stored = Vec::with_capacity(mails.len());
+        for mail in mails {
+            match self.append(&mailbox, std::slice::from_ref(&mail)).await {
+                Ok(uids) => stored.extend(uids.into_iter().zip(Self::metadatas(vec![mail]))),
+                Err(Error::Transport(transport::Error::No(reason))) => {
+                    log::warn!(
+                        "server rejected mail {} ({}), skipping it until next sync",
+                        mail.metadata(),
+                        reason.as_deref().unwrap_or("NO")
+                    );
+                }
+                Err(e) => return Err(e),
             }
         }
 
         Ok(stored)
     }
 
-    async fn append(
-        &mut self,
-        mailbox: &str,
-        mails: impl Iterator<Item = LocalMail>,
-        metadatas: &mut Vec<NewLocalMailMetadata>,
-        stored: &mut Vec<(Uid, NewLocalMailMetadata)>,
-    ) -> Result<(), Error> {
+    fn metadatas(mails: Vec<LocalMail>) -> impl Iterator<Item = NewLocalMailMetadata> {
+        mails.into_iter().map(|mail| mail.unpack().0)
+    }
+
+    async fn append(&mut self, mailbox: &str, mails: &[LocalMail]) -> Result<Vec<Uid>, Error> {
         log::debug!("APPEND {mailbox}");
         let mut command = b"APPEND ".to_vec();
         command.extend_from_slice(mailbox.as_bytes());
-        metadatas.extend(mails.map(|mail| mail.append_to(&mut command)));
+        for mail in mails {
+            mail.append_to(&mut command);
+        }
 
-        // todo: check reason and move failing mails out of cur
         let response = self
             .connection
             .send(command, &mut self.mailbox_handler)
@@ -205,9 +221,8 @@ impl SelectedClient {
             .iter()
             .map(SequenceRange::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        stored.extend(ranges.into_iter().flatten().zip(metadatas.drain(..)));
 
-        Ok(())
+        Ok(ranges.into_iter().flatten().collect())
     }
 
     pub async fn store_flag_change(
@@ -551,18 +566,16 @@ impl MailboxHandler {
 }
 
 impl LocalMail {
-    fn append_to(self, command: &mut Vec<u8>) -> NewLocalMailMetadata {
+    fn append_to(&self, command: &mut Vec<u8>) {
+        let content = self.content();
+        command.reserve(content.len() + 64);
         if let Some(flags) = Flag::format(self.metadata().flags()) {
             write!(command, " ({flags})")
                 .expect("appending formatted flags to APPEND command should succeed");
         }
-        let (metadata, content) = self.unpack();
-        // todo: use cached content length (and extend command with content)
         write!(command, " {{{}+}}\r\n", content.len())
             .expect("appending content length to APPEND command should succeed");
-        command.extend(content);
-
-        metadata
+        command.extend_from_slice(content);
     }
 }
 
