@@ -95,24 +95,33 @@ impl Connection {
         command: Vec<u8>,
         handler: &mut H,
     ) -> Result<ResponseData, H::Error> {
-        let tag = self.write_command(command).await?;
+        self.send_parts(&[&command], handler).await
+    }
+
+    pub async fn send_parts<H: ResponseHandler>(
+        &mut self,
+        parts: &[&[u8]],
+        handler: &mut H,
+    ) -> Result<ResponseData, H::Error> {
+        let tag = self.tag_generator.next();
+        self.write(&tag, parts).await?;
         self.receive_completion(&tag, handler).await
     }
 
     pub async fn write_command(&mut self, command: Vec<u8>) -> Result<String, Error> {
         let tag = self.tag_generator.next();
-        self.write(&tag, &command).await?;
+        self.write(&tag, &[&command]).await?;
         Ok(tag)
     }
 
     pub async fn write_continuation(&mut self, data: Vec<u8>) -> Result<(), Error> {
-        self.write("", &data).await
+        self.write("", &[&data]).await
     }
 
-    async fn write(&mut self, tag: &str, data: &[u8]) -> Result<(), Error> {
+    async fn write(&mut self, tag: &str, parts: &[&[u8]]) -> Result<(), Error> {
         log::trace!("{tag:?}: sending");
         self.stream
-            .send((tag.as_bytes(), data))
+            .send((tag.as_bytes(), parts))
             .await
             .map_err(Error::Send)
     }
@@ -141,11 +150,11 @@ impl Connection {
                         }
                         .into());
                     }
-                    let information = information.as_ref().map(ToString::to_string);
+                    let information = || information.as_ref().map(ToString::to_string);
                     return match status {
                         imap_proto::Status::Ok => Ok(response),
-                        imap_proto::Status::No => Err(Error::No(information).into()),
-                        imap_proto::Status::Bad => Err(Error::Bad(information).into()),
+                        imap_proto::Status::No => Err(Error::No(information()).into()),
+                        imap_proto::Status::Bad => Err(Error::Bad(information()).into()),
                         imap_proto::Status::PreAuth | imap_proto::Status::Bye => {
                             Err(Error::UnexpectedTaggedStatus(format!("{status:?}")).into())
                         }

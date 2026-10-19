@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fmt::{Display, Formatter, Result},
+    fmt::{Display, Formatter, Result, Write as _},
     ops::RangeInclusive,
 };
 use thiserror::Error;
@@ -151,19 +151,14 @@ impl SequenceSet {
 
 impl Display for SequenceSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        if let Some(string) =
-            self.ranges
-                .iter()
-                .map(ToString::to_string)
-                .reduce(|mut acc, range| {
-                    acc.push(',');
-                    acc + &range
-                })
-        {
-            write!(f, "{string}")
-        } else {
-            write!(f, "")
+        for (i, range) in self.ranges.iter().enumerate() {
+            if i > 0 {
+                f.write_char(',')?;
+            }
+            write!(f, "{range}")?;
         }
+
+        Ok(())
     }
 }
 

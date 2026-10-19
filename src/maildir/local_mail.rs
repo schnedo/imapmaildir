@@ -1,5 +1,5 @@
 use std::{
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Write as _},
     process,
     str::FromStr,
     sync::LazyLock,
@@ -66,9 +66,6 @@ impl NewLocalMailMetadata {
     pub fn new(flags: BitFlags<Flag>, fileprefix: String) -> Self {
         Self { flags, fileprefix }
     }
-    fn string_flags(&self) -> String {
-        self.flags.iter().map(char::from).collect()
-    }
 }
 
 impl From<LocalMailMetadata> for NewLocalMailMetadata {
@@ -104,8 +101,8 @@ impl MaildirFile for NewLocalMailMetadata {
 
 impl Display for NewLocalMailMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let string_flags = self.string_flags();
-        write!(f, "{}:2,{string_flags}", self.fileprefix)
+        write!(f, "{}:2,", self.fileprefix)?;
+        write_flags(f, self.flags)
     }
 }
 
@@ -168,10 +165,6 @@ impl LocalMailMetadata {
         self.uid
     }
 
-    fn string_flags(&self) -> String {
-        self.flags().iter().map(char::from).collect()
-    }
-
     pub fn has_flag(&self, flag: Flag) -> bool {
         self.flags.contains(flag)
     }
@@ -199,9 +192,13 @@ impl MaildirFile for LocalMailMetadata {
 
 impl Display for LocalMailMetadata {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let string_flags = self.string_flags();
-        write!(f, "{},U={}:2,{string_flags}", self.fileprefix, self.uid)
+        write!(f, "{},U={}:2,", self.fileprefix, self.uid)?;
+        write_flags(f, self.flags)
     }
+}
+
+fn write_flags(f: &mut std::fmt::Formatter<'_>, flags: BitFlags<Flag>) -> std::fmt::Result {
+    flags.iter().try_for_each(|flag| f.write_char(char::from(flag)))
 }
 
 #[derive(Debug, Error)]
@@ -288,7 +285,7 @@ mod tests {
 
     #[rstest]
     fn test_maildir_flags_in_ascii_order(metadata: LocalMailMetadata) {
-        assert_eq!(metadata.string_flags(), "DFRST");
+        assert_ends_with!(metadata.filename(), ":2,DFRST");
     }
 
     #[rstest]

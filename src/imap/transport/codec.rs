@@ -88,14 +88,18 @@ impl Decoder for ImapCodec {
 }
 
 impl Encoder for ImapCodec {
-    type Item<'a> = (&'a [u8], &'a [u8]);
+    type Item<'a> = (&'a [u8], &'a [&'a [u8]]);
     type Error = io::Error;
-    fn encode(&mut self, msg: (&[u8], &[u8]), dst: &mut BytesMut) -> Result<(), io::Error> {
-        if !msg.0.is_empty() {
-            dst.put(msg.0);
+    fn encode(&mut self, msg: (&[u8], &[&[u8]]), dst: &mut BytesMut) -> Result<(), io::Error> {
+        let (tag, parts) = msg;
+        dst.reserve(tag.len() + 1 + parts.iter().map(|part| part.len()).sum::<usize>() + 2);
+        if !tag.is_empty() {
+            dst.put(tag);
             dst.put_u8(b' ');
         }
-        dst.put_slice(msg.1);
+        for part in parts {
+            dst.put_slice(part);
+        }
         dst.put_slice(b"\r\n");
         Ok(())
     }
@@ -176,6 +180,15 @@ mod tests {
 
         assert_eq!(&bytes[..], b"hello");
         assert_eq!(bytes.as_ptr(), content.as_ptr());
+    }
+
+    #[test]
+    fn test_encode_joins_parts() {
+        let mut buf = BytesMut::new();
+
+        assert_ok!(ImapCodec::default().encode((b"A1", &[b"APPEND x {2+}\r\n", b"hi"]), &mut buf));
+
+        assert_eq!(&buf[..], b"A1 APPEND x {2+}\r\nhi\r\n");
     }
 
     #[test]

@@ -30,13 +30,14 @@ impl Flag {
     }
 
     pub fn format(flags: BitFlags<Self>) -> Option<String> {
-        flags
-            .iter()
-            .map(|flag| flag.to_string())
-            .reduce(|mut acc, flag| {
-                write!(acc, " {flag}").expect("writing flag to formatting buffer should succeed");
-                acc
-            })
+        let mut flags = flags.iter();
+        let first = flags.next()?;
+        let mut formatted = first.to_string();
+        for flag in flags {
+            write!(formatted, " {flag}").expect("writing flag to formatting buffer should succeed");
+        }
+
+        Some(formatted)
     }
 }
 

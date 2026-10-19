@@ -154,13 +154,8 @@ impl MaildirRepository {
                 .collect::<Result<_, _>>()?;
         self.maildir.sync_tmp().await?;
 
-        let conflicts: HashSet<LocalMailMetadata> = self
-            .state
-            .store_all(stored.clone())
-            .await?
-            .into_iter()
-            .collect();
-        stream::iter(stored.iter().filter(|mail| !conflicts.contains(mail)))
+        let (stored, conflicts) = self.state.store_all(stored).await?;
+        stream::iter(&stored)
             .map(|mail| self.maildir.move_from_tmp(mail))
             .buffered(MAX_CONCURRENT_FILE_OPS)
             .try_collect::<Vec<()>>()
@@ -1299,9 +1294,9 @@ mod tests {
             repo.mail_dir.path().join("tmp").join(metadata.fileprefix()),
             "1"
         ));
-        assert_is_empty!(assert_ok!(
-            repo.repo.state.store_all(vec![metadata.clone()]).await
-        ));
+        assert_is_empty!(
+            assert_ok!(repo.repo.state.store_all(vec![metadata.clone()]).await).1
+        );
 
         let result = assert_ok!(repo.repo.detect_changes().await);
 

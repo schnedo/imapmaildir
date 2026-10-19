@@ -169,7 +169,7 @@ impl SelectedClient {
         let mut stored = Vec::with_capacity(mails.len());
         for mail in mails {
             match self.append(&mailbox, std::slice::from_ref(&mail)).await {
-                Ok(uids) => stored.extend(uids.into_iter().zip(Self::metadatas(vec![mail]))),
+                Ok(uids) => stored.extend(uids.into_iter().zip(Some(mail.unpack().0))),
                 Err(Error::Transport(transport::Error::No(reason))) => {
                     log::warn!(
                         "server rejected mail {} ({}), skipping it until next sync",
@@ -190,15 +190,24 @@ impl SelectedClient {
 
     async fn append(&mut self, mailbox: &str, mails: &[LocalMail]) -> Result<Vec<Uid>, Error> {
         log::debug!("APPEND {mailbox}");
-        let mut command = b"APPEND ".to_vec();
-        command.extend_from_slice(mailbox.as_bytes());
+        let mut headers = b"APPEND ".to_vec();
+        headers.extend_from_slice(mailbox.as_bytes());
+        let mut header_ends = Vec::with_capacity(mails.len());
         for mail in mails {
-            mail.append_to(&mut command);
+            mail.write_append_header(&mut headers);
+            header_ends.push(headers.len());
+        }
+        let mut parts = Vec::with_capacity(mails.len() * 2);
+        let mut header_start = 0;
+        for (mail, header_end) in mails.iter().zip(header_ends) {
+            parts.push(&headers[header_start..header_end]);
+            parts.push(mail.content());
+            header_start = header_end;
         }
 
         let response = self
             .connection
-            .send(command, &mut self.mailbox_handler)
+            .send_parts(&parts, &mut self.mailbox_handler)
             .await?;
 
         let Some(imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members)) =
@@ -566,16 +575,13 @@ impl MailboxHandler {
 }
 
 impl LocalMail {
-    fn append_to(&self, command: &mut Vec<u8>) {
-        let content = self.content();
-        command.reserve(content.len() + 64);
+    fn write_append_header(&self, command: &mut Vec<u8>) {
         if let Some(flags) = Flag::format(self.metadata().flags()) {
             write!(command, " ({flags})")
                 .expect("appending formatted flags to APPEND command should succeed");
         }
-        write!(command, " {{{}+}}\r\n", content.len())
+        write!(command, " {{{}+}}\r\n", self.content().len())
             .expect("appending content length to APPEND command should succeed");
-        command.extend_from_slice(content);
     }
 }
 
