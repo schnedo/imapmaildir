@@ -37,7 +37,7 @@ jobs:
       - &enable-devshell
         run: nix develop
       - name: Run release-plz
-        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5
+        uses: release-plz/action@8b5bf233ecb5779f63508db7cd050e948ee77cc2 # v0.5
         with:
           command: release
         env:
@@ -60,7 +60,7 @@ jobs:
       - *enable-devshell
       - name: Run release-plz
         id: release-plz
-        uses: release-plz/action@6caa8d34f74d82b0dc76a18edd1cc3d6801c9baf # v0.5
+        uses: release-plz/action@8b5bf233ecb5779f63508db7cd050e948ee77cc2 # v0.5
         with:
           command: release-pr
         env:
