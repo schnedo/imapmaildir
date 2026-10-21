@@ -42,6 +42,7 @@ pub struct SelectedClient {
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     multiappend: bool,
+    own_modseqs: OwnModSeqs,
 }
 impl SelectedClient {
     pub fn new(
@@ -68,6 +69,7 @@ impl SelectedClient {
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
+            own_modseqs: OwnModSeqs::default(),
         })
     }
 
@@ -193,6 +195,7 @@ impl SelectedClient {
     }
 
     pub async fn commit_highest_modseq(&mut self, modseq: ModSeq) -> Result<(), Error> {
+        self.own_modseqs.prune(modseq);
         self.mailbox_handler
             .task_tx
             .send(Task::SetHighestModseq(modseq))
@@ -294,33 +297,49 @@ impl SelectedClient {
         change: FlagChange,
         sequence_set: &SequenceSet,
     ) -> Result<HashSet<Uid>, Error> {
+        let mut pending = self
+            .own_modseqs
+            .unchanged_since(highest_modseq, sequence_set);
         let mut rejected = HashSet::new();
-        let mut pending: HashMap<Uid, ModSeq> = sequence_set
-            .iter()
-            .map(|uid| (uid, highest_modseq))
-            .collect();
         for (operation, flags) in [('+', change.added), ('-', change.removed)] {
             if flags.is_empty() {
                 continue;
             }
-            let mut groups: HashMap<ModSeq, Vec<Uid>> = HashMap::new();
-            for (uid, modseq) in &pending {
-                groups.entry(*modseq).or_default().push(*uid);
+            rejected.extend(
+                self.store_flags_grouped(&mut pending, operation, flags)
+                    .await?,
+            );
+        }
+
+        Ok(rejected)
+    }
+
+    /// Stores flags of `pending` mails grouped by their UNCHANGEDSINCE modseq. Updates the
+    /// modseqs of stored mails and removes rejected ones, returning them.
+    async fn store_flags_grouped(
+        &mut self,
+        pending: &mut HashMap<Uid, ModSeq>,
+        operation: char,
+        flags: BitFlags<Flag>,
+    ) -> Result<HashSet<Uid>, Error> {
+        let mut groups: HashMap<ModSeq, Vec<Uid>> = HashMap::new();
+        for (uid, modseq) in pending.iter() {
+            groups.entry(*modseq).or_default().push(*uid);
+        }
+        let mut rejected = HashSet::new();
+        for (unchanged_since, uids) in groups {
+            let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
+            let (modified, modseqs) = self
+                .store_flags(unchanged_since, operation, flags, &set)
+                .await?;
+            for (uid, modseq) in modseqs {
+                if let Some(pending_modseq) = pending.get_mut(&uid) {
+                    *pending_modseq = modseq;
+                }
             }
-            for (unchanged_since, uids) in groups {
-                let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
-                let (modified, modseqs) = self
-                    .store_flags(unchanged_since, operation, flags, &set)
-                    .await?;
-                for (uid, modseq) in modseqs {
-                    if let Some(pending_modseq) = pending.get_mut(&uid) {
-                        *pending_modseq = modseq;
-                    }
-                }
-                for uid in modified {
-                    pending.remove(&uid);
-                    rejected.insert(uid);
-                }
+            for uid in modified {
+                pending.remove(&uid);
+                rejected.insert(uid);
             }
         }
 
@@ -353,6 +372,7 @@ impl SelectedClient {
             .send(command.into_bytes(), &mut handler)
             .await?;
         let StoreHandler { modseqs, sequences } = handler.0;
+        self.own_modseqs.record(&modseqs);
         // learning UIDs of e.g. own uploads lets a following UID EXPUNGE resolve without rescan
         if let Some(sequences) = sequences {
             self.mailbox_handler.apply_fetched_uids(sequences);
@@ -370,13 +390,19 @@ impl SelectedClient {
         highest_modseq: ModSeq,
         sequence_set: &SequenceSet,
     ) -> Result<HashSet<Uid>, Error> {
-        let (modified, _) = self
-            .store_flags(highest_modseq, '+', Flag::Deleted.into(), sequence_set)
+        let mut pending = self
+            .own_modseqs
+            .unchanged_since(highest_modseq, sequence_set);
+        let modified = self
+            .store_flags_grouped(&mut pending, '+', Flag::Deleted.into())
             .await?;
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not deleting them");
         }
-        let command = format!("UID EXPUNGE {sequence_set}");
+        let Ok(accepted) = SequenceSet::try_from(&pending.into_keys().collect::<Vec<_>>()) else {
+            return Ok(modified);
+        };
+        let command = format!("UID EXPUNGE {accepted}");
         log::debug!("{command}");
         self.connection
             .send(command.into_bytes(), &mut self.mailbox_handler)
@@ -551,6 +577,42 @@ impl SearchCollector {
         } else {
             Ok(Some(response))
         }
+    }
+}
+
+/// Modseqs of mails changed by own STOREs that may exceed the committed highest modseq. Using
+/// them as UNCHANGEDSINCE avoids rejecting follow-up changes to the same mail, as the server does
+/// not report own changes. Session-only, as selecting commits the server's highest modseq.
+#[derive(Debug, Default)]
+struct OwnModSeqs {
+    modseqs: HashMap<Uid, ModSeq>,
+}
+
+impl OwnModSeqs {
+    fn record(&mut self, modseqs: &HashMap<Uid, ModSeq>) {
+        self.modseqs.extend(modseqs);
+    }
+
+    /// Forgets modseqs covered by `highest_modseq`
+    fn prune(&mut self, highest_modseq: ModSeq) {
+        self.modseqs.retain(|_, modseq| *modseq > highest_modseq);
+    }
+
+    fn unchanged_since(
+        &self,
+        highest_modseq: ModSeq,
+        sequence_set: &SequenceSet,
+    ) -> HashMap<Uid, ModSeq> {
+        sequence_set
+            .iter()
+            .map(|uid| {
+                let own = self.modseqs.get(&uid).copied();
+                (
+                    uid,
+                    own.map_or(highest_modseq, |own| own.max(highest_modseq)),
+                )
+            })
+            .collect()
     }
 }
 
@@ -864,6 +926,29 @@ mod tests {
         };
         assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(7)]);
         assert!(!handler.needs_remote_sync());
+    }
+
+    fn modseq(modseq: i64) -> ModSeq {
+        assertables::assert_ok!(ModSeq::try_from(modseq))
+    }
+
+    #[test]
+    fn test_own_modseqs_raise_unchanged_since_until_pruned() {
+        let mut own = OwnModSeqs::default();
+        own.record(&HashMap::from([(uid(1), modseq(7)), (uid(2), modseq(2))]));
+        let set = assertables::assert_ok!(SequenceSet::try_from(&vec![uid(1), uid(2), uid(3)]));
+
+        assert_eq!(
+            own.unchanged_since(modseq(5), &set),
+            HashMap::from([
+                (uid(1), modseq(7)),
+                (uid(2), modseq(5)),
+                (uid(3), modseq(5))
+            ])
+        );
+
+        own.prune(modseq(7));
+        assert_eq!(own.unchanged_since(modseq(5), &set)[&uid(1)], modseq(5));
     }
 
     #[test]
