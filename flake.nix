@@ -141,12 +141,7 @@
                 };
                 gitleaks = {
                   enable = true;
-                  extraPackages = [
-                    pkgs.gitleaks
-                  ];
                   name = "Detect hardcoded secrets";
-                  entry = "${lib.getExe pkgs.gitleaks} git --pre-commit --redact --staged --verbose";
-                  pass_filenames = false;
                 };
                 keep-sorted.enable = true;
                 no-commit-to-branch = {
