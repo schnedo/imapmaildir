@@ -346,3 +346,43 @@ async fn test_local_deletion_of_uploaded_mail_is_synced(#[future] mail_setup: Ma
     drop(handle);
     while call_rx.recv().await.is_ok() {}
 }
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_repeated_local_changes_of_same_mail_are_synced(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let (handle, call_rx) = mail_setup.sync_continuous("INBOX").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut local = assert_some!(
+        client_mailbox
+            .mails()
+            .await
+            .into_iter()
+            .find(|mail| !mail.has_flag('F'))
+    );
+    let uid = local.uid();
+    assert!(local.add_flag('F'));
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            while !server_mailbox
+                .mails()
+                .await
+                .iter()
+                .any(|mail| mail.uid() == uid && mail.has_flag('F'))
+            {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+
+    local.delete();
+
+    wait_for_absence(&server_mailbox, uid).await;
+    drop(handle);
+    while call_rx.recv().await.is_ok() {}
+}
