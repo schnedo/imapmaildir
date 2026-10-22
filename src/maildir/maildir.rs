@@ -529,12 +529,32 @@ impl Maildir {
         new_uid: Uid,
     ) -> Result<LocalMailMetadata, Error> {
         let current_mail = self.get_path_of(&entry);
+        let stem = entry.stem();
         let entry = entry.set_uid(new_uid);
         let new_mail = self.get_path_of(&entry);
         let watch = self.watch.lock().await.clone();
-        Self::rename(watch.as_ref(), current_mail, new_mail).await?;
+        match Self::rename(watch.as_ref(), current_mail, new_mail).await {
+            Ok(()) => Ok(entry),
+            Err(Error::Missing(missing)) => {
+                // other clients may have changed the flags meanwhile, which are kept
+                let Some(current_mail) = self.locate(stem).await? else {
+                    return Err(Error::Missing(missing));
+                };
+                let Some(Ok(renamed)) = current_mail
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(NewLocalMailMetadata::from_str)
+                else {
+                    return Err(Error::Missing(missing));
+                };
+                let entry = renamed.set_uid(new_uid);
+                let new_mail = self.get_path_of(&entry);
+                Self::rename(watch.as_ref(), current_mail, new_mail).await?;
 
-        Ok(entry)
+                Ok(entry)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn remove_uid(
@@ -1314,6 +1334,26 @@ mod tests {
         let result_uid = entry.uid();
         assert_eq!(result_uid, expected_uid);
         assert!(maildir.get_path_of(&entry).exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_update_uid_keeps_flags_of_mail_renamed_by_other_client(
+        #[future] maildir: TestMaildir,
+        local_mail: LocalMail,
+    ) {
+        let maildir = maildir.maildir;
+        let (entry, content) = local_mail.unpack();
+        let mut renamed = entry.clone();
+        renamed.set_flags(Flag::Seen.into());
+        assert_ok!(fs::write(maildir.get_path_of(&renamed), &content));
+
+        let uid = assert_ok!(Uid::try_from(&3));
+        let result = assert_ok!(maildir.update_uid(entry, uid).await);
+
+        assert_eq!(result, renamed.set_uid(uid));
+        assert!(maildir.get_path_of(&result).exists());
     }
 
     #[rstest]
