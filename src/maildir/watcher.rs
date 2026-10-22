@@ -12,6 +12,10 @@ use compio::runtime::fd::PollFd;
 use crossfire::{AsyncRx, MAsyncTx, SendError, mpsc};
 use futures::lock::Mutex;
 use inotify::{EventMask, Inotify, WatchMask};
+use rustix::{
+    fs::{CWD, RenameFlags},
+    io::Errno,
+};
 use thiserror::Error;
 
 type ChangeTx = MAsyncTx<mpsc::Array<Change>>;
@@ -49,10 +53,30 @@ async fn move_to_cur(new: &Path, cur: &Path, filename: &OsStr) -> io::Result<()>
         target.push(":2,");
     }
     log::debug!("moving {} from new to cur", filename.display());
-    match compio::fs::rename(new.join(filename), cur.join(target)).await {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        result => result,
-    }
+    let source = new.join(filename);
+    let cur = cur.to_path_buf();
+    compio::runtime::spawn_blocking(move || {
+        loop {
+            match rustix::fs::renameat_with(
+                CWD,
+                &source,
+                CWD,
+                cur.join(&target),
+                RenameFlags::NOREPLACE,
+            ) {
+                Ok(()) | Err(Errno::NOENT) => return Ok(()),
+                Err(Errno::EXIST) => {
+                    // keeps mails with clashing names instead of overwriting them
+                    let mut prefixed = OsString::from("1");
+                    prefixed.push(&target);
+                    target = prefixed;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    })
+    .await
+    .map_err(|e| io::Error::other(e.to_string()))?
 }
 
 fn init_inotify(path: &Path, mask: WatchMask) -> Result<Inotify, Error> {
@@ -403,4 +427,35 @@ pub enum Change {
     Rename { from: String, to: String },
     Overflow,
     Error(Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use assertables::*;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[compio::test]
+    async fn test_move_new_to_cur_keeps_existing_mail_with_same_name() {
+        let dir = assert_ok!(tempdir());
+        let (new, cur) = (dir.path().join("new"), dir.path().join("cur"));
+        assert_ok!(fs::create_dir(&new));
+        assert_ok!(fs::create_dir(&cur));
+        assert_ok!(fs::write(cur.join("mail:2,"), "existing"));
+        assert_ok!(fs::write(new.join("mail"), "delivered"));
+
+        assert_ok!(move_new_to_cur(&new, &cur).await);
+
+        assert_eq!(
+            assert_ok!(fs::read_to_string(cur.join("mail:2,"))),
+            "existing"
+        );
+        assert_eq!(
+            assert_ok!(fs::read_to_string(cur.join("1mail:2,"))),
+            "delivered"
+        );
+    }
 }
