@@ -398,7 +398,14 @@ impl MaildirRepository {
 
         let mut new_metadata = Vec::new();
         while let Ok(metadata) = maildir_metadata.recv().await {
-            let metadata = metadata?;
+            let metadata = match metadata {
+                Ok(metadata) => metadata,
+                Err(maildir::MaildirListError::Missing(path)) => {
+                    log::warn!("ignoring {}, which vanished during listing", path.display());
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
             match metadata {
                 maildir::MaildirEntry::New(new_local_mail_metadata) => {
                     new_metadata.push(new_local_mail_metadata);
@@ -432,6 +439,15 @@ impl MaildirRepository {
         let untracked = stream::iter(maildir_mails.into_values())
             .map(|maildata| self.maildir.remove_uid(maildata))
             .buffered(MAX_CONCURRENT_FILE_OPS)
+            .filter_map(|result| {
+                std::future::ready(match result {
+                    Err(maildir::Error::Missing(path)) => {
+                        log::warn!("ignoring {}, which vanished during listing", path.display());
+                        None
+                    }
+                    result => Some(result),
+                })
+            })
             .err_into::<DetectChangesError>();
         let news = stream::iter(new_metadata.into_iter().map(Ok))
             .chain(untracked)
