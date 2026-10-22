@@ -248,10 +248,18 @@ impl Watch {
                 }
                 match event.mask {
                     EventMask::MOVED_FROM | EventMask::MOVED_TO => {
+                        if event.mask == EventMask::MOVED_FROM
+                            && let Some(filename) = &event.name
+                        {
+                            // files moved away before being written completely
+                            created.remove(filename);
+                        }
                         Self::handle_move_event(event, move_matches, change_tx, ignored).await
                     }
                     EventMask::DELETE => {
                         let filename = event.name.ok_or(Error::MissingName(event.mask))?;
+                        // files deleted before being written completely
+                        created.remove(&filename);
                         Self::send_unless_ignored(filename, ignored, change_tx, Change::Deletion)
                             .await
                     }
