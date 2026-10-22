@@ -414,24 +414,24 @@ impl State {
     }
 
     /// Stored UIDs missing from the ascending `uids` in ascending order, e.g. mails deleted
-    /// remotely
-    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
+    /// remotely. Returns `uids` back as second element to let callers reuse them.
+    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<(Vec<Uid>, Vec<Uid>), Error> {
         log::trace!("getting stored uids not in {} uids", uids.len());
         debug_assert!(uids.is_sorted());
         self.call(move |db| {
             // merging in rust is several times faster than a temp table or rarray in sqlite
-            let mut uids = uids.into_iter().peekable();
+            let mut remaining = uids.iter().copied().peekable();
             let mut missing = Vec::new();
             let mut stmt = db.prepare_cached("select uid from mail_metadata order by uid")?;
             for stored in stmt.query_map([], |row| row.get::<_, u32>(0))? {
                 let stored = Uid::try_from(stored?).map_err(|_| Error::Conversion)?;
-                while uids.next_if(|uid| *uid < stored).is_some() {}
-                if uids.next_if_eq(&stored).is_none() {
+                while remaining.next_if(|uid| *uid < stored).is_some() {}
+                if remaining.next_if_eq(&stored).is_none() {
                     missing.push(stored);
                 }
             }
 
-            Ok(missing)
+            Ok((missing, uids))
         })
         .await
     }
@@ -791,23 +791,22 @@ mod tests {
                     .state
                     .uids_not_in(vec![3, 3, 9].into_iter().map(uid).collect())
                     .await
-            ),
+            )
+            .0,
             vec![uid(1), uid(5), uid(8)]
         );
         assert_eq!(
-            assert_ok!(state.state.uids_not_in(vec![uid(1), uid(5), uid(8)]).await),
+            assert_ok!(state.state.uids_not_in(vec![uid(1), uid(5), uid(8)]).await).0,
             vec![uid(3)]
         );
         assert_eq!(
-            assert_ok!(state.state.uids_not_in(Vec::new()).await),
+            assert_ok!(state.state.uids_not_in(Vec::new()).await).0,
             vec![uid(1), uid(3), uid(5), uid(8)]
         );
-        assert_is_empty!(assert_ok!(
-            state
-                .state
-                .uids_not_in(vec![1, 2, 3, 4, 5, 8, 10].into_iter().map(uid).collect())
-                .await
-        ));
+        let remote: Vec<_> = vec![1, 2, 3, 4, 5, 8, 10].into_iter().map(uid).collect();
+        let (missing, returned) = assert_ok!(state.state.uids_not_in(remote.clone()).await);
+        assert_is_empty!(missing);
+        assert_eq!(returned, remote);
         assert_eq!(assert_ok!(state.state.uids().await).len(), 4);
     }
 

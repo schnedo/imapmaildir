@@ -116,6 +116,15 @@ impl ResponseData {
         }
     }
 
+    /// Moves the UIDs out of a SEARCH response without copying them
+    pub fn take_search(&mut self) -> Option<Vec<u32>> {
+        if let Response::MailboxData(imap_proto::MailboxDatum::Search(uids)) = &mut self.response {
+            Some(std::mem::take(uids))
+        } else {
+            None
+        }
+    }
+
     pub fn raw(self) -> Bytes {
         self.raw
     }
