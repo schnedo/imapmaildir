@@ -126,7 +126,7 @@ impl SelectedClient {
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
-        let command = format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS, BODY.PEEK[])");
+        let command = format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS BODY.PEEK[])");
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut self.mailbox_handler)
@@ -136,7 +136,7 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all(&mut self) -> Result<(), Error> {
-        let command = "UID FETCH 1:* (UID, ModSeq, FLAGS, BODY.PEEK[])";
+        let command = "UID FETCH 1:* (UID MODSEQ FLAGS BODY.PEEK[])";
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut self.mailbox_handler)
@@ -154,8 +154,7 @@ impl SelectedClient {
         } else {
             ""
         };
-        let command =
-            format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq}{vanished})");
+        let command = format!("UID FETCH 1:* (UID MODSEQ FLAGS) (CHANGEDSINCE {modseq}{vanished})");
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.unsolicited_change = false;
         }
@@ -167,14 +166,14 @@ impl SelectedClient {
         sequence_set: &SequenceSet,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
         self.collect_metadata(
-            format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS)"),
+            format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS)"),
             false,
         )
         .await
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
-        self.collect_metadata("UID FETCH 1:* (UID, ModSeq, FLAGS)".to_string(), true)
+        self.collect_metadata("UID FETCH 1:* (UID MODSEQ FLAGS)".to_string(), true)
             .await
     }
 
