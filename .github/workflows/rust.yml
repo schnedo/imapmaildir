@@ -34,6 +34,10 @@ jobs:
       - name: Run tests
         # todo: have a look at cargo mutants
         run: nix develop -c cargo nextest run --profile ci
+      - name: Run integration tests without QRESYNC
+        run: nix develop -c cargo nextest run --profile ci --test once --test continuous
+        env:
+          IMAPMAILDIR_TEST_NO_QRESYNC: 1
       - name: Lint
         run: nix develop -c cargo clippy --all-targets --all-features
 

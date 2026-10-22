@@ -9,4 +9,3 @@ pub use connection::Error;
 pub use connection::Tls;
 pub use handler::Chain;
 pub use handler::ResponseHandler;
-pub use handler::Unhandled;

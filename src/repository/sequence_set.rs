@@ -104,6 +104,16 @@ impl SequenceSetBuilder {
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
         let mut sorted_nums: Vec<Uid> = self.nums.drain().collect();
         sorted_nums.sort_unstable();
+        SequenceSet::from_sorted(sorted_nums)
+    }
+}
+
+impl SequenceSet {
+    /// Builds a set from ascending, duplicate-free UIDs without rehashing them like
+    /// [`SequenceSetBuilder`]
+    pub fn from_sorted(
+        sorted_nums: impl IntoIterator<Item = Uid>,
+    ) -> std::result::Result<Self, EmptySetError> {
         let mut sorted_nums = sorted_nums.into_iter();
 
         if let Some(first_num) = sorted_nums.next() {

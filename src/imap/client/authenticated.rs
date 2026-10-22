@@ -11,7 +11,7 @@ use crate::{
             encoding,
             fetch::FetchAttributes,
         },
-        transport::{Connection, ResponseData, ResponseHandler, Unhandled},
+        transport::{Connection, ResponseData, ResponseHandler},
     },
     repository::{MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder, UidValidity},
     sync::Task,
@@ -20,23 +20,24 @@ use crate::{
 pub struct AuthenticatedClient {
     connection: Connection,
     capabilities: Capabilities,
+    qresync: bool,
 }
 
 impl AuthenticatedClient {
     pub fn new(connection: Connection, capabilities: Capabilities) -> Result<Self, Error> {
-        for capability in [
-            Capability::Condstore,
-            Capability::Enable,
-            Capability::QResync,
-        ] {
-            if !capabilities.contains(capability) {
-                return Err(Error::MissingCapability(capability));
-            }
+        if !capabilities.contains(Capability::Condstore) {
+            return Err(Error::MissingCapability(Capability::Condstore));
+        }
+        let qresync =
+            capabilities.contains(Capability::QResync) && capabilities.contains(Capability::Enable);
+        if !qresync {
+            log::debug!("server does not support QRESYNC. Falling back to CONDSTORE");
         }
 
         Ok(Self {
             connection,
             capabilities,
+            qresync,
         })
     }
 
@@ -53,32 +54,50 @@ impl AuthenticatedClient {
         task_tx: MAsyncTx<Array<Task>>,
         mailbox: &str,
     ) -> Result<Selection, Error> {
-        self.enable_qresync().await?;
+        if self.qresync {
+            self.enable_qresync().await?;
+        }
         let command = format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox));
 
         self.do_select(task_tx, &command, None).await
     }
 
-    pub async fn qresync_select(
+    /// Selects `mailbox` and reports changes since `highest_modseq` if the server supports QRESYNC
+    pub async fn resync_select(
         mut self,
         task_tx: MAsyncTx<Array<Task>>,
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
     ) -> Result<Selection, Error> {
-        self.enable_qresync().await?;
-        let command = format!(
-            "SELECT {} (QRESYNC ({uid_validity} {highest_modseq}))",
-            encoding::mailbox(mailbox)
-        );
+        let command = if self.qresync {
+            self.enable_qresync().await?;
+            format!(
+                "SELECT {} (QRESYNC ({uid_validity} {highest_modseq}))",
+                encoding::mailbox(mailbox)
+            )
+        } else {
+            format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox))
+        };
 
         self.do_select(task_tx, &command, Some(uid_validity)).await
     }
 
+    /// Enables QRESYNC if supported. Must not be sent otherwise, as servers may reject ENABLE or
+    /// enable QRESYNC without advertising it, replacing EXPUNGE with VANISHED. Falls back to
+    /// CONDSTORE if the server does not confirm enabling it, as it keeps sending EXPUNGE then.
     async fn enable_qresync(&mut self) -> Result<(), Error> {
+        if !self.qresync {
+            return Ok(());
+        }
         let command = "ENABLE QRESYNC";
         log::debug!("{command}");
-        self.connection.send(command.into(), &mut Unhandled).await?;
+        let mut handler = EnabledHandler::default();
+        self.connection.send(command.into(), &mut handler).await?;
+        if !handler.enabled.contains(Capability::QResync) {
+            log::warn!("server did not enable QRESYNC. Falling back to CONDSTORE");
+            self.qresync = false;
+        }
 
         Ok(())
     }
@@ -116,6 +135,7 @@ impl AuthenticatedClient {
         let client = SelectedClient::new(
             self.connection,
             &self.capabilities,
+            self.qresync,
             task_tx,
             exists.ok_or(Error::MissingExists)?,
         )?;
@@ -125,6 +145,39 @@ impl AuthenticatedClient {
             remote_changes: RemoteChanges { updates, deletions },
             mailbox_data,
         })
+    }
+}
+
+/// Collects capabilities of ENABLED responses
+#[derive(Default)]
+struct EnabledHandler {
+    enabled: Capabilities,
+}
+
+impl ResponseHandler for EnabledHandler {
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(Ok(self.collect(response)))
+    }
+}
+
+impl EnabledHandler {
+    fn collect(&mut self, response: ResponseData) -> Option<ResponseData> {
+        if let imap_proto::Response::Capabilities(capabilities) = response.parsed() {
+            for capability in capabilities {
+                match capability {
+                    imap_proto::Capability::Atom(_) => self.enabled.insert(capability),
+                    _ => log::warn!("unexpected enabled capability {capability:?}"),
+                }
+            }
+            None
+        } else {
+            Some(response)
+        }
     }
 }
 
@@ -296,5 +349,23 @@ mod tests {
             .map(u32::from)
             .collect();
         assert_eq!(deletions, vec![1, 2, 3, 7]);
+    }
+
+    #[test]
+    fn test_enabled_handler_collects_enabled_capabilities() {
+        let mut handler = EnabledHandler::default();
+
+        assert_none!(handler.collect(ResponseData::from_raw(b"* ENABLED QRESYNC\r\n")));
+
+        assert!(handler.enabled.contains(Capability::QResync));
+    }
+
+    #[test]
+    fn test_enabled_handler_without_qresync() {
+        let mut handler = EnabledHandler::default();
+
+        assert_none!(handler.collect(ResponseData::from_raw(b"* ENABLED\r\n")));
+
+        assert!(!handler.enabled.contains(Capability::QResync));
     }
 }

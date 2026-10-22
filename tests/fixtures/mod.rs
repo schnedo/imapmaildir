@@ -494,6 +494,22 @@ fn fix_permissions(path: &Path) {
 
 const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
+/// Disables QRESYNC on the server if `IMAPMAILDIR_TEST_NO_QRESYNC` is set to test the CONDSTORE
+/// fallback
+fn dovecot_config(tmp_dir: &Path) -> String {
+    let config = mock_path!("dovecot.conf");
+    if std::env::var_os("IMAPMAILDIR_TEST_NO_QRESYNC").is_none() {
+        return config.to_string();
+    }
+    let mut content = assert_ok!(fs::read_to_string(config));
+    content.push_str("\nimap_capability {\n  QRESYNC = no\n}\n");
+    let path = tmp_dir.join("dovecot.conf");
+    assert_ok!(fs::write(&path, content));
+    fix_permissions(&path);
+
+    path.to_string_lossy().into_owned()
+}
+
 #[fixture]
 pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     let password = "password".to_string();
@@ -503,6 +519,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     let server_dir = tmp_dir.path().join("remote");
     copy_dir(mock_path!("data/remote"), &server_dir);
     fix_permissions(&server_dir);
+    let dovecot_config = dovecot_config(tmp_dir.path());
     let container = assert_ok!(
         GenericImage::new("dovecot/dovecot", "2.4.4-dev")
             .with_exposed_port(IMAPS_PORT)
@@ -516,7 +533,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
                     .with_access_mode(AccessMode::ReadOnly),
             )
             .with_mount(
-                Mount::bind_mount(mock_path!("dovecot.conf"), "/etc/dovecot/dovecot.conf")
+                Mount::bind_mount(dovecot_config, "/etc/dovecot/dovecot.conf")
                     .with_access_mode(AccessMode::ReadOnly),
             )
             .with_mount(Mount::bind_mount(

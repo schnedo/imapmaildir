@@ -215,3 +215,134 @@ async fn test_local_mail_delivered_to_new_is_synced(#[future] mail_setup: MailSe
     assert_eq!(assert_ok!(maildir.join("new").read_dir()).count(), 0);
     drop(handle);
 }
+
+async fn wait_for_absence(mailbox: &impl Maildir, uid: u64) {
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            while mailbox.mails().await.iter().any(|mail| mail.uid() == uid) {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_remote_deletion_is_synced(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let (handle, call_rx) = mail_setup.sync_continuous("INBOX").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let server_mail = assert_some!(server_mailbox.mails().await.into_iter().next());
+    let uid = server_mail.uid();
+    server_mail.delete();
+
+    wait_for_absence(&client_mailbox, uid).await;
+    drop(handle);
+    while call_rx.recv().await.is_ok() {}
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_concurrent_local_and_remote_deletion_are_synced(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let (handle, call_rx) = mail_setup.sync_continuous("INBOX").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut server_mails = server_mailbox.mails().await.into_iter();
+    let remote_deleted = assert_some!(server_mails.next());
+    let local_deleted_uid = assert_some!(server_mails.next()).uid();
+    let remote_deleted_uid = remote_deleted.uid();
+    let local_deleted = assert_some!(
+        client_mailbox
+            .mails()
+            .await
+            .into_iter()
+            .find(|mail| mail.uid() == local_deleted_uid)
+    );
+    remote_deleted.delete();
+    local_deleted.delete();
+
+    wait_for_absence(&client_mailbox, remote_deleted_uid).await;
+    wait_for_absence(&server_mailbox, local_deleted_uid).await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+    let client_uids: HashSet<_> = client_mailbox
+        .mails()
+        .await
+        .iter()
+        .map(MailFile::uid)
+        .collect();
+    let server_uids: HashSet<_> = server_mailbox
+        .mails()
+        .await
+        .iter()
+        .map(MailFile::uid)
+        .collect();
+    assert_eq!(client_uids, server_uids);
+    drop(handle);
+    while call_rx.recv().await.is_ok() {}
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_local_deletion_of_uploaded_mail_is_synced(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let (handle, call_rx) = mail_setup.sync_continuous("INBOX").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let maildir = mail_setup.config().maildir_base_path().join("INBOX");
+    let content = b"uploaded then deleted".as_slice();
+    assert_ok!(fs::write(maildir.join("tmp/uploaded"), content));
+    assert_ok!(fs::rename(
+        maildir.join("tmp/uploaded"),
+        maildir.join("new/uploaded")
+    ));
+    let uid = assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(mail) = server_mailbox
+                    .mails()
+                    .await
+                    .into_iter()
+                    .find(|mail| mail.content() == content)
+                {
+                    break mail.uid();
+                }
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+    let uploaded = assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(mail) = client_mailbox
+                    .mails()
+                    .await
+                    .into_iter()
+                    .find(|mail| mail.uid() == uid)
+                {
+                    break mail;
+                }
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+
+    uploaded.delete();
+
+    wait_for_absence(&server_mailbox, uid).await;
+    drop(handle);
+    while call_rx.recv().await.is_ok() {}
+}

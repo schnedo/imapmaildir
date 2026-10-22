@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::{
     imap::{RemoteMailMetadata, client::Error},
-    repository::Flag,
+    repository::{Flag, Uid},
 };
 
 #[derive(Debug, Default)]
@@ -29,13 +29,21 @@ impl<'a> FetchAttributes<'a> {
         parsed
     }
 
+    /// Returns `None` if UID, MODSEQ or FLAGS is missing, i.e. the FETCH carries no full metadata
+    /// and may be meant for another handler. Errors only on invalid values
     pub fn metadata(&self) -> Result<Option<RemoteMailMetadata>, Error> {
-        let (Some(uid), Some(modseq), Some(flags)) = (self.uid, self.modseq, self.flags) else {
+        self.metadata_with_uid(self.uid.map(Uid::try_from).transpose()?)
+    }
+
+    /// Like [`Self::metadata`] but with a UID resolved elsewhere, e.g. for unsolicited FETCH
+    /// responses without UID. Returns `None` if `uid`, MODSEQ or FLAGS is missing
+    pub fn metadata_with_uid(&self, uid: Option<Uid>) -> Result<Option<RemoteMailMetadata>, Error> {
+        let (Some(uid), Some(modseq), Some(flags)) = (uid, self.modseq, self.flags) else {
             return Ok(None);
         };
 
         Ok(Some(RemoteMailMetadata::new(
-            uid.try_into()?,
+            uid,
             Flag::into_bitflags(flags),
             modseq.try_into().map_err(Error::InvalidModSeq)?,
         )))
@@ -80,5 +88,18 @@ mod tests {
 
         assert_none!(assert_ok!(parsed.metadata()));
         assert_some!(parsed.uid);
+    }
+
+    #[test]
+    fn test_metadata_with_uid_resolves_uidless_fetch() {
+        let (_, attributes) = parse_fetch(b"* 2 FETCH (FLAGS (\\Seen) MODSEQ (5))\r\n");
+
+        let parsed = FetchAttributes::parse(&attributes);
+
+        assert_none!(assert_ok!(parsed.metadata()));
+        let uid = assert_ok!(Uid::try_from(7));
+        let metadata = assert_some!(assert_ok!(parsed.metadata_with_uid(Some(uid))));
+        assert_eq!(metadata.uid(), uid);
+        assert_eq!(metadata.flags(), Flag::Seen);
     }
 }

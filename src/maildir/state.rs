@@ -413,6 +413,21 @@ impl State {
         .await
     }
 
+    /// Stored UIDs missing from `uids` in ascending order, e.g. mails deleted remotely
+    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
+        log::trace!("getting stored uids not in {} uids", uids.len());
+        self.call(move |db| {
+            // filtering in rust is several times faster than a temp table or rarray in sqlite
+            let uids: HashSet<u32> = uids.into_iter().map(u32::from).collect();
+            let mut stmt = db.prepare_cached("select uid from mail_metadata order by uid")?;
+            stmt.query_map([], |row| row.get::<_, u32>(0))?
+                .filter(|uid| uid.as_ref().map_or(true, |uid| !uids.contains(uid)))
+                .map(|uid| Uid::try_from(uid?).map_err(|_| Error::Conversion))
+                .collect()
+        })
+        .await
+    }
+
     pub async fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
         log::trace!("getting all stored mail metadata");
         let (entries, current_highest_modseq) = self
@@ -608,9 +623,7 @@ mod tests {
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_get_all_by_id_returns_existing_entries_across_chunks(
-        #[future] state: TestState,
-    ) {
+    async fn test_get_all_by_id_returns_existing_entries_across_chunks(#[future] state: TestState) {
         let uid = |uid: u32| assert_ok!(Uid::try_from(uid));
         let stored: Vec<_> = (1..=600)
             .map(|i| LocalMailMetadata::new(uid(i), Flag::Seen.into(), Some(i.to_string())))
@@ -751,6 +764,33 @@ mod tests {
             assert_ok!(state.state.uids().await),
             HashSet::from([metadata.uid()])
         );
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_uids_not_in_returns_missing_uids_sorted(#[future] state: TestState) {
+        let uid = |uid: u32| assert_ok!(Uid::try_from(uid));
+        let entries = [5, 1, 3, 8]
+            .into_iter()
+            .map(|u| LocalMailMetadata::new(uid(u), Flag::Seen.into(), Some(format!("prefix{u}"))))
+            .collect();
+        assert_ok!(state.state.insert_all(entries).await);
+
+        assert_eq!(
+            assert_ok!(
+                state
+                    .state
+                    .uids_not_in(vec![3, 9, 3].into_iter().map(uid).collect())
+                    .await
+            ),
+            vec![uid(1), uid(5), uid(8)]
+        );
+        assert_eq!(
+            assert_ok!(state.state.uids_not_in(vec![uid(1), uid(5), uid(8)]).await),
+            vec![uid(3)]
+        );
+        assert_eq!(assert_ok!(state.state.uids().await).len(), 4);
     }
 
     #[rstest]

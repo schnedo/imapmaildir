@@ -198,7 +198,9 @@ impl Display for LocalMailMetadata {
 }
 
 fn write_flags(f: &mut std::fmt::Formatter<'_>, flags: BitFlags<Flag>) -> std::fmt::Result {
-    flags.iter().try_for_each(|flag| f.write_char(char::from(flag)))
+    flags
+        .iter()
+        .try_for_each(|flag| f.write_char(char::from(flag)))
 }
 
 #[derive(Debug, Error)]

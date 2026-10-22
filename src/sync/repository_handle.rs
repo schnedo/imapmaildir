@@ -79,4 +79,9 @@ impl RepositoryHandle {
     pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {
         self.request(Task::HighestModseq).await
     }
+
+    /// Stored UIDs missing from `uids` in ascending order
+    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
+        self.request(|reply| Task::UidsNotIn(uids, reply)).await
+    }
 }

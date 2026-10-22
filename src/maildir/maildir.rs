@@ -344,27 +344,21 @@ impl Maildir {
                         });
                         match filename {
                             Err(err) => list_tx.send(Err(err)).await?,
-                            Ok(filename) => {
-                                match filename.parse() {
-                                    Ok(entry) => list_tx.send(Ok(entry)).await?,
-                                    Err(_) => {
-                                        match Self::handle_new_unstructured_file(
-                                            &watch, &cur, filename,
-                                        )
+                            Ok(filename) => match filename.parse() {
+                                Ok(entry) => list_tx.send(Ok(entry)).await?,
+                                Err(_) => {
+                                    match Self::handle_new_unstructured_file(&watch, &cur, filename)
                                         .await
-                                        {
-                                            Ok(metadata) => {
-                                                list_tx
-                                                    .send(Ok(MaildirEntry::New(metadata)))
-                                                    .await?;
-                                            }
-                                            Err(err) => {
-                                                list_tx.send(Err(err.into())).await?;
-                                            }
+                                    {
+                                        Ok(metadata) => {
+                                            list_tx.send(Ok(MaildirEntry::New(metadata))).await?;
+                                        }
+                                        Err(err) => {
+                                            list_tx.send(Err(err.into())).await?;
                                         }
                                     }
                                 }
-                            }
+                            },
                         }
                     }
                     Err(err) => list_tx.send(Err(err.into())).await?,
