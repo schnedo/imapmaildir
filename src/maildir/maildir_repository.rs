@@ -394,7 +394,7 @@ impl MaildirRepository {
         self.maildir.move_new_to_cur().await?;
         let maildir_metadata = self.maildir.list_cur()?;
 
-        let mut maildir_mails = HashMap::new();
+        let mut maildir_mails: HashMap<Uid, Vec<LocalMailMetadata>> = HashMap::new();
 
         let mut new_metadata = Vec::new();
         while let Ok(metadata) = maildir_metadata.recv().await {
@@ -411,18 +411,29 @@ impl MaildirRepository {
                     new_metadata.push(new_local_mail_metadata);
                 }
                 maildir::MaildirEntry::MaybeTracked(local_mail_metadata) => {
-                    maildir_mails.insert(local_mail_metadata.uid(), local_mail_metadata);
+                    maildir_mails
+                        .entry(local_mail_metadata.uid())
+                        .or_default()
+                        .push(local_mail_metadata);
                 }
             }
         }
         let mut updates = LocalFlagChangesBuilder::default();
         let mut missing = Vec::new();
+        let mut duplicates = Vec::new();
 
         self.state
             .fore_each(|entry| {
                 let uid = entry.uid();
-                if let Some(data) = maildir_mails.remove(&uid) {
+                if let Some(mut files) = maildir_mails.remove(&uid) {
+                    // e.g. copies by other clients carry the same uid, but a different prefix
+                    let tracked = files
+                        .iter()
+                        .position(|file| file.fileprefix() == entry.fileprefix())
+                        .unwrap_or_default();
+                    let data = files.swap_remove(tracked);
                     Self::update_flag_changes(&mut updates, &entry, &data);
+                    duplicates.extend(files);
                 } else {
                     missing.push(entry);
                 }
@@ -436,7 +447,7 @@ impl MaildirRepository {
                 deletions.push(entry.uid());
             }
         }
-        let untracked = stream::iter(maildir_mails.into_values())
+        let untracked = stream::iter(maildir_mails.into_values().flatten().chain(duplicates))
             .map(|maildata| self.maildir.remove_uid(maildata))
             .buffered(MAX_CONCURRENT_FILE_OPS)
             .filter_map(|result| {
@@ -1201,6 +1212,29 @@ mod tests {
         let changes = assert_ok!(repo.repo.detect_changes().await);
         assert_eq!(changes.deletions, vec![vanished_uid]);
         assert_len_eq_x!(changes.news, 0);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_detect_changes_treats_copy_with_same_uid_as_new(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        let copy = LocalMailMetadata::new(uid, tracked.flags(), Some("copy".to_string()));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        assert_ok!(fs::copy(
+            cur.join(tracked.filename()),
+            cur.join(copy.filename())
+        ));
+
+        let result = assert_ok!(repo.detect_changes().await);
+
+        assert_len_eq_x!(result.deletions, 0);
+        assert_eq!(result.news, vec![NewLocalMailMetadata::from(copy)]);
+        assert!(cur.join(tracked.filename()).exists());
     }
 
     #[rstest]
