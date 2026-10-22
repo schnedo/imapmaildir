@@ -35,6 +35,10 @@ pub enum IdleStopReason {
     LocalError(MaildirError),
 }
 
+/// Bounds the commands sent before receiving completions, so that neither side blocks on full
+/// socket buffers while the other is still sending
+const MAX_PIPELINED_COMMANDS: usize = 64;
+
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
@@ -311,8 +315,9 @@ impl SelectedClient {
         Ok(rejected)
     }
 
-    /// Stores flags of `pending` mails grouped by their UNCHANGEDSINCE modseq. Updates the
-    /// modseqs of stored mails and removes rejected ones, returning them.
+    /// Stores flags of `pending` mails grouped by their UNCHANGEDSINCE modseq, pipelining the
+    /// commands of all groups. Updates the modseqs of stored mails and removes rejected ones,
+    /// returning them.
     async fn store_flags_grouped(
         &mut self,
         pending: &mut HashMap<Uid, ModSeq>,
@@ -323,12 +328,16 @@ impl SelectedClient {
         for (uid, modseq) in pending.iter() {
             groups.entry(*modseq).or_default().push(*uid);
         }
+        let groups: Vec<_> = groups
+            .into_iter()
+            .map(|(unchanged_since, uids)| {
+                let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
+                (unchanged_since, set)
+            })
+            .collect();
         let mut rejected = HashSet::new();
-        for (unchanged_since, uids) in groups {
-            let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
-            let (modified, modseqs) = self
-                .store_flags(unchanged_since, operation, flags, &set)
-                .await?;
+        for groups in groups.chunks(MAX_PIPELINED_COMMANDS) {
+            let (modified, modseqs) = self.store_flags(groups, operation, flags).await?;
             for (uid, modseq) in modseqs {
                 if let Some(pending_modseq) = pending.get_mut(&uid) {
                     *pending_modseq = modseq;
@@ -343,18 +352,25 @@ impl SelectedClient {
         Ok(rejected)
     }
 
+    /// Pipelines a `UID STORE` per group of UNCHANGEDSINCE modseq and UIDs. Pipelining is safe,
+    /// as the groups are disjoint.
     async fn store_flags(
         &mut self,
-        unchanged_since: ModSeq,
+        groups: &[(ModSeq, SequenceSet)],
         operation: char,
         flags: BitFlags<Flag>,
-        sequence_set: &SequenceSet,
     ) -> Result<(HashSet<Uid>, HashMap<Uid, ModSeq>), Error> {
         let flags = Flag::format(flags).unwrap_or_default();
-        let command = format!(
-            "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}FLAGS.SILENT ({flags})"
-        );
-        log::debug!("{command}");
+        let commands = groups
+            .iter()
+            .map(|(unchanged_since, sequence_set)| {
+                let command = format!(
+                    "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}FLAGS.SILENT ({flags})"
+                );
+                log::debug!("{command}");
+                command.into_bytes()
+            })
+            .collect();
 
         let store_handler = StoreHandler {
             sequences: self.mailbox_handler.tracking.is_some().then(Vec::new),
@@ -364,9 +380,9 @@ impl SelectedClient {
             tracking.uid_map.begin_command();
         }
         let mut handler = Chain(store_handler, &mut self.mailbox_handler);
-        let response = self
+        let responses = self
             .connection
-            .send(command.into_bytes(), &mut handler)
+            .send_pipelined(commands, &mut handler)
             .await?;
         let StoreHandler { modseqs, sequences } = handler.0;
         self.own_modseqs.record(&modseqs);
@@ -374,7 +390,10 @@ impl SelectedClient {
         if let Some(sequences) = sequences {
             self.mailbox_handler.apply_fetched_uids(sequences);
         }
-        let modified = modified_uids(&response)?;
+        let mut modified = HashSet::new();
+        for response in &responses {
+            modified.extend(modified_uids(response)?);
+        }
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not updating their flags");
         }
