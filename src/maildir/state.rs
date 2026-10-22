@@ -413,17 +413,25 @@ impl State {
         .await
     }
 
-    /// Stored UIDs missing from `uids` in ascending order, e.g. mails deleted remotely
+    /// Stored UIDs missing from the ascending `uids` in ascending order, e.g. mails deleted
+    /// remotely
     pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
         log::trace!("getting stored uids not in {} uids", uids.len());
+        debug_assert!(uids.is_sorted());
         self.call(move |db| {
-            // filtering in rust is several times faster than a temp table or rarray in sqlite
-            let uids: HashSet<u32> = uids.into_iter().map(u32::from).collect();
+            // merging in rust is several times faster than a temp table or rarray in sqlite
+            let mut uids = uids.into_iter().peekable();
+            let mut missing = Vec::new();
             let mut stmt = db.prepare_cached("select uid from mail_metadata order by uid")?;
-            stmt.query_map([], |row| row.get::<_, u32>(0))?
-                .filter(|uid| uid.as_ref().map_or(true, |uid| !uids.contains(uid)))
-                .map(|uid| Uid::try_from(uid?).map_err(|_| Error::Conversion))
-                .collect()
+            for stored in stmt.query_map([], |row| row.get::<_, u32>(0))? {
+                let stored = Uid::try_from(stored?).map_err(|_| Error::Conversion)?;
+                while uids.next_if(|uid| *uid < stored).is_some() {}
+                if uids.next_if_eq(&stored).is_none() {
+                    missing.push(stored);
+                }
+            }
+
+            Ok(missing)
         })
         .await
     }
@@ -781,7 +789,7 @@ mod tests {
             assert_ok!(
                 state
                     .state
-                    .uids_not_in(vec![3, 9, 3].into_iter().map(uid).collect())
+                    .uids_not_in(vec![3, 3, 9].into_iter().map(uid).collect())
                     .await
             ),
             vec![uid(1), uid(5), uid(8)]
@@ -790,6 +798,16 @@ mod tests {
             assert_ok!(state.state.uids_not_in(vec![uid(1), uid(5), uid(8)]).await),
             vec![uid(3)]
         );
+        assert_eq!(
+            assert_ok!(state.state.uids_not_in(Vec::new()).await),
+            vec![uid(1), uid(3), uid(5), uid(8)]
+        );
+        assert_is_empty!(assert_ok!(
+            state
+                .state
+                .uids_not_in(vec![1, 2, 3, 4, 5, 8, 10].into_iter().map(uid).collect())
+                .await
+        ));
         assert_eq!(assert_ok!(state.state.uids().await).len(), 4);
     }
 
