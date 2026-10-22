@@ -41,7 +41,9 @@ static GET_ALL_BY_ID_QUERY: LazyLock<String> = LazyLock::new(|| {
 fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     MIGRATIONS.to_latest(db)?;
     db.pragma_update(None, "journal_mode", "wal")?;
-    db.pragma_update(None, "synchronous", "normal")?;
+    // commits must be durable before renaming mails accordingly, otherwise a power loss makes
+    // e.g. uploaded mails look untracked, which uploads them again
+    db.pragma_update(None, "synchronous", "full")?;
 
     Ok(())
 }
