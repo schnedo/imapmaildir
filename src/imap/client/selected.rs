@@ -93,14 +93,13 @@ impl SelectedClient {
         log::debug!("{command}");
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.unknown_expunged = false;
+            tracking.uid_map.begin_command();
         }
         let mut handler = Chain(SearchCollector::default(), &mut self.mailbox_handler);
         self.connection.send(command.into(), &mut handler).await?;
         let uids = handler.0.into_sorted_uids();
         let exists = self.mailbox_handler.message_count.exists();
-        if let Some(tracking) = &mut self.mailbox_handler.tracking {
-            tracking.uid_map.seed(&uids, exists);
-        }
+        self.mailbox_handler.seed_uids(&uids, exists);
 
         Ok(plausible_search_result(uids, exists))
     }
@@ -819,6 +818,20 @@ impl MailboxHandler {
         }
     }
 
+    /// Replaces the sequence to UID map with the UIDs of a `UID SEARCH ALL`. Skipped if mails got
+    /// expunged meanwhile, as the result may predate them while new mails keep the count
+    /// matching. The current map stays consistent then, as it processed the expunges itself.
+    fn seed_uids(&mut self, uids: &[Uid], exists: u32) {
+        let Some(SequenceTracking { uid_map, .. }) = &mut self.tracking else {
+            return;
+        };
+        if uid_map.expunged_in_command() > 0 {
+            log::debug!("not seeding sequence to uid map due to concurrent expunge");
+            return;
+        }
+        uid_map.seed(uids, exists);
+    }
+
     fn needs_remote_sync(&self) -> bool {
         self.message_count.has_unknown()
             || self
@@ -1011,6 +1024,30 @@ mod tests {
         handle(&mut handler, b"* 2 EXPUNGE\r\n").await;
         assert!(task_rx.try_recv().is_err());
         assert!(assertables::assert_some!(&handler.tracking).unknown_expunged);
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_skips_seed_after_concurrent_expunge() {
+        let (mut handler, task_rx) = mailbox_handler(3);
+        handler.seed_uids(&[uid(1), uid(2), uid(3)], 3);
+        assertables::assert_some!(handler.tracking.as_mut())
+            .uid_map
+            .begin_command();
+
+        // SEARCH returned UIDs 1 to 3, then UID 1 got expunged and UID 4 arrived
+        handle(&mut handler, b"* 1 EXPUNGE\r\n").await;
+        handle(&mut handler, b"* 3 EXISTS\r\n").await;
+        handler.seed_uids(&[uid(1), uid(2), uid(3)], 3);
+
+        let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
+            panic!("expunge should be resolved to deletion");
+        };
+        assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(1)]);
+        handle(&mut handler, b"* 1 EXPUNGE\r\n").await;
+        let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
+            panic!("expunge should be resolved to deletion");
+        };
+        assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(2)]);
     }
 
     #[compio::test]
