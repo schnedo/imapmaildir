@@ -49,9 +49,9 @@ pub enum Error {
     #[error("Server did not respond to APPEND with APPENDUID")]
     MissingAppendUid,
     #[error(
-        "Server returned no uids on UID SEARCH ALL for mailbox with {0} messages. Refusing to delete all local mails"
+        "Server returned no uids for mailbox with {0} messages. Refusing to delete all local mails"
     )]
-    ImplausibleSearchResult(u32),
+    ImplausibleUidList(u32),
     #[error("Server rejected IDLE")]
     IdleRejected,
     #[error("Idle stop channel closed")]

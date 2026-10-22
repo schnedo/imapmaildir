@@ -126,7 +126,7 @@ impl MaildirRepository {
         self.state.uids().await
     }
 
-    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<(Vec<Uid>, Vec<Uid>), state::Error> {
+    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, state::Error> {
         self.state.uids_not_in(uids).await
     }
 

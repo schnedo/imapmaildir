@@ -268,8 +268,7 @@ impl Syncer {
         repository: &RepositoryHandle,
     ) -> Result<Option<SequenceSet>, Error> {
         let remote_uids = client.remote_uids().await?;
-        let (missing_uids, remote_uids) = repository.uids_not_in(remote_uids).await?;
-        client.seed_remote_uids(remote_uids);
+        let missing_uids = repository.uids_not_in(remote_uids).await?;
 
         Ok(SequenceSet::from_sorted(missing_uids).ok())
     }
@@ -319,7 +318,7 @@ impl Syncer {
         let synced = async {
             let mut synced_modseq = mailbox_data.highest_modseq();
             if !client.supports_qresync() {
-                // searching first seeds the sequence to uid map, so the fetch needs not fill it
+                // fetching all uids first seeds the sequence to uid map, so the fetch needs not fill it
                 let deletions = Self::remote_deletions(&mut client, &repository).await?;
                 let updates = client.fetch_changes_since(highest_modseq).await?;
                 // updates got fetched after SELECT, so they may be newer than its HIGHESTMODSEQ

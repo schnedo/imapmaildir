@@ -414,8 +414,8 @@ impl State {
     }
 
     /// Stored UIDs missing from the ascending `uids` in ascending order, e.g. mails deleted
-    /// remotely. Returns `uids` back as second element to let callers reuse them.
-    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<(Vec<Uid>, Vec<Uid>), Error> {
+    /// remotely
+    pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
         log::trace!("getting stored uids not in {} uids", uids.len());
         debug_assert!(uids.is_sorted());
         self.call(move |db| {
@@ -431,7 +431,7 @@ impl State {
                 }
             }
 
-            Ok((missing, uids))
+            Ok(missing)
         })
         .await
     }
@@ -791,22 +791,19 @@ mod tests {
                     .state
                     .uids_not_in(vec![3, 3, 9].into_iter().map(uid).collect())
                     .await
-            )
-            .0,
+            ),
             vec![uid(1), uid(5), uid(8)]
         );
         assert_eq!(
-            assert_ok!(state.state.uids_not_in(vec![uid(1), uid(5), uid(8)]).await).0,
+            assert_ok!(state.state.uids_not_in(vec![uid(1), uid(5), uid(8)]).await),
             vec![uid(3)]
         );
         assert_eq!(
-            assert_ok!(state.state.uids_not_in(Vec::new()).await).0,
+            assert_ok!(state.state.uids_not_in(Vec::new()).await),
             vec![uid(1), uid(3), uid(5), uid(8)]
         );
         let remote: Vec<_> = vec![1, 2, 3, 4, 5, 8, 10].into_iter().map(uid).collect();
-        let (missing, returned) = assert_ok!(state.state.uids_not_in(remote.clone()).await);
-        assert_is_empty!(missing);
-        assert_eq!(returned, remote);
+        assert_is_empty!(assert_ok!(state.state.uids_not_in(remote).await));
         assert_eq!(assert_ok!(state.state.uids().await).len(), 4);
     }
 
