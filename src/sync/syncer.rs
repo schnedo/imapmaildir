@@ -268,7 +268,8 @@ impl Syncer {
         repository: &RepositoryHandle,
     ) -> Result<Option<SequenceSet>, Error> {
         let remote_uids = client.remote_uids().await?;
-        let missing_uids = repository.uids_not_in(remote_uids).await?;
+        let (missing_uids, remote_uids) = repository.uids_not_in(remote_uids).await?;
+        client.seed_remote_uids(remote_uids);
 
         Ok(SequenceSet::from_sorted(missing_uids).ok())
     }

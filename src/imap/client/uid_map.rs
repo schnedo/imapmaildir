@@ -99,15 +99,15 @@ impl UidMap {
     }
 
     /// Replaces the map with the complete, ascending and duplicate-free UID list of the mailbox
-    pub fn seed(&mut self, uids: &[Uid], exists: u32) {
+    pub fn seed(&mut self, uids: Vec<Uid>, exists: u32) {
         debug_assert!(uids.is_sorted());
         self.gap_start = 0;
         self.gap_end = 0;
         self.valid = uids.len() == exists as usize;
         self.unknown = if self.valid { 0 } else { exists as usize };
         if self.valid {
-            self.slots.clear();
-            self.slots.extend(uids.iter().copied().map(Some));
+            // reuses the allocation of uids, as Option<Uid> has the layout of Uid
+            self.slots = uids.into_iter().map(Some).collect();
         } else {
             log::debug!(
                 "not seeding sequence to uid map with {} uids for {exists} messages",
@@ -211,7 +211,7 @@ mod tests {
         let exists = assert_ok!(u32::try_from(uids.len()));
         let mut map = UidMap::new(exists);
         let uids: Vec<Uid> = uids.iter().map(|u| uid(*u)).collect();
-        map.seed(&uids, exists);
+        map.seed(uids, exists);
         assert!(map.is_valid());
         map
     }
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_seed_with_wrong_count_invalidates() {
         let mut map = UidMap::new(2);
-        map.seed(&[uid(1)], 2);
+        map.seed(vec![uid(1)], 2);
 
         assert!(!map.is_valid());
     }
