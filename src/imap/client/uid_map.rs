@@ -17,6 +17,8 @@ pub struct UidMap {
     valid: bool,
     /// Expunges since [`Self::begin_command`]
     expunged: usize,
+    /// Slots with unknown UID. Only accurate while valid
+    unknown: usize,
 }
 
 impl UidMap {
@@ -27,7 +29,14 @@ impl UidMap {
             gap_end: 0,
             valid: true,
             expunged: 0,
+            unknown: exists as usize,
         }
+    }
+
+    /// Whether learning UIDs of fetched mails could resolve later responses. False if all UIDs are
+    /// known or the map is invalid, as only seeding validates it again.
+    pub fn needs_uids(&self) -> bool {
+        self.valid && self.unknown > 0
     }
 
     #[cfg(test)]
@@ -95,6 +104,7 @@ impl UidMap {
         self.gap_start = 0;
         self.gap_end = 0;
         self.valid = uids.len() == exists as usize;
+        self.unknown = if self.valid { 0 } else { exists as usize };
         if self.valid {
             self.slots.clear();
             self.slots.extend(uids.iter().copied().map(Some));
@@ -130,6 +140,7 @@ impl UidMap {
             self.gap_end = exists;
         } else {
             // slots after the gap are the last messages, so pushing to slots appends messages
+            self.unknown += exists - len;
             self.slots.resize(self.slots.len() + exists - len, None);
         }
     }
@@ -144,6 +155,9 @@ impl UidMap {
         self.move_gap(index);
         let uid = self.slots[self.gap_end];
         self.gap_end += 1;
+        if uid.is_none() {
+            self.unknown = self.unknown.saturating_sub(1);
+        }
 
         if self.valid { uid } else { None }
     }
@@ -170,6 +184,7 @@ impl UidMap {
                     return None;
                 }
                 self.slots[slot] = Some(uid);
+                self.unknown = self.unknown.saturating_sub(1);
             }
             _ => {}
         }
@@ -352,6 +367,28 @@ mod tests {
         assert_none!(map.on_expunge(2));
         assert!(map.is_valid());
         assert_eq!(map.on_expunge(1), Some(uid(3)));
+    }
+
+    #[test]
+    fn test_needs_uids_until_all_known() {
+        let mut map = seeded(&[3]);
+        assert!(!map.needs_uids());
+
+        map.on_exists(3);
+        assert!(map.needs_uids());
+        assert_none!(map.on_expunge(3));
+        assert!(map.needs_uids());
+        assert_some!(map.on_fetch(2, Some(uid(5))));
+        assert!(!map.needs_uids());
+    }
+
+    #[test]
+    fn test_invalid_map_needs_no_uids() {
+        let mut map = UidMap::new(2);
+        assert!(map.needs_uids());
+
+        map.on_exists(1);
+        assert!(!map.needs_uids());
     }
 
     #[test]
