@@ -808,10 +808,11 @@ impl ResponseHandler for MailboxHandler {
             imap_proto::Response::Vanished { earlier, uids } => {
                 log::trace!("VANISHED earlier {earlier:?} uids: {uids:?}");
                 if !earlier {
+                    // ranges may be reversed (RFC 3501 9)
                     let count = uids
                         .iter()
-                        .map(|range| range.end() - range.start() + 1)
-                        .sum();
+                        .map(|range| range.end().abs_diff(*range.start()).saturating_add(1))
+                        .fold(0u32, u32::saturating_add);
                     self.message_count.on_expunge(count);
                 }
                 self.send(Task::Delete(uids.try_into()?)).await?;

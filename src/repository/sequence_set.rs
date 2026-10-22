@@ -60,14 +60,16 @@ impl Display for SequenceRange {
 impl TryFrom<&RangeInclusive<u32>> for SequenceRange {
     type Error = <Uid as TryFrom<u32>>::Error;
 
+    /// Normalizes reversed ranges, as servers may send e.g. `4:2` for `2:4` (RFC 3501 9)
     fn try_from(value: &RangeInclusive<u32>) -> std::result::Result<Self, Self::Error> {
-        if value.start() == value.end() {
-            Ok(SequenceRange::single(value.start().try_into()?))
+        let (start, end) = (
+            *value.start().min(value.end()),
+            *value.start().max(value.end()),
+        );
+        if start == end {
+            Ok(SequenceRange::single(start.try_into()?))
         } else {
-            Ok(SequenceRange::range(
-                value.start().try_into()?,
-                value.end().try_into()?,
-            ))
+            Ok(SequenceRange::range(start.try_into()?, end.try_into()?))
         }
     }
 }
@@ -235,6 +237,14 @@ mod tests {
     #[fixture]
     fn sequence_range(uid_start: Uid, uid_end: Uid) -> SequenceRange {
         SequenceRange::range(uid_start, uid_end)
+    }
+
+    #[rstest]
+    fn test_sequence_range_normalizes_reversed_range() {
+        let range = assert_ok!(SequenceRange::try_from(&RangeInclusive::new(5, 3)));
+
+        assert_eq!("3:5", range.to_string());
+        assert_eq!(3, range.into_iter().count());
     }
 
     #[rstest]
