@@ -71,6 +71,15 @@ pub struct Maildir {
 impl Maildir {
     pub async fn try_init(mail_dir: &Path) -> Result<Self, InitError> {
         match Self::load(mail_dir).await {
+            // e.g. left by a crash during initialization
+            Ok(mail)
+                if mail
+                    .is_empty()
+                    .map_err(|e| InitError::Io(mail_dir.to_path_buf(), e.kind()))? =>
+            {
+                log::info!("using existing empty maildir in {:#}", mail_dir.display());
+                Ok(mail)
+            }
             Ok(_) | Err(LoadError::Partial(_)) => Err(InitError::Exists(mail_dir.to_path_buf())),
             Err(LoadError::Io(path, kind)) => Err(InitError::Io(path, kind)),
             Err(_) => {
@@ -92,6 +101,17 @@ impl Maildir {
                 }
             }
         }
+    }
+
+    /// Whether the maildir contains no files
+    pub fn is_empty(&self) -> io::Result<bool> {
+        for dir in [&self.cur, &self.new, &self.tmp] {
+            if fs::read_dir(dir)?.next().is_some() {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     fn unchecked(mail_dir: &Path) -> Self {
@@ -860,13 +880,35 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    async fn test_init_uses_existing_empty_maildir(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        assert_ok!(Maildir::try_init(maildir_path).await);
+
+        assert_ok!(Maildir::try_init(maildir_path).await);
+    }
+
+    #[rstest]
+    #[compio::test]
+    async fn test_init_errors_on_existing_maildir_with_mails(temp_dir: TempDir) {
+        let maildir_path = temp_dir.path();
+        let maildir = assert_ok!(Maildir::try_init(maildir_path).await);
+        assert_ok!(fs::write(maildir.cur.join("mail"), "content"));
+
+        let maybe_maildir = Maildir::try_init(maildir_path).await;
+
+        assert_matches!(maybe_maildir, Err(InitError::Exists(_)));
+    }
+
+    #[rstest]
+    #[compio::test]
     async fn test_init_errors_on_existing_dir(
         temp_dir: TempDir,
         #[values("cur", "tmp", "new")] dir: &str,
     ) {
         let maildir_path = temp_dir.path();
-        let cur = maildir_path.join(dir);
-        assert_ok!(fs::create_dir(cur));
+        let dir = maildir_path.join(dir);
+        assert_ok!(fs::create_dir(&dir));
+        assert_ok!(fs::write(dir.join("mail"), "content"));
 
         let maybe_maildir = Maildir::try_init(maildir_path).await;
 

@@ -62,6 +62,10 @@ impl MaildirRepository {
             (Err(state::InitError::Missing(_)), Err(maildir::LoadError::Missing(_))) => {
                 Err(LoadError::Uninitialized)
             }
+            // e.g. left by a crash during initialization
+            (Err(state::InitError::Missing(_)), Ok(mail)) if mail.is_empty()? => {
+                Err(LoadError::Uninitialized)
+            }
             (Ok(state), Err(maildir_error)) => match maildir_error {
                 maildir::LoadError::Missing(_) => {
                     log::warn!(
@@ -823,6 +827,22 @@ mod tests {
             MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await;
         let result = assert_err!(result);
         assert_matches!(result, InitError::State(_));
+    }
+
+    #[rstest]
+    #[compio::test]
+    async fn test_load_treats_empty_maildir_without_state_as_uninitialized(
+        uid_validity: UidValidity,
+        mail_dir: TempDir,
+        state_dir: TempDir,
+    ) {
+        assert_ok!(Maildir::try_init(mail_dir.path()).await);
+
+        let result = assert_err!(MaildirRepository::load(mail_dir.path(), state_dir.path()).await);
+        assert_matches!(result, LoadError::Uninitialized);
+        assert_ok!(
+            MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await
+        );
     }
 
     #[rstest]
