@@ -29,6 +29,69 @@ enum WatchEvent {
     Error(Error),
 }
 
+/// Time to wait for an open following the creation of a file. Files are created either by
+/// opening them for writing, which emits both events, or by linking complete files, which only
+/// emits the creation.
+const CREATE_OPEN_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Files created in a watched directory, that are not complete yet
+#[derive(Default)]
+struct Created {
+    /// Created files with the deadline for being opened, after which they are linked ones
+    unopened: HashMap<OsString, Instant>,
+    /// Files opened for writing on creation, which are complete when closed
+    writing: HashSet<OsString>,
+}
+
+impl Created {
+    fn on_create(&mut self, filename: OsString) {
+        self.writing.remove(&filename);
+        self.unopened
+            .insert(filename, Instant::now() + CREATE_OPEN_TIMEOUT);
+    }
+
+    fn on_open(&mut self, filename: &OsStr) {
+        if let Some((filename, _)) = self.unopened.remove_entry(filename) {
+            self.writing.insert(filename);
+        }
+    }
+
+    /// Whether `filename` got completed by closing it
+    fn on_close_write(&mut self, filename: &OsStr) -> bool {
+        self.unopened.remove(filename).is_some() || self.writing.remove(filename)
+    }
+
+    fn remove(&mut self, filename: &OsStr) {
+        self.unopened.remove(filename);
+        self.writing.remove(filename);
+    }
+
+    fn clear(&mut self) {
+        self.unopened.clear();
+        self.writing.clear();
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.unopened.values().min().copied()
+    }
+
+    /// Takes files not opened until their deadline, as they got linked completely
+    fn take_linked(&mut self) -> Vec<OsString> {
+        let now = Instant::now();
+        let linked: Vec<OsString> = self
+            .unopened
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(filename, _)| filename.clone())
+            .collect();
+        for filename in &linked {
+            self.unopened.remove(filename);
+        }
+
+        linked
+    }
+}
+
 /// Unmatched half of a rename
 struct PendingMove {
     filename: OsString,
@@ -88,7 +151,10 @@ fn init_inotify(path: &Path, mask: WatchMask) -> Result<Inotify, Error> {
 }
 
 fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Error> {
-    let inotify = init_inotify(&new, WatchMask::MOVED_TO | WatchMask::CLOSE_WRITE)?;
+    let inotify = init_inotify(
+        &new,
+        WatchMask::MOVED_TO | WatchMask::CLOSE_WRITE | WatchMask::CREATE | WatchMask::OPEN,
+    )?;
     let (event_tx, event_rx) = mpsc::bounded_async(32);
     Watch::spawn_inotify_reader(inotify, event_tx)?;
 
@@ -97,10 +163,27 @@ fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Erro
             move_new_to_cur(&new, &cur)
                 .await
                 .map_err(Error::MoveToCur)?;
-            while let Ok(watch_event) = event_rx.recv().await {
+            let mut created = Created::default();
+            loop {
+                let watch_event = if let Some(deadline) = created.next_deadline() {
+                    compio::time::timeout_at(deadline, event_rx.recv())
+                        .await
+                        .ok()
+                } else {
+                    Some(event_rx.recv().await)
+                };
                 let event = match watch_event {
-                    WatchEvent::Inotify(event) => event,
-                    WatchEvent::Error(e) => return Err(e),
+                    Some(Ok(WatchEvent::Inotify(event))) => event,
+                    Some(Ok(WatchEvent::Error(e))) => return Err(e),
+                    Some(Err(_)) => break,
+                    None => {
+                        for name in created.take_linked() {
+                            move_to_cur(&new, &cur, &name)
+                                .await
+                                .map_err(Error::MoveToCur)?;
+                        }
+                        continue;
+                    }
                 };
                 log::trace!("{event:?}");
                 if event.mask.contains(EventMask::ISDIR) {
@@ -108,12 +191,18 @@ fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Erro
                 }
                 match (event.mask, event.name) {
                     (EventMask::IGNORED, _) => return Err(Error::WatchedDirRemoved(new)),
+                    (EventMask::CREATE, Some(name)) => created.on_create(name),
+                    (EventMask::OPEN, Some(name)) => created.on_open(&name),
                     (EventMask::MOVED_TO | EventMask::CLOSE_WRITE, Some(name)) => {
-                        move_to_cur(&new, &cur, &name).await
+                        created.remove(&name);
+                        move_to_cur(&new, &cur, &name)
+                            .await
+                            .map_err(Error::MoveToCur)?;
                     }
-                    _ => move_new_to_cur(&new, &cur).await,
+                    _ => move_new_to_cur(&new, &cur)
+                        .await
+                        .map_err(Error::MoveToCur)?,
                 }
-                .map_err(Error::MoveToCur)?;
             }
 
             Ok(())
@@ -144,7 +233,11 @@ impl Watch {
         let ignore_files = Arc::new(Mutex::new(HashSet::new()));
         let inotify = init_inotify(
             cur,
-            WatchMask::CREATE | WatchMask::CLOSE_WRITE | WatchMask::MOVE | WatchMask::DELETE,
+            WatchMask::CREATE
+                | WatchMask::OPEN
+                | WatchMask::CLOSE_WRITE
+                | WatchMask::MOVE
+                | WatchMask::DELETE,
         )?;
 
         let (event_tx, event_rx) = mpsc::bounded_async(32);
@@ -155,11 +248,15 @@ impl Watch {
         let cur = cur.to_path_buf();
         compio::runtime::spawn(async move {
             let mut move_matches: HashMap<u32, PendingMove> = HashMap::new();
-            let mut created: HashSet<OsString> = HashSet::new();
+            let mut created = Created::default();
             loop {
                 // waiting on the event queue instead of a timer makes queued second halves of
-                // renames always match, even if the queue is backed up
-                let next_deadline = move_matches.values().map(|pending| pending.deadline).min();
+                // renames and opens of created files always match, even if the queue is backed up
+                let next_deadline = move_matches
+                    .values()
+                    .map(|pending| pending.deadline)
+                    .chain(created.next_deadline())
+                    .min();
                 let watch_event = if let Some(deadline) = next_deadline {
                     compio::time::timeout_at(deadline, event_rx.recv())
                         .await
@@ -181,7 +278,8 @@ impl Watch {
                     }
                     Some(Err(_)) => break,
                     None => {
-                        Self::handle_move_timeouts(&mut move_matches, &change_tx, &ignored).await
+                        Self::handle_timeouts(&mut move_matches, &mut created, &change_tx, &ignored)
+                            .await
                     }
                 };
                 match result {
@@ -200,12 +298,20 @@ impl Watch {
     }
 
     /// Treats renames without second half until their deadline as moves into or out of the
-    /// watched directory
-    async fn handle_move_timeouts(
+    /// watched directory and created files not opened until their deadline as linked ones
+    async fn handle_timeouts(
         move_matches: &mut HashMap<u32, PendingMove>,
+        created: &mut Created,
         change_tx: &ChangeTx,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
+        for filename in created.take_linked() {
+            if let Err(e) =
+                Self::send_unless_ignored(filename, ignored, change_tx, Change::New).await?
+            {
+                return Ok(Err(e));
+            }
+        }
         let now = Instant::now();
         let timed_out: Vec<u32> = move_matches
             .iter()
@@ -235,7 +341,7 @@ impl Watch {
         watch_event: WatchEvent,
         cur: &Path,
         move_matches: &mut HashMap<u32, PendingMove>,
-        created: &mut HashSet<OsString>,
+        created: &mut Created,
         change_tx: &ChangeTx,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
@@ -264,12 +370,16 @@ impl Watch {
                             .await
                     }
                     EventMask::CREATE => {
-                        created.insert(event.name.ok_or(Error::MissingName(event.mask))?);
+                        created.on_create(event.name.ok_or(Error::MissingName(event.mask))?);
+                        Ok(Ok(()))
+                    }
+                    EventMask::OPEN => {
+                        created.on_open(&event.name.ok_or(Error::MissingName(event.mask))?);
                         Ok(Ok(()))
                     }
                     EventMask::CLOSE_WRITE => {
                         let filename = event.name.ok_or(Error::MissingName(event.mask))?;
-                        if created.remove(&filename) {
+                        if created.on_close_write(&filename) {
                             Self::send_unless_ignored(filename, ignored, change_tx, Change::New)
                                 .await
                         } else {

@@ -1309,6 +1309,48 @@ mod tests {
 
     #[rstest]
     #[compio::test]
+    #[awt]
+    async fn test_watch_detects_mail_linked_into_new(#[future] maildir: TestMaildir) {
+        let maildir = maildir.maildir;
+        let changes = assert_ok!(maildir.clone().watch(8).await);
+        // initially moving mails from new to cur would hide missing link events
+        compio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_ok!(fs::write(maildir.tmp.join("delivered"), "content"));
+        assert_ok!(fs::hard_link(
+            maildir.tmp.join("delivered"),
+            maildir.new.join("delivered")
+        ));
+        assert_ok!(fs::remove_file(maildir.tmp.join("delivered")));
+
+        let change = assert_ok!(assert_ok!(
+            compio::time::timeout(Duration::from_secs(1), changes.recv()).await
+        ));
+        assert_matches!(change, Change::New(_));
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_watch_detects_mail_linked_into_cur(#[future] maildir: TestMaildir) {
+        let maildir = maildir.maildir;
+        let changes = assert_ok!(maildir.clone().watch(8).await);
+
+        assert_ok!(fs::write(maildir.tmp.join("copied"), "content"));
+        assert_ok!(fs::hard_link(
+            maildir.tmp.join("copied"),
+            maildir.cur.join("copied:2,S")
+        ));
+        assert_ok!(fs::remove_file(maildir.tmp.join("copied")));
+
+        let change = assert_ok!(assert_ok!(
+            compio::time::timeout(Duration::from_secs(1), changes.recv()).await
+        ));
+        assert_matches!(change, Change::New(_));
+    }
+
+    #[rstest]
+    #[compio::test]
     async fn test_rename_errors_if_target_with_different_content_exists(temp_dir: TempDir) {
         let current = temp_dir.path().join("a");
         assert_ok!(fs::write(&current, "foo"));
