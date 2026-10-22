@@ -213,12 +213,14 @@ impl MaildirRepository {
         }
     }
 
+    /// Applies a flag change, that got accepted by the server, to the local mails. Mails, that
+    /// vanished locally meanwhile, e.g. due to a concurrent local deletion, are skipped.
     pub async fn apply_flag_changes(&self, uids: &[Uid], change: FlagChange) -> Result<(), Error> {
         let entries = self.state.get_all_by_id(uids.to_vec()).await?;
         if entries.len() != uids.len() {
             let existing: HashSet<Uid> = entries.iter().map(LocalMailMetadata::uid).collect();
-            if let Some(&uid) = uids.iter().find(|uid| !existing.contains(uid)) {
-                return Err(Error::NoExists { uid });
+            for uid in uids.iter().filter(|uid| !existing.contains(uid)) {
+                log::warn!("ignoring flag change of locally missing mail {uid}");
             }
         }
         let changes = entries
@@ -235,8 +237,8 @@ impl MaildirRepository {
                 })
             })
             .collect();
-        if let Some(&uid) = self.set_flags_all(changes).await?.first() {
-            return Err(Error::NoExists { uid });
+        for uid in self.set_flags_all(changes).await? {
+            log::warn!("ignoring flag change of locally missing mail {uid}");
         }
 
         Ok(())
@@ -991,18 +993,17 @@ mod tests {
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_add_flag_errors_on_non_existent_mail(
+    async fn test_add_flag_ignores_non_existent_mail(
         #[future] repo: TestMaildirRepository,
         mail: RemoteMail,
     ) {
         let metadata = mail.metadata();
 
-        let result = assert_err!(
+        assert_ok!(
             repo.repo
                 .apply_flag_changes(&[metadata.uid()], added(Flag::Deleted))
                 .await
         );
-        assert_matches!(result, Error::NoExists { .. });
     }
 
     #[rstest]
@@ -1016,14 +1017,13 @@ mod tests {
         assert_ok!(fs::create_dir(&cur));
         let metadata = repo_with_mail.mail.metadata();
 
-        let result = assert_err!(
+        assert_ok!(
             repo_with_mail
                 .repo
                 .repo
                 .apply_flag_changes(&[metadata.uid()], added(Flag::Deleted))
                 .await
         );
-        assert_matches!(result, Error::NoExists { .. });
         assert_none!(assert_ok!(
             repo_with_mail
                 .repo
@@ -1073,18 +1073,17 @@ mod tests {
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_remove_flag_errors_on_non_existent_mail(
+    async fn test_remove_flag_ignores_non_existent_mail(
         #[future] repo: TestMaildirRepository,
         mail: RemoteMail,
     ) {
         let metadata = mail.metadata();
 
-        let result = assert_err!(
+        assert_ok!(
             repo.repo
                 .apply_flag_changes(&[metadata.uid()], removed(Flag::Seen))
                 .await
         );
-        assert_matches!(result, Error::NoExists { .. });
     }
 
     #[rstest]
