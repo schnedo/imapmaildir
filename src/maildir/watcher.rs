@@ -272,6 +272,8 @@ impl Watch {
                         log::warn!("inotify event queue overflowed");
                         move_matches.clear();
                         created.clear();
+                        // events of ignored updates may be lost, so they would hide later ones
+                        ignored.lock().await.clear();
                         Ok(change_tx.send(Change::Overflow).await)
                     }
                     EventMask::IGNORED => Err(Error::WatchedDirRemoved(cur.to_path_buf())),
