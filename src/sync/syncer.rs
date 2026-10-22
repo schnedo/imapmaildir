@@ -119,6 +119,21 @@ impl Syncer {
             }
         })
         .detach();
+        // local changes during the sync, e.g. a long initial one, happened before watching
+        let rescanned = async {
+            let changes = repository.detect_changes().await?;
+            // uploading new mails renames them to carry their UID
+            let renames_local_mails = !changes.news.is_empty();
+            Self::handle_local(&mut client, &repository, changes, mailbox, config).await?;
+            if renames_local_mails {
+                on_local_change();
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = rescanned {
+            return Err(Self::task_error(e, task_handle).await);
+        }
 
         let error = loop {
             if let Err(e) = Self::handle_idle(
@@ -171,16 +186,7 @@ impl Syncer {
                     log::warn!("rescanning maildir for local changes");
                     repository.detect_changes().await?
                 };
-                let highest_modseq = repository.highest_modseq().await?;
-                Self::handle_local_changes(
-                    client,
-                    changes,
-                    highest_modseq,
-                    mailbox,
-                    repository,
-                    config,
-                )
-                .await?;
+                Self::handle_local(client, repository, changes, mailbox, config).await?;
                 on_local_change();
             }
             IdleStopReason::LocalError(e) => return Err(e.into()),
@@ -193,6 +199,18 @@ impl Syncer {
         }
 
         Ok(())
+    }
+
+    async fn handle_local(
+        client: &mut SelectedClient,
+        repository: &RepositoryHandle,
+        changes: LocalChanges,
+        mailbox: &str,
+        config: Config,
+    ) -> Result<(), Error> {
+        let highest_modseq = repository.highest_modseq().await?;
+        Self::handle_local_changes(client, changes, highest_modseq, mailbox, repository, config)
+            .await
     }
 
     /// Replaces `error` with the cause of stopped task processing if that caused it
