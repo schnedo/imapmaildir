@@ -23,7 +23,7 @@ use crate::{
         transport::{self, Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
-    repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid},
+    repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid, UidValidity},
     sync::Task,
 };
 
@@ -51,6 +51,7 @@ pub struct SelectedClient {
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     multiappend: bool,
     own_modseqs: OwnModSeqs,
+    uid_validity: UidValidity,
 }
 impl SelectedClient {
     pub fn new(
@@ -59,6 +60,7 @@ impl SelectedClient {
         qresync: bool,
         task_tx: MAsyncTx<mpsc::Array<Task>>,
         exists: u32,
+        uid_validity: UidValidity,
     ) -> Result<Self, Error> {
         for capability in [Capability::LiteralPlus, Capability::UidPlus] {
             if !capabilities.contains(capability) {
@@ -78,6 +80,7 @@ impl SelectedClient {
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
             own_modseqs: OwnModSeqs::default(),
+            uid_validity,
         })
     }
 
@@ -310,11 +313,18 @@ impl SelectedClient {
             .send_parts(&parts, &mut self.mailbox_handler)
             .await?;
 
-        let Some(imap_proto::ResponseCode::AppendUid(_uid_validity, uid_set_members)) =
+        let Some(imap_proto::ResponseCode::AppendUid(uid_validity, uid_set_members)) =
             response.unsafe_get_tagged_response_code()
         else {
             return Err(Error::MissingAppendUid);
         };
+        // UIDs of a recreated mailbox do not refer to the synced mails
+        if *uid_validity != u32::from(self.uid_validity) {
+            return Err(Error::UidValidityMismatch {
+                local: self.uid_validity,
+                remote: UidValidity::try_from(uid_validity).map_err(Error::InvalidUidValidity)?,
+            });
+        }
         let appended = uid_set_members
             .iter()
             .map(|member| match member {

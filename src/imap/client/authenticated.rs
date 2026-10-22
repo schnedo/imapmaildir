@@ -138,6 +138,7 @@ impl AuthenticatedClient {
             self.qresync,
             task_tx,
             exists.ok_or(Error::MissingExists)?,
+            mailbox_data.uid_validity(),
         )?;
 
         Ok(Selection {
