@@ -97,6 +97,10 @@ impl MaildirFile for NewLocalMailMetadata {
     fn set_flags(&mut self, flags: BitFlags<Flag>) {
         self.flags = flags;
     }
+
+    fn prepend_to_fileprefix(&mut self, prefix: &str) {
+        self.fileprefix.insert_str(0, prefix);
+    }
 }
 
 impl Display for NewLocalMailMetadata {
@@ -187,6 +191,10 @@ impl MaildirFile for LocalMailMetadata {
 
     fn set_flags(&mut self, flags: BitFlags<Flag>) {
         self.flags = flags;
+    }
+
+    fn prepend_to_fileprefix(&mut self, prefix: &str) {
+        self.fileprefix.insert_str(0, prefix);
     }
 }
 

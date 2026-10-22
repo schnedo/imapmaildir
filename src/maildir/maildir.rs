@@ -35,6 +35,8 @@ pub trait MaildirFile {
     fn set_uid(self, uid: Uid) -> LocalMailMetadata;
     fn flags(&self) -> BitFlags<Flag>;
     fn set_flags(&mut self, flags: BitFlags<Flag>);
+    /// Prepends `prefix` to the file prefix to resolve name clashes
+    fn prepend_to_fileprefix(&mut self, prefix: &str);
     fn additional_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
         let mut additional_flags = self.flags();
         additional_flags.remove(other.flags());
@@ -239,12 +241,11 @@ impl Maildir {
         let to = to.set_uid(from.uid());
         Self::rename_new_mail(
             self.watch.lock().await.as_ref(),
+            &self.cur,
             self.cur.join(old_to),
-            self.cur.join(to.filename()),
+            to,
         )
-        .await?;
-
-        Ok(to)
+        .await
     }
 
     async fn send_new_structured_change(
@@ -372,28 +373,23 @@ impl Maildir {
         Ok(list_rx)
     }
 
-    async fn rename_new_mail(
+    /// Renames `current` to the name of `new` in `cur`, prefixing the name until it does not clash
+    /// with an existing mail of different content. Returns the metadata of the final name.
+    async fn rename_new_mail<M: MaildirFile>(
         watch: Option<&Watch>,
-        current: PathBuf,
-        new: PathBuf,
-    ) -> Result<(), Error> {
-        if let Err(error) = Self::rename(watch, current, new).await {
-            match error {
-                Error::Existing { from, mut to } => {
-                    let file_name = to
-                        .file_name()
-                        .unwrap_or_else(|| unreachable!("new name has a file name"))
-                        .to_os_string();
-                    let mut new_name = String::from("1");
-                    new_name += &file_name.to_string_lossy();
-                    to.set_file_name(new_name);
-
-                    Box::pin(Self::rename_new_mail(watch, from, to)).await
+        cur: &Path,
+        mut current: PathBuf,
+        mut new: M,
+    ) -> Result<M, Error> {
+        loop {
+            match Self::rename(watch, current, cur.join(new.filename())).await {
+                Ok(()) => return Ok(new),
+                Err(Error::Existing { from, .. }) => {
+                    current = from;
+                    new.prepend_to_fileprefix("1");
                 }
-                error => Err(error),
+                Err(error) => return Err(error),
             }
-        } else {
-            Ok(())
         }
     }
 
@@ -585,10 +581,7 @@ impl Maildir {
     ) -> Result<NewLocalMailMetadata, Error> {
         let current = cur.join(&filename);
         let metadata = NewLocalMailMetadata::new(Flag::Seen.into(), filename);
-        let new = cur.join(metadata.filename());
-        Self::rename_new_mail(watch.lock().await.as_ref(), current, new).await?;
-
-        Ok(metadata)
+        Self::rename_new_mail(watch.lock().await.as_ref(), cur, current, metadata).await
     }
 }
 
@@ -1013,24 +1006,68 @@ mod tests {
         ));
 
         let list_rx = assert_ok!(maildir.list_cur());
-        while list_rx.recv().await.is_ok() {}
+        let mut listed = Vec::new();
+        while let Ok(entry) = list_rx.recv().await {
+            listed.push(assert_ok!(entry));
+        }
 
         assert!(!mail.exists());
         assert!(existing_mail.exists());
         assert!(expected_mail.exists());
+        assert_contains!(
+            listed,
+            &MaildirEntry::New(NewLocalMailMetadata::new(
+                Flag::Seen.into(),
+                "1".to_string() + fileprefix
+            ))
+        );
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_track_renamed_returns_metadata_of_prefixed_name_on_clash(
+        #[future] maildir: TestMaildir,
+        metadata: LocalMailMetadata,
+    ) {
+        let maildir = maildir.maildir;
+        let renamed = NewLocalMailMetadata::new(Flag::Flagged.into(), "renamed".to_string());
+        assert_ok!(fs::write(maildir.get_path_of(&renamed), "renamed"));
+        let clashing = renamed.clone().set_uid(metadata.uid());
+        assert_ok!(fs::write(maildir.get_path_of(&clashing), "other"));
+
+        let result = assert_ok!(maildir.track_renamed(renamed, &metadata).await);
+
+        assert_eq!(result.fileprefix(), "1renamed");
+        assert_eq!(
+            assert_ok!(fs::read_to_string(maildir.get_path_of(&result))),
+            "renamed"
+        );
+        assert_eq!(
+            assert_ok!(fs::read_to_string(maildir.get_path_of(&clashing))),
+            "other"
+        );
     }
 
     #[rstest]
     #[compio::test]
     async fn test_rename_new_mail_errors_io_error(temp_dir: TempDir) {
         let non_existent = temp_dir.path().join("foo");
-        let new = temp_dir.path().join("bar");
+        let new = "bar".to_string();
         let metadata = assert_ok!(temp_dir.path().metadata());
         let mut permissions = metadata.permissions();
         permissions.set_mode(0o400);
         assert_ok!(fs::set_permissions(temp_dir.path(), permissions));
 
-        assert_err!(Maildir::rename_new_mail(None, non_existent, new).await);
+        assert_err!(
+            Maildir::rename_new_mail(
+                None,
+                temp_dir.path(),
+                non_existent,
+                NewLocalMailMetadata::new(Flag::Seen.into(), new),
+            )
+            .await
+        );
     }
 
     #[rstest]
