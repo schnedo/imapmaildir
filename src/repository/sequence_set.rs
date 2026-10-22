@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::repository::{Uid, uid::UidRangeInclusiveIterator};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SequenceRange {
     start: Uid,
     end: Option<Uid>,
@@ -159,6 +159,30 @@ impl SequenceSet {
     pub fn iter(&self) -> impl Iterator<Item = Uid> {
         self.ranges.iter().flat_map(SequenceRange::iter)
     }
+
+    /// Splits the set into sets, whose textual representation does not exceed `max_len` unless
+    /// consisting of a single range, as servers limit the length of command lines (RFC 7162 4)
+    pub fn chunks(&self, max_len: usize) -> Vec<SequenceSet> {
+        let mut chunks = Vec::new();
+        let mut ranges = Vec::new();
+        let mut len = 0;
+        for range in &self.ranges {
+            let range_len = range.to_string().len();
+            if !ranges.is_empty() && len + 1 + range_len > max_len {
+                chunks.push(SequenceSet {
+                    ranges: std::mem::take(&mut ranges),
+                });
+                len = 0;
+            }
+            len += range_len + usize::from(!ranges.is_empty());
+            ranges.push(range.clone());
+        }
+        if !ranges.is_empty() {
+            chunks.push(SequenceSet { ranges });
+        }
+
+        chunks
+    }
 }
 
 impl Display for SequenceSet {
@@ -237,6 +261,34 @@ mod tests {
     #[fixture]
     fn sequence_range(uid_start: Uid, uid_end: Uid) -> SequenceRange {
         SequenceRange::range(uid_start, uid_end)
+    }
+
+    #[rstest]
+    fn test_chunks_limits_length_of_sets() {
+        let uids: Vec<Uid> = (1..=20)
+            .map(|uid| assert_ok!(Uid::try_from(uid * 2)))
+            .collect();
+        let set = assert_ok!(SequenceSet::try_from(&uids));
+
+        let chunks = set.chunks(10);
+
+        assert!(chunks.iter().all(|chunk| chunk.to_string().len() <= 10));
+        assert_eq!(
+            chunks
+                .iter()
+                .flat_map(SequenceSet::iter)
+                .collect::<Vec<_>>(),
+            uids
+        );
+    }
+
+    #[rstest]
+    fn test_chunks_keeps_short_set() {
+        let set = SequenceSet::all();
+
+        let chunks = set.chunks(10);
+
+        assert_eq!(chunks, vec![SequenceSet::all()]);
     }
 
     #[rstest]

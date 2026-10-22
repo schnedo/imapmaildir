@@ -39,6 +39,10 @@ pub enum IdleStopReason {
 /// socket buffers while the other is still sending
 const MAX_PIPELINED_COMMANDS: usize = 64;
 
+/// Maximum length of sequence sets in commands, as servers limit the length of command lines.
+/// RFC 7162 4 recommends limiting them to 8192 octets.
+const MAX_SEQUENCE_SET_LEN: usize = 8000;
+
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
@@ -126,11 +130,13 @@ impl SelectedClient {
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
-        let command = format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS BODY.PEEK[])");
-        log::debug!("{command}");
-        self.connection
-            .send(command.into(), &mut self.mailbox_handler)
-            .await?;
+        for sequence_set in sequence_set.chunks(MAX_SEQUENCE_SET_LEN) {
+            let command = format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS BODY.PEEK[])");
+            log::debug!("{command}");
+            self.connection
+                .send(command.into(), &mut self.mailbox_handler)
+                .await?;
+        }
 
         Ok(())
     }
@@ -165,11 +171,18 @@ impl SelectedClient {
         &mut self,
         sequence_set: &SequenceSet,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
-        self.collect_metadata(
-            format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS)"),
-            false,
-        )
-        .await
+        let mut metadata = Vec::new();
+        for sequence_set in sequence_set.chunks(MAX_SEQUENCE_SET_LEN) {
+            metadata.extend(
+                self.collect_metadata(
+                    format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS)"),
+                    false,
+                )
+                .await?,
+            );
+        }
+
+        Ok(metadata)
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
@@ -355,9 +368,11 @@ impl SelectedClient {
         }
         let groups: Vec<_> = groups
             .into_iter()
-            .map(|(unchanged_since, uids)| {
+            .flat_map(|(unchanged_since, uids)| {
                 let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
-                (unchanged_since, set)
+                set.chunks(MAX_SEQUENCE_SET_LEN)
+                    .into_iter()
+                    .map(move |set| (unchanged_since, set))
             })
             .collect();
         let mut rejected = HashSet::new();
@@ -445,11 +460,13 @@ impl SelectedClient {
         let Ok(accepted) = SequenceSet::from_sorted(accepted) else {
             return Ok(modified);
         };
-        let command = format!("UID EXPUNGE {accepted}");
-        log::debug!("{command}");
-        self.connection
-            .send(command.into_bytes(), &mut self.mailbox_handler)
-            .await?;
+        for accepted in accepted.chunks(MAX_SEQUENCE_SET_LEN) {
+            let command = format!("UID EXPUNGE {accepted}");
+            log::debug!("{command}");
+            self.connection
+                .send(command.into_bytes(), &mut self.mailbox_handler)
+                .await?;
+        }
 
         Ok(modified)
     }
