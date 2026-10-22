@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
+use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
 use crossfire::{
@@ -445,8 +446,8 @@ impl SelectedClient {
             self.mailbox_handler.apply_fetched_uids(sequences);
         }
         let mut modified = HashSet::new();
-        for response in &responses {
-            modified.extend(modified_uids(response)?);
+        for (response, (_, sequence_set)) in responses.iter().zip(groups) {
+            modified.extend(modified_uids(response, sequence_set)?);
         }
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not updating their flags");
@@ -736,7 +737,8 @@ impl StoreHandler {
     }
 }
 
-fn modified_uids(response: &ResponseData) -> Result<HashSet<Uid>, Error> {
+/// UIDs of `stored` reported as modified by the server
+fn modified_uids(response: &ResponseData, stored: &SequenceSet) -> Result<HashSet<Uid>, Error> {
     if let imap_proto::Response::Done {
         outcome:
             imap_proto::Outcome {
@@ -750,24 +752,27 @@ fn modified_uids(response: &ResponseData) -> Result<HashSet<Uid>, Error> {
             .and_then(|rest| rest.split_once(']'))
             .map(|(uids, _)| uids)
     {
-        parse_uid_set(uids)
+        let ranges = parse_uid_set(uids)?;
+        // only checking stored UIDs bounds the work, as servers may send huge ranges
+        Ok(stored
+            .iter()
+            .filter(|uid| ranges.iter().any(|range| range.contains(&u32::from(uid))))
+            .collect())
     } else {
         Ok(HashSet::new())
     }
 }
 
-fn parse_uid_set(uids: &str) -> Result<HashSet<Uid>, Error> {
+fn parse_uid_set(uids: &str) -> Result<Vec<RangeInclusive<u32>>, Error> {
     let parse = |uid: &str| -> Result<u32, Error> {
         uid.parse()
             .map_err(|_| Error::InvalidUidSet(uids.to_string()))
     };
-    let mut parsed = HashSet::new();
+    let mut parsed = Vec::new();
     for range in uids.split(',') {
         let (start, end) = range.split_once(':').unwrap_or((range, range));
         let (start, end) = (parse(start)?, parse(end)?);
-        for uid in start.min(end)..=start.max(end) {
-            parsed.insert(Uid::try_from(uid)?);
-        }
+        parsed.push(start.min(end)..=start.max(end));
     }
 
     Ok(parsed)
@@ -1235,11 +1240,21 @@ mod tests {
 
     #[test]
     fn test_parse_uid_set_parses_ranges() {
-        let expected: HashSet<Uid> = [1, 3, 4, 5, 9]
-            .into_iter()
-            .map(|uid: u32| assertables::assert_ok!(Uid::try_from(uid)))
-            .collect();
+        assert_eq!(
+            assertables::assert_ok!(parse_uid_set("1,5:3,9")),
+            vec![1..=1, 3..=5, 9..=9]
+        );
+    }
 
-        assert_eq!(assertables::assert_ok!(parse_uid_set("1,3:5,9")), expected);
+    #[test]
+    fn test_modified_uids_only_contains_stored_uids() {
+        let response =
+            ResponseData::from_raw(b"0001 OK [MODIFIED 1:4294967295] Conditional STORE failed\r\n");
+        let stored = assertables::assert_ok!(SequenceSet::try_from(&vec![uid(3), uid(7)]));
+
+        assert_eq!(
+            assertables::assert_ok!(modified_uids(&response, &stored)),
+            HashSet::from([uid(3), uid(7)])
+        );
     }
 }
