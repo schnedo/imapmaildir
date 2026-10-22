@@ -149,31 +149,38 @@ impl SelectedClient {
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.unsolicited_change = false;
         }
-        self.collect_metadata(command).await
+        self.collect_metadata(command, true).await
     }
 
     pub async fn fetch_metadata(
         &mut self,
         sequence_set: &SequenceSet,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
-        self.collect_metadata(format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS)"))
-            .await
+        self.collect_metadata(
+            format!("UID FETCH {sequence_set} (UID, ModSeq, FLAGS)"),
+            false,
+        )
+        .await
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
-        self.collect_metadata("UID FETCH 1:* (UID, ModSeq, FLAGS)".to_string())
+        self.collect_metadata("UID FETCH 1:* (UID, ModSeq, FLAGS)".to_string(), true)
             .await
     }
 
+    /// Collects metadata of FETCH responses to `command`. `covers_all` marks commands covering every
+    /// message, e.g. `1:*`, which makes all messages existing at their start known.
     async fn collect_metadata(
         &mut self,
         command: String,
+        covers_all: bool,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
         log::debug!("{command}");
         let collector = MetadataCollector {
             sequences: self.mailbox_handler.needs_uids().then(Vec::new),
             ..MetadataCollector::default()
         };
+        let exists = self.mailbox_handler.message_count.begin_command();
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.uid_map.begin_command();
         }
@@ -186,7 +193,7 @@ impl SelectedClient {
         } = handler.0;
         self.mailbox_handler
             .message_count
-            .on_fetch(highest_sequence);
+            .on_command_fetch(highest_sequence, covers_all.then_some(exists));
         if let Some(sequences) = sequences {
             self.mailbox_handler.apply_fetched_uids(sequences);
         }
