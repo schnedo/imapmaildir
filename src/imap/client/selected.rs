@@ -164,7 +164,7 @@ impl SelectedClient {
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.unsolicited_change = false;
         }
-        self.collect_metadata(command, true).await
+        self.collect_metadata(command, None).await
     }
 
     pub async fn fetch_metadata(
@@ -176,7 +176,7 @@ impl SelectedClient {
             metadata.extend(
                 self.collect_metadata(
                     format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS)"),
-                    false,
+                    Some(sequence_set.iter().collect()),
                 )
                 .await?,
             );
@@ -186,20 +186,23 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
-        self.collect_metadata("UID FETCH 1:* (UID MODSEQ FLAGS)".to_string(), true)
+        self.collect_metadata("UID FETCH 1:* (UID MODSEQ FLAGS)".to_string(), None)
             .await
     }
 
-    /// Collects metadata of FETCH responses to `command`. `covers_all` marks commands covering every
-    /// message, e.g. `1:*`, which makes all messages existing at their start known.
+    /// Collects metadata of FETCH responses to `command`. Without `requested` UIDs, the command
+    /// covers every message, e.g. `1:*`, which makes all messages existing at its start known.
+    /// Otherwise unsolicited changes of other mails are handled like during IDLE.
     async fn collect_metadata(
         &mut self,
         command: String,
-        covers_all: bool,
+        requested: Option<HashSet<Uid>>,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
         log::debug!("{command}");
+        let covers_all = requested.is_none();
         let collector = MetadataCollector {
             sequences: self.mailbox_handler.needs_uids().then(Vec::new),
+            requested,
             ..MetadataCollector::default()
         };
         let exists = self.mailbox_handler.message_count.begin_command();
@@ -212,6 +215,7 @@ impl SelectedClient {
             metadata,
             highest_sequence,
             sequences,
+            ..
         } = handler.0;
         self.mailbox_handler
             .message_count
@@ -561,6 +565,8 @@ struct MetadataCollector {
     highest_sequence: u32,
     /// Only collected while tracking the sequence to UID map
     sequences: Option<Vec<(u32, Uid)>>,
+    /// Collects all mails if unset
+    requested: Option<HashSet<Uid>>,
 }
 
 impl ResponseHandler for MetadataCollector {
@@ -580,6 +586,10 @@ impl MetadataCollector {
             && let parsed = FetchAttributes::parse(attributes)
             && parsed.body.is_none()
             && let Some(metadata) = parsed.metadata()?
+            && self
+                .requested
+                .as_ref()
+                .is_none_or(|requested| requested.contains(&metadata.uid()))
         {
             self.highest_sequence = self.highest_sequence.max(*sequence);
             if let Some(sequences) = &mut self.sequences {
@@ -1005,6 +1015,30 @@ mod tests {
         ));
 
         assert_eq!(collector.fetched, vec![(1, uid(4))]);
+    }
+
+    #[test]
+    fn test_metadata_collector_passes_on_changes_of_unrequested_mails() {
+        let mut collector = MetadataCollector {
+            requested: Some(HashSet::from([uid(4)])),
+            ..MetadataCollector::default()
+        };
+
+        assertables::assert_none!(assertables::assert_ok!(collector.collect(
+            ResponseData::from_raw(b"* 1 FETCH (UID 4 FLAGS (\\Seen) MODSEQ (3))\r\n")
+        )));
+        assertables::assert_some!(assertables::assert_ok!(collector.collect(
+            ResponseData::from_raw(b"* 2 FETCH (UID 7 FLAGS (\\Seen) MODSEQ (5))\r\n")
+        )));
+
+        assert_eq!(
+            collector
+                .metadata
+                .iter()
+                .map(RemoteMailMetadata::uid)
+                .collect::<Vec<_>>(),
+            vec![uid(4)]
+        );
     }
 
     #[compio::test]
