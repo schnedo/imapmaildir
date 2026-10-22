@@ -99,7 +99,10 @@ impl SelectedClient {
             tracking.unknown_expunged = false;
             tracking.uid_map.begin_command();
         }
-        let mut handler = Chain(SearchCollector::default(), &mut self.mailbox_handler);
+        let collector = SearchCollector {
+            uids: Vec::with_capacity(self.mailbox_handler.message_count.exists() as usize),
+        };
+        let mut handler = Chain(collector, &mut self.mailbox_handler);
         self.connection.send(command.into(), &mut handler).await?;
         let uids = handler.0.into_sorted_uids();
 
@@ -162,7 +165,7 @@ impl SelectedClient {
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
         log::debug!("{command}");
         let collector = MetadataCollector {
-            sequences: self.mailbox_handler.tracking.is_some().then(Vec::new),
+            sequences: self.mailbox_handler.needs_uids().then(Vec::new),
             ..MetadataCollector::default()
         };
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
@@ -373,7 +376,7 @@ impl SelectedClient {
             .collect();
 
         let store_handler = StoreHandler {
-            sequences: self.mailbox_handler.tracking.is_some().then(Vec::new),
+            sequences: self.mailbox_handler.needs_uids().then(Vec::new),
             ..StoreHandler::default()
         };
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
@@ -415,7 +418,9 @@ impl SelectedClient {
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not deleting them");
         }
-        let Ok(accepted) = SequenceSet::try_from(&pending.into_keys().collect::<Vec<_>>()) else {
+        let mut accepted: Vec<Uid> = pending.into_keys().collect();
+        accepted.sort_unstable();
+        let Ok(accepted) = SequenceSet::from_sorted(accepted) else {
             return Ok(modified);
         };
         let command = format!("UID EXPUNGE {accepted}");
@@ -854,6 +859,13 @@ impl MailboxHandler {
             return;
         }
         uid_map.seed(uids, exists);
+    }
+
+    /// Whether UIDs of fetched mails should be collected to resolve later responses
+    fn needs_uids(&self) -> bool {
+        self.tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.uid_map.needs_uids())
     }
 
     fn needs_remote_sync(&self) -> bool {

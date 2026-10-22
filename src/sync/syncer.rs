@@ -318,8 +318,9 @@ impl Syncer {
         let synced = async {
             let mut synced_modseq = mailbox_data.highest_modseq();
             if !client.supports_qresync() {
-                let updates = client.fetch_changes_since(highest_modseq).await?;
+                // searching first seeds the sequence to uid map, so the fetch needs not fill it
                 let deletions = Self::remote_deletions(&mut client, &repository).await?;
+                let updates = client.fetch_changes_since(highest_modseq).await?;
                 // updates got fetched after SELECT, so they may be newer than its HIGHESTMODSEQ
                 if let Some(modseq) = updates.iter().map(RemoteMailMetadata::modseq).max() {
                     synced_modseq = synced_modseq.max(modseq);
