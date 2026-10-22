@@ -126,14 +126,59 @@ impl Connection {
             .map_err(Error::Send)
     }
 
+    /// Sends `commands` without waiting for completions in between, saving a round trip per
+    /// command. Only for commands that may run concurrently (RFC 3501 5.5). Returns completions in
+    /// the order of `commands` after receiving all of them, failing with the first failed one.
+    pub async fn send_pipelined<H: ResponseHandler>(
+        &mut self,
+        commands: Vec<Vec<u8>>,
+        handler: &mut H,
+    ) -> Result<Vec<ResponseData>, H::Error> {
+        let mut completions = Completions::default();
+        for command in commands {
+            let tag = self.tag_generator.next();
+            log::trace!("{tag:?}: sending pipelined");
+            self.stream
+                .feed((tag.as_bytes(), &[command.as_slice()][..]))
+                .await
+                .map_err(Error::Send)?;
+            completions.expect(tag);
+        }
+        self.stream.flush().await.map_err(Error::Send)?;
+        while !completions.is_complete() {
+            let (tag, completion) = self.receive_done(handler).await?;
+            completions.complete(tag, completion)?;
+        }
+
+        completions.into_responses().map_err(Into::into)
+    }
+
     pub async fn receive_completion<H: ResponseHandler>(
         &mut self,
         tag: &str,
         handler: &mut H,
     ) -> Result<ResponseData, H::Error> {
+        let (received, completion) = self.receive_done(handler).await?;
+        if received != tag {
+            return Err(Error::UnexpectedTag {
+                expected: tag.to_string(),
+                received,
+            }
+            .into());
+        }
+
+        completion.map_err(Into::into)
+    }
+
+    /// Passes untagged responses to `handler` until receiving a tagged one. Returns its tag and
+    /// the response if OK.
+    async fn receive_done<H: ResponseHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> Result<(String, Result<ResponseData, Error>), H::Error> {
         loop {
             let response = self.next_response().await?;
-            match response.parsed() {
+            let (tag, error) = match response.parsed() {
                 imap_proto::Response::Done {
                     tag: response_tag,
                     status,
@@ -143,29 +188,79 @@ impl Connection {
                     if let Some(information) = information {
                         log::debug!("Done response information: {information}");
                     }
-                    if response_tag.0 != tag {
-                        return Err(Error::UnexpectedTag {
-                            expected: tag.to_string(),
-                            received: response_tag.0.clone(),
-                        }
-                        .into());
-                    }
                     let information = || information.as_ref().map(ToString::to_string);
-                    return match status {
-                        imap_proto::Status::Ok => Ok(response),
-                        imap_proto::Status::No => Err(Error::No(information()).into()),
-                        imap_proto::Status::Bad => Err(Error::Bad(information()).into()),
+                    let error = match status {
+                        imap_proto::Status::Ok => None,
+                        imap_proto::Status::No => Some(Error::No(information())),
+                        imap_proto::Status::Bad => Some(Error::Bad(information())),
                         imap_proto::Status::PreAuth | imap_proto::Status::Bye => {
-                            Err(Error::UnexpectedTaggedStatus(format!("{status:?}")).into())
+                            Some(Error::UnexpectedTaggedStatus(format!("{status:?}")))
                         }
                     };
+                    (response_tag.0.clone(), error)
                 }
                 imap_proto::Response::Continue(imap_proto::Outcome { code, information }) => {
                     log::warn!("ignoring unexpected continuation request {code:?} {information:?}");
+                    continue;
                 }
-                _ => handler.handle_or_log(response).await?,
-            }
+                _ => {
+                    handler.handle_or_log(response).await?;
+                    continue;
+                }
+            };
+
+            return Ok((tag, error.map_or(Ok(response), Err)));
         }
+    }
+}
+
+/// Completions of pipelined commands, which servers may send in any order
+#[derive(Default)]
+struct Completions {
+    tags: Vec<String>,
+    results: Vec<Option<Result<ResponseData, Error>>>,
+    pending: usize,
+}
+
+impl Completions {
+    fn expect(&mut self, tag: String) {
+        self.tags.push(tag);
+        self.results.push(None);
+        self.pending += 1;
+    }
+
+    fn is_complete(&self) -> bool {
+        self.pending == 0
+    }
+
+    fn complete(
+        &mut self,
+        tag: String,
+        completion: Result<ResponseData, Error>,
+    ) -> Result<(), Error> {
+        let Some(slot) = self
+            .tags
+            .iter()
+            .position(|expected| *expected == tag)
+            .map(|index| &mut self.results[index])
+            .filter(|slot| slot.is_none())
+        else {
+            return Err(Error::UnexpectedTag {
+                expected: self.tags.join(", "),
+                received: tag,
+            });
+        };
+        *slot = Some(completion);
+        self.pending -= 1;
+
+        Ok(())
+    }
+
+    fn into_responses(self) -> Result<Vec<ResponseData>, Error> {
+        self.results
+            .into_iter()
+            .map(|completion| completion.expect("all pipelined commands should be complete"))
+            .collect()
     }
 }
 
@@ -317,6 +412,65 @@ mod tests {
                     .start()
             ),
         }
+    }
+
+    fn done(raw: &'static [u8]) -> ResponseData {
+        ResponseData::from_raw(raw)
+    }
+
+    fn expecting(tags: &[&str]) -> Completions {
+        let mut completions = Completions::default();
+        for tag in tags {
+            completions.expect((*tag).to_string());
+        }
+        completions
+    }
+
+    #[test]
+    fn test_completions_returns_out_of_order_completions_in_command_order() {
+        let mut completions = expecting(&["a1", "a2"]);
+
+        assert_ok!(completions.complete("a2".to_string(), Ok(done(b"a2 OK done\r\n"))));
+        assert!(!completions.is_complete());
+        assert_ok!(completions.complete("a1".to_string(), Ok(done(b"a1 OK done\r\n"))));
+        assert!(completions.is_complete());
+
+        let responses = assert_ok!(completions.into_responses());
+        let tags: Vec<_> = responses
+            .iter()
+            .map(|response| match response.parsed() {
+                imap_proto::Response::Done { tag, .. } => tag.0.clone(),
+                other => panic!("unexpected response {other:?}"),
+            })
+            .collect();
+        assert_eq!(tags, vec!["a1", "a2"]);
+    }
+
+    #[test]
+    fn test_completions_rejects_unknown_and_repeated_tags() {
+        let mut completions = expecting(&["a1", "a2"]);
+
+        assert_matches!(
+            completions.complete("b1".to_string(), Ok(done(b"b1 OK done\r\n"))),
+            Err(Error::UnexpectedTag { .. })
+        );
+        assert_ok!(completions.complete("a1".to_string(), Ok(done(b"a1 OK done\r\n"))));
+        assert_matches!(
+            completions.complete("a1".to_string(), Ok(done(b"a1 OK done\r\n"))),
+            Err(Error::UnexpectedTag { .. })
+        );
+        assert!(!completions.is_complete());
+    }
+
+    #[test]
+    fn test_completions_fails_with_first_failed_command() {
+        let mut completions = expecting(&["a1", "a2", "a3"]);
+
+        assert_ok!(completions.complete("a3".to_string(), Err(Error::Bad(None))));
+        assert_ok!(completions.complete("a1".to_string(), Ok(done(b"a1 OK done\r\n"))));
+        assert_ok!(completions.complete("a2".to_string(), Err(Error::No(None))));
+
+        assert_matches!(completions.into_responses(), Err(Error::No(None)));
     }
 
     #[rstest]
