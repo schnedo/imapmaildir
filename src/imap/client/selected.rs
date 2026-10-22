@@ -90,29 +90,39 @@ impl SelectedClient {
             .is_some_and(|tracking| std::mem::take(&mut tracking.unknown_expunged))
     }
 
-    /// Fetches all UIDs of the selected mailbox in ascending order. Errors if the result is
-    /// implausible, as it would delete all local mails. Pass them to [`Self::seed_remote_uids`]
-    /// afterwards.
+    /// Fetches all UIDs of the selected mailbox in ascending order and replaces the sequence to
+    /// UID map with them. Errors if the result is implausible, as it would delete all local mails.
+    ///
+    /// Uses a non-UID FETCH instead of `UID SEARCH`, as servers must not send EXPUNGE during it
+    /// (RFC 3501 7.4.1) and its responses carry sequence numbers of the client's view. SEARCH
+    /// results may reflect changes not announced yet, which would shift the map.
     pub async fn remote_uids(&mut self) -> Result<Vec<Uid>, Error> {
-        let command = "UID SEARCH ALL";
-        log::debug!("{command}");
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.unknown_expunged = false;
             tracking.uid_map.begin_command();
         }
-        let mut handler = Chain(SearchCollector::default(), &mut self.mailbox_handler);
-        self.connection.send(command.into(), &mut handler).await?;
-        let uids = handler.0.into_sorted_uids();
-
-        plausible_search_result(uids, self.mailbox_handler.message_count.exists())
-    }
-
-    /// Replaces the sequence to UID map with the result of [`Self::remote_uids`], taking ownership
-    /// to avoid copying it. Must be called before any other command, as the result is only
-    /// consistent with the responses received up to the search.
-    pub fn seed_remote_uids(&mut self, uids: Vec<Uid>) {
         let exists = self.mailbox_handler.message_count.exists();
-        self.mailbox_handler.seed_uids(uids, exists);
+        let fetched = if exists == 0 {
+            // 1:* is invalid for an empty mailbox
+            Vec::new()
+        } else {
+            let command = "FETCH 1:* (UID)";
+            log::debug!("{command}");
+            let mut handler = Chain(UidCollector::default(), &mut self.mailbox_handler);
+            self.connection.send(command.into(), &mut handler).await?;
+            handler.0.fetched
+        };
+        let mut uids: Vec<Uid> = fetched.iter().map(|(_, uid)| *uid).collect();
+        // responses are usually in ascending sequence and therefore UID order
+        if !uids.is_sorted() {
+            uids.sort_unstable();
+        }
+        uids.dedup();
+        let uids = plausible_uids(uids, self.mailbox_handler.message_count.exists())?;
+        self.mailbox_handler
+            .seed_uids(&fetched, self.mailbox_handler.message_count.exists());
+
+        Ok(uids)
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
@@ -567,20 +577,21 @@ impl MetadataCollector {
     }
 }
 
-fn plausible_search_result(uids: Vec<Uid>, exists: u32) -> Result<Vec<Uid>, Error> {
+fn plausible_uids(uids: Vec<Uid>, exists: u32) -> Result<Vec<Uid>, Error> {
     if uids.is_empty() && exists > 0 {
-        Err(Error::ImplausibleSearchResult(exists))
+        Err(Error::ImplausibleUidList(exists))
     } else {
         Ok(uids)
     }
 }
 
+/// Collects sequence numbers and UIDs of `FETCH (UID)` responses
 #[derive(Default)]
-struct SearchCollector {
-    uids: Vec<Uid>,
+struct UidCollector {
+    fetched: Vec<(u32, Uid)>,
 }
 
-impl ResponseHandler for SearchCollector {
+impl ResponseHandler for UidCollector {
     type Error = Error;
 
     fn handle(
@@ -591,30 +602,24 @@ impl ResponseHandler for SearchCollector {
     }
 }
 
-impl SearchCollector {
-    /// SEARCH results are unordered and may be split across multiple responses
-    fn into_sorted_uids(mut self) -> Vec<Uid> {
-        self.uids.sort_unstable();
-        self.uids.dedup();
-        self.uids
-    }
-
-    fn collect(&mut self, mut response: ResponseData) -> Result<Option<ResponseData>, Error> {
-        let Some(uids) = response.take_search() else {
+impl UidCollector {
+    /// Passes on responses carrying more than the UID, e.g. concurrent flag changes, after
+    /// recording their UID
+    fn collect(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
+        let imap_proto::Response::Fetch(sequence, attributes) = response.parsed() else {
             return Ok(Some(response));
         };
-        // collects in place, as Uid has the layout of u32
-        let uids = uids
-            .into_iter()
-            .map(Uid::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        if self.uids.is_empty() {
-            self.uids = uids;
-        } else {
-            self.uids.extend(uids);
-        }
+        let attributes = FetchAttributes::parse(attributes);
+        let Some(uid) = attributes.uid else {
+            return Ok(Some(response));
+        };
+        self.fetched.push((*sequence, uid.try_into()?));
 
-        Ok(None)
+        if attributes.flags.is_some() || attributes.body.is_some() {
+            Ok(Some(response))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -857,10 +862,11 @@ impl MailboxHandler {
         }
     }
 
-    /// Replaces the sequence to UID map with the UIDs of a `UID SEARCH ALL`. Skipped if mails got
-    /// expunged meanwhile, as the result may predate them while new mails keep the count
-    /// matching. The current map stays consistent then, as it processed the expunges itself.
-    fn seed_uids(&mut self, uids: Vec<Uid>, exists: u32) {
+    /// Replaces the sequence to UID map with the sequence numbers and UIDs of a `FETCH 1:* (UID)`.
+    /// Skipped if mails got expunged meanwhile, which servers must not do during FETCH, as the
+    /// sequence numbers may be stale then. The current map stays consistent then, as it processed
+    /// the expunges itself.
+    fn seed_uids(&mut self, fetched: &[(u32, Uid)], exists: u32) {
         let Some(SequenceTracking { uid_map, .. }) = &mut self.tracking else {
             return;
         };
@@ -868,7 +874,7 @@ impl MailboxHandler {
             log::debug!("not seeding sequence to uid map due to concurrent expunge");
             return;
         }
-        uid_map.seed(uids, exists);
+        uid_map.seed(fetched, exists);
     }
 
     /// Whether UIDs of fetched mails should be collected to resolve later responses
@@ -952,14 +958,34 @@ mod tests {
     }
 
     #[test]
-    fn test_search_collector_collects_uids() {
-        let mut collector = SearchCollector::default();
+    fn test_uid_collector_collects_sequences_and_uids() {
+        let mut collector = UidCollector::default();
 
         assertables::assert_none!(assertables::assert_ok!(
-            collector.collect(ResponseData::from_raw(b"* SEARCH 1 4 7\r\n"))
+            collector.collect(ResponseData::from_raw(b"* 1 FETCH (UID 4)\r\n"))
+        ));
+        assertables::assert_none!(assertables::assert_ok!(
+            collector.collect(ResponseData::from_raw(b"* 2 FETCH (UID 7 MODSEQ (3))\r\n"))
         ));
 
-        assert_eq!(collector.uids, vec![uid(1), uid(4), uid(7)]);
+        assert_eq!(collector.fetched, vec![(1, uid(4)), (2, uid(7))]);
+    }
+
+    #[test]
+    fn test_uid_collector_passes_on_flag_changes() {
+        let mut collector = UidCollector::default();
+
+        assertables::assert_some!(assertables::assert_ok!(collector.collect(
+            ResponseData::from_raw(b"* 1 FETCH (UID 4 FLAGS (\\Seen) MODSEQ (3))\r\n")
+        )));
+        assertables::assert_some!(assertables::assert_ok!(collector.collect(
+            ResponseData::from_raw(b"* 2 FETCH (FLAGS (\\Seen) MODSEQ (3))\r\n")
+        )));
+        assertables::assert_some!(assertables::assert_ok!(
+            collector.collect(ResponseData::from_raw(b"* 3 EXISTS\r\n"))
+        ));
+
+        assert_eq!(collector.fetched, vec![(1, uid(4))]);
     }
 
     #[compio::test]
@@ -1011,35 +1037,18 @@ mod tests {
     }
 
     #[test]
-    fn test_plausible_search_result_rejects_empty_result_for_nonempty_mailbox() {
+    fn test_plausible_uids_rejects_empty_result_for_nonempty_mailbox() {
         assert!(matches!(
-            plausible_search_result(Vec::new(), 3),
-            Err(Error::ImplausibleSearchResult(3))
+            plausible_uids(Vec::new(), 3),
+            Err(Error::ImplausibleUidList(3))
         ));
         assert_eq!(
-            assertables::assert_ok!(plausible_search_result(Vec::new(), 0)),
+            assertables::assert_ok!(plausible_uids(Vec::new(), 0)),
             Vec::new()
         );
         assert_eq!(
-            assertables::assert_ok!(plausible_search_result(vec![uid(2)], 3)),
+            assertables::assert_ok!(plausible_uids(vec![uid(2)], 3)),
             vec![uid(2)]
-        );
-    }
-
-    #[test]
-    fn test_search_collector_sorts_and_dedups_uids() {
-        let mut collector = SearchCollector::default();
-
-        assertables::assert_none!(assertables::assert_ok!(
-            collector.collect(ResponseData::from_raw(b"* SEARCH 9 4 7\r\n"))
-        ));
-        assertables::assert_none!(assertables::assert_ok!(
-            collector.collect(ResponseData::from_raw(b"* SEARCH 4 1\r\n"))
-        ));
-
-        assert_eq!(
-            collector.into_sorted_uids(),
-            vec![uid(1), uid(4), uid(7), uid(9)]
         );
     }
 
@@ -1084,15 +1093,17 @@ mod tests {
     #[compio::test]
     async fn test_mailbox_handler_skips_seed_after_concurrent_expunge() {
         let (mut handler, task_rx) = mailbox_handler(3);
-        handler.seed_uids(vec![uid(1), uid(2), uid(3)], 3);
+        let fetched = [(1, uid(1)), (2, uid(2)), (3, uid(3))];
+        handler.seed_uids(&fetched, 3);
         assertables::assert_some!(handler.tracking.as_mut())
             .uid_map
             .begin_command();
 
-        // SEARCH returned UIDs 1 to 3, then UID 1 got expunged and UID 4 arrived
+        // FETCH returned UIDs 1 to 3, then the server violated RFC 3501 by expunging UID 1
+        // during it, and UID 4 arrived
         handle(&mut handler, b"* 1 EXPUNGE\r\n").await;
         handle(&mut handler, b"* 3 EXISTS\r\n").await;
-        handler.seed_uids(vec![uid(1), uid(2), uid(3)], 3);
+        handler.seed_uids(&fetched, 3);
 
         let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
             panic!("expunge should be resolved to deletion");

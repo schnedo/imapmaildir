@@ -21,6 +21,6 @@ pub enum Task {
     ReadMail(NewLocalMailMetadata, TxOneshot<Option<LocalMail>>),
     Flags(Vec<Uid>, TxOneshot<HashMap<Uid, BitFlags<Flag>>>),
     HighestModseq(TxOneshot<ModSeq>),
-    UidsNotIn(Vec<Uid>, TxOneshot<(Vec<Uid>, Vec<Uid>)>),
+    UidsNotIn(Vec<Uid>, TxOneshot<Vec<Uid>>),
     DetectChanges(TxOneshot<LocalChanges>),
 }

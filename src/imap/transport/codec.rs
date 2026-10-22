@@ -116,15 +116,6 @@ impl ResponseData {
         }
     }
 
-    /// Moves the UIDs out of a SEARCH response without copying them
-    pub fn take_search(&mut self) -> Option<Vec<u32>> {
-        if let Response::MailboxData(imap_proto::MailboxDatum::Search(uids)) = &mut self.response {
-            Some(std::mem::take(uids))
-        } else {
-            None
-        }
-    }
-
     pub fn raw(self) -> Bytes {
         self.raw
     }
@@ -183,11 +174,17 @@ mod tests {
         assert_eq!(codec.decode_scanned, buf.len());
         buf.extend_from_slice(b"\r\n* 1 EXISTS\r\n");
 
-        let mut response = assert_some!(assert_ok!(codec.decode(&mut buf)));
-        assert_eq!(assert_some!(response.take_search()), vec![1, 2, 3]);
+        let response = assert_some!(assert_ok!(codec.decode(&mut buf)));
+        assert_matches!(
+            response.parsed(),
+            Response::MailboxData(imap_proto::MailboxDatum::Search(uids)) if *uids == [1, 2, 3]
+        );
         assert_eq!(codec.decode_scanned, 0);
-        let mut response = assert_some!(assert_ok!(codec.decode(&mut buf)));
-        assert_none!(response.take_search());
+        let response = assert_some!(assert_ok!(codec.decode(&mut buf)));
+        assert_matches!(
+            response.parsed(),
+            Response::MailboxData(imap_proto::MailboxDatum::Exists(1))
+        );
     }
 
     #[test]

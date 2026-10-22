@@ -98,23 +98,35 @@ impl UidMap {
         self.gap_end = len;
     }
 
-    /// Replaces the map with the complete, ascending and duplicate-free UID list of the mailbox
-    pub fn seed(&mut self, uids: Vec<Uid>, exists: u32) {
-        debug_assert!(uids.is_sorted());
+    /// Replaces the map with the sequence numbers and UIDs of `fetched` mails. Messages missing
+    /// from `fetched` stay unknown, e.g. ones the server already expunged without announcing it.
+    pub fn seed(&mut self, fetched: &[(u32, Uid)], exists: u32) {
         self.gap_start = 0;
         self.gap_end = 0;
-        self.valid = uids.len() == exists as usize;
-        self.unknown = if self.valid { 0 } else { exists as usize };
-        if self.valid {
-            // reuses the allocation of uids, as Option<Uid> has the layout of Uid
-            self.slots = uids.into_iter().map(Some).collect();
-        } else {
-            log::debug!(
-                "not seeding sequence to uid map with {} uids for {exists} messages",
-                uids.len()
-            );
-            self.slots.clear();
-            self.slots.resize(exists as usize, None);
+        self.slots.clear();
+        self.slots.resize(exists as usize, None);
+        self.valid = true;
+        self.unknown = exists as usize;
+        for &(sequence, uid) in fetched {
+            let Some(slot) = Self::index(sequence).and_then(|index| self.slots.get_mut(index))
+            else {
+                self.invalidate("seeded FETCH out of range");
+                return;
+            };
+            match *slot {
+                None => {
+                    *slot = Some(uid);
+                    self.unknown -= 1;
+                }
+                Some(known) if known != uid => {
+                    self.invalidate("seeded FETCH UID differs from known UID");
+                    return;
+                }
+                Some(_) => {}
+            }
+        }
+        if !self.slots.iter().flatten().is_sorted_by(|a, b| a < b) {
+            self.invalidate("seeded UIDs out of order");
         }
     }
 
@@ -210,8 +222,8 @@ mod tests {
     fn seeded(uids: &[u32]) -> UidMap {
         let exists = assert_ok!(u32::try_from(uids.len()));
         let mut map = UidMap::new(exists);
-        let uids: Vec<Uid> = uids.iter().map(|u| uid(*u)).collect();
-        map.seed(uids, exists);
+        let fetched: Vec<(u32, Uid)> = (1..).zip(uids.iter().map(|u| uid(*u))).collect();
+        map.seed(&fetched, exists);
         assert!(map.is_valid());
         map
     }
@@ -245,11 +257,60 @@ mod tests {
     }
 
     #[test]
-    fn test_seed_with_wrong_count_invalidates() {
-        let mut map = UidMap::new(2);
-        map.seed(vec![uid(1)], 2);
+    fn test_seed_keeps_missing_messages_unknown() {
+        let mut map = UidMap::new(3);
+        map.seed(&[(1, uid(2)), (3, uid(9))], 3);
+
+        assert!(map.is_valid());
+        assert!(map.needs_uids());
+        assert_none!(map.on_expunge(2));
+        assert!(map.is_valid());
+        assert_eq!(map.on_expunge(2), Some(uid(9)));
+    }
+
+    #[test]
+    fn test_seed_tolerates_repeated_fetch_of_same_uid() {
+        let mut map = UidMap::new(1);
+        map.seed(&[(1, uid(2)), (1, uid(2))], 1);
+
+        assert!(map.is_valid());
+        assert!(!map.needs_uids());
+    }
+
+    #[test]
+    fn test_seed_out_of_range_invalidates() {
+        let mut map = UidMap::new(1);
+        map.seed(&[(1, uid(2)), (2, uid(3))], 1);
 
         assert!(!map.is_valid());
+    }
+
+    #[test]
+    fn test_seed_with_differing_uid_invalidates() {
+        let mut map = UidMap::new(1);
+        map.seed(&[(1, uid(2)), (1, uid(3))], 1);
+
+        assert!(!map.is_valid());
+    }
+
+    #[test]
+    fn test_seed_out_of_order_invalidates() {
+        let mut map = UidMap::new(2);
+        map.seed(&[(1, uid(3)), (2, uid(2))], 2);
+
+        assert!(!map.is_valid());
+    }
+
+    #[test]
+    fn test_seed_revalidates_invalid_map() {
+        let mut map = UidMap::new(2);
+        map.on_exists(1);
+        assert!(!map.is_valid());
+
+        map.seed(&[(1, uid(4))], 1);
+
+        assert!(map.is_valid());
+        assert_eq!(map.on_expunge(1), Some(uid(4)));
     }
 
     #[test]
