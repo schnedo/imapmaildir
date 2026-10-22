@@ -346,7 +346,8 @@ impl Maildir {
     }
 
     pub fn list_cur(&self) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {
-        let dir_contents = fs::read_dir(self.cur.as_path())?;
+        // renaming unstructured files while reading the directory may list them again
+        let dir_contents: Vec<_> = fs::read_dir(self.cur.as_path())?.collect();
         let watch = self.watch.clone();
         let cur = self.cur.clone();
         let (list_tx, list_rx) = spsc::bounded_async(32);
