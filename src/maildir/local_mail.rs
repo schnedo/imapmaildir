@@ -2,7 +2,10 @@ use std::{
     fmt::{Debug, Display, Write as _},
     process,
     str::FromStr,
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,6 +18,9 @@ use crate::{
     maildir::maildir::MaildirFile,
     repository::{Flag, Uid},
 };
+
+/// Distinguishes file prefixes generated within the same nanosecond
+static DELIVERY_COUNT: AtomicU64 = AtomicU64::new(0);
 
 static PID_AND_HOSTNAME: LazyLock<(u32, String)> = LazyLock::new(|| {
     (
@@ -162,7 +168,8 @@ impl LocalMailMetadata {
         let secs = time.as_secs();
         let nanos = time.subsec_nanos();
         let (pid, hostname) = &*PID_AND_HOSTNAME;
-        format!("{secs}.P{pid}N{nanos}.{hostname}")
+        let count = DELIVERY_COUNT.fetch_add(1, Ordering::Relaxed);
+        format!("{secs}.P{pid}N{nanos}Q{count}.{hostname}")
     }
 
     pub fn uid(&self) -> Uid {
