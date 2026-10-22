@@ -1,4 +1,4 @@
-use std::{fmt::Debug, io, path::PathBuf};
+use std::{fmt::Debug, io, path::PathBuf, time::Duration};
 
 use asynchronous_codec::Framed;
 use compio::{
@@ -71,6 +71,11 @@ impl Connection {
                 port,
                 cause,
             })?;
+        Self::detect_dead_connections(&stream).map_err(|cause| Error::Connection {
+            host: host.to_string(),
+            port,
+            cause,
+        })?;
         let stream = (tls
             .connect_compat(host, AsyncStream::with_capacity(READ_BUFFER_SIZE, stream))
             .await)
@@ -80,6 +85,19 @@ impl Connection {
             tag_generator: TagGenerator::default(),
             stream: Framed::new(stream, ImapCodec::default()),
         })
+    }
+
+    /// Makes reads and writes fail on connections, that broke silently, e.g. due to NAT timeouts,
+    /// which would otherwise hang while idling or waiting for responses
+    fn detect_dead_connections(stream: &TcpStream) -> io::Result<()> {
+        rustix::net::sockopt::set_socket_keepalive(stream, true)?;
+        rustix::net::sockopt::set_tcp_keepidle(stream, Duration::from_mins(1))?;
+        rustix::net::sockopt::set_tcp_keepintvl(stream, Duration::from_secs(10))?;
+        rustix::net::sockopt::set_tcp_keepcnt(stream, 6)?;
+        // unacknowledged writes are not covered by keepalive
+        rustix::net::sockopt::set_tcp_user_timeout(stream, 2 * 60 * 1000)?;
+
+        Ok(())
     }
 
     pub async fn next_response(&mut self) -> Result<ResponseData, Error> {
