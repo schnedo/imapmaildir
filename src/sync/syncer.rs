@@ -152,10 +152,12 @@ impl Syncer {
                 let current_highest_modseq = repository.highest_modseq().await?;
                 let updates = client.fetch_changes_since(current_highest_modseq).await?;
                 let highest_modseq = updates.iter().map(RemoteMailMetadata::modseq).max();
-                let remote_changes = RemoteChanges {
-                    updates,
-                    deletions: None,
+                let deletions = if client.take_unknown_expunged() {
+                    Self::remote_deletions(client, repository).await?
+                } else {
+                    None
                 };
+                let remote_changes = RemoteChanges { updates, deletions };
                 Self::handle_remote_changes(client, repository, remote_changes).await?;
                 if let Some(highest_modseq) = highest_modseq {
                     client.commit_highest_modseq(highest_modseq).await?;
@@ -260,6 +262,19 @@ impl Syncer {
         }
     }
 
+    /// Detects remote deletions by comparing local with remote UIDs. Needed without QRESYNC.
+    async fn remote_deletions(
+        client: &mut SelectedClient,
+        repository: &RepositoryHandle,
+    ) -> Result<Option<SequenceSet>, Error> {
+        let Some(remote_uids) = client.remote_uids().await? else {
+            return Ok(None);
+        };
+        let missing_uids = repository.uids_not_in(remote_uids).await?;
+
+        Ok(SequenceSet::from_sorted(missing_uids).ok())
+    }
+
     fn check_uid_validity(local: UidValidity, remote: UidValidity) -> Result<(), Error> {
         if local == remote {
             Ok(())
@@ -285,7 +300,7 @@ impl Syncer {
                 );
                 let (uid_validity, highest_modseq) = (uid_validity?, highest_modseq?);
                 let selection = client
-                    .qresync_select(task_tx, mailbox, uid_validity, highest_modseq)
+                    .resync_select(task_tx, mailbox, uid_validity, highest_modseq)
                     .await?;
                 Ok::<_, Error>((uid_validity, highest_modseq, selection))
             });
@@ -293,7 +308,7 @@ impl Syncer {
         let mut local_changes = local_changes?;
         let Selection {
             mut client,
-            remote_changes,
+            mut remote_changes,
             mailbox_data,
             ..
         } = selection;
@@ -303,11 +318,19 @@ impl Syncer {
             Self::setup_task_processing(maildir_repository, task_rx, config, on_local_change);
 
         let synced = async {
+            let mut synced_modseq = mailbox_data.highest_modseq();
+            if !client.supports_qresync() {
+                let updates = client.fetch_changes_since(highest_modseq).await?;
+                let deletions = Self::remote_deletions(&mut client, &repository).await?;
+                // updates got fetched after SELECT, so they may be newer than its HIGHESTMODSEQ
+                if let Some(modseq) = updates.iter().map(RemoteMailMetadata::modseq).max() {
+                    synced_modseq = synced_modseq.max(modseq);
+                }
+                remote_changes = RemoteChanges { updates, deletions };
+            }
             Self::handle_conflicts(&remote_changes, &mut local_changes);
             Self::handle_remote_changes(&mut client, &repository, remote_changes).await?;
-            client
-                .commit_highest_modseq(mailbox_data.highest_modseq())
-                .await?;
+            client.commit_highest_modseq(synced_modseq).await?;
             Self::handle_local_changes(
                 &mut client,
                 local_changes,
@@ -595,6 +618,25 @@ impl Syncer {
         (batch, None)
     }
 
+    /// Merges queued deletions, e.g. from per-mail EXPUNGE responses without QRESYNC, to delete
+    /// them in a single repository transaction
+    fn collect_delete_batch(
+        first: &SequenceSet,
+        task_rx: &AsyncRx<Array<Task>>,
+        config: Config,
+    ) -> (Vec<Uid>, Option<Task>) {
+        let mut batch: Vec<Uid> = first.iter().collect();
+        while batch.len() < config.store_batch_size() {
+            match task_rx.try_recv() {
+                Ok(Task::Delete(sequence_set)) => batch.extend(sequence_set.iter()),
+                Ok(task) => return (batch, Some(task)),
+                Err(_) => break,
+            }
+        }
+
+        (batch, None)
+    }
+
     async fn process_task(
         maildir_repository: &MaildirRepository,
         task: Task,
@@ -640,6 +682,9 @@ impl Syncer {
             Task::HighestModseq(reply) => {
                 reply.send(maildir_repository.highest_modseq().await?);
             }
+            Task::UidsNotIn(uids, reply) => {
+                reply.send(maildir_repository.uids_not_in(uids).await?);
+            }
             Task::UpdateFlags(remote_mail_metadata) => {
                 log::debug!(
                     "Setting flags of mail {} to {}",
@@ -682,6 +727,17 @@ impl Syncer {
                             Self::collect_store_batch(remote_mail, &task_rx, config);
                         next_task = task;
                         let result = maildir_repository.store_batch(&batch).await;
+                        if result.is_ok() {
+                            on_local_change();
+                        }
+                        result.map_err(Error::from)
+                    }
+                    Task::Delete(sequence_set) => {
+                        let (batch, task) =
+                            Self::collect_delete_batch(&sequence_set, &task_rx, config);
+                        next_task = task;
+                        log::debug!("deleting {} mails", batch.len());
+                        let result = maildir_repository.delete_all(batch.into_iter()).await;
                         if result.is_ok() {
                             on_local_change();
                         }
@@ -784,6 +840,61 @@ mod tests {
         let (batch, _) = Syncer::collect_store_batch(mail(1, 20), &task_rx, Config::new(10, 10));
 
         assert_eq!(uids(&batch), vec![1]);
+    }
+
+    fn delete(uids: &[u32]) -> Task {
+        Task::Delete(assert_ok!(SequenceSet::from_sorted(
+            uids.iter().map(|uid| assert_ok!(Uid::try_from(*uid)))
+        )))
+    }
+
+    fn delete_batch(
+        first: &[u32],
+        task_rx: &AsyncRx<Array<Task>>,
+        config: Config,
+    ) -> (Vec<u32>, Option<Task>) {
+        let Task::Delete(first) = delete(first) else {
+            unreachable!()
+        };
+        let (batch, next) = Syncer::collect_delete_batch(&first, task_rx, config);
+
+        (batch.into_iter().map(u32::from).collect(), next)
+    }
+
+    #[compio::test]
+    async fn test_collect_delete_batch_merges_queued_deletions() {
+        let (_task_tx, task_rx) = queue([delete(&[3]), delete(&[5, 6])]).await;
+
+        let (batch, next) = delete_batch(&[1, 2], &task_rx, Config::default());
+
+        assert_eq!(batch, vec![1, 2, 3, 5, 6]);
+        assert!(next.is_none());
+    }
+
+    #[compio::test]
+    async fn test_collect_delete_batch_respects_count_limit() {
+        let (_task_tx, task_rx) = queue([delete(&[2]), delete(&[3])]).await;
+
+        let (batch, next) = delete_batch(&[1], &task_rx, Config::new(2, 100));
+
+        assert_eq!(batch, vec![1, 2]);
+        assert!(next.is_none());
+        assert_matches!(task_rx.try_recv(), Ok(Task::Delete(_)));
+    }
+
+    #[compio::test]
+    async fn test_collect_delete_batch_ends_on_other_task() {
+        let (_task_tx, task_rx) = queue([
+            delete(&[2]),
+            Task::SetHighestModseq(assert_ok!(ModSeq::try_from(9))),
+            delete(&[3]),
+        ])
+        .await;
+
+        let (batch, next) = delete_batch(&[1], &task_rx, Config::default());
+
+        assert_eq!(batch, vec![1, 2]);
+        assert_matches!(next, Some(Task::SetHighestModseq(_)));
     }
 
     #[compio::test]

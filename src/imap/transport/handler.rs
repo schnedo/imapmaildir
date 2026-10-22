@@ -22,19 +22,6 @@ pub trait ResponseHandler {
     }
 }
 
-pub struct Unhandled;
-
-impl ResponseHandler for Unhandled {
-    type Error = connection::Error;
-
-    fn handle(
-        &mut self,
-        response: ResponseData,
-    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
-        std::future::ready(Ok(Some(response)))
-    }
-}
-
 pub struct Chain<A, B>(pub A, pub B);
 
 impl<A: ResponseHandler<Error = B::Error>, B: ResponseHandler> ResponseHandler for Chain<A, B> {

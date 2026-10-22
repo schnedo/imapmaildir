@@ -19,6 +19,7 @@ use crate::{
         client::encoding,
         client::fetch::FetchAttributes,
         client::message_count::MessageCount,
+        client::uid_map::UidMap,
         transport::{self, Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
@@ -46,6 +47,7 @@ impl SelectedClient {
     pub fn new(
         connection: Connection,
         capabilities: &Capabilities,
+        qresync: bool,
         task_tx: MAsyncTx<mpsc::Array<Task>>,
         exists: u32,
     ) -> Result<Self, Error> {
@@ -61,11 +63,44 @@ impl SelectedClient {
             mailbox_handler: MailboxHandler {
                 task_tx,
                 message_count: MessageCount::new(exists),
+                tracking: (!qresync).then(|| SequenceTracking::new(exists)),
             },
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
         })
+    }
+
+    pub fn supports_qresync(&self) -> bool {
+        self.mailbox_handler.tracking.is_none()
+    }
+
+    /// Whether remote mails got expunged that could not be resolved to UIDs since the last call.
+    /// Requires comparing [`Self::remote_uids`] with local mails to detect deletions.
+    pub fn take_unknown_expunged(&mut self) -> bool {
+        self.mailbox_handler
+            .tracking
+            .as_mut()
+            .is_some_and(|tracking| std::mem::take(&mut tracking.unknown_expunged))
+    }
+
+    /// Fetches all UIDs of the selected mailbox in ascending order. `None` if the result is
+    /// implausible, as it would delete all local mails.
+    pub async fn remote_uids(&mut self) -> Result<Option<Vec<Uid>>, Error> {
+        let command = "UID SEARCH ALL";
+        log::debug!("{command}");
+        if let Some(tracking) = &mut self.mailbox_handler.tracking {
+            tracking.unknown_expunged = false;
+        }
+        let mut handler = Chain(SearchCollector::default(), &mut self.mailbox_handler);
+        self.connection.send(command.into(), &mut handler).await?;
+        let uids = handler.0.into_sorted_uids();
+        let exists = self.mailbox_handler.message_count.exists();
+        if let Some(tracking) = &mut self.mailbox_handler.tracking {
+            tracking.uid_map.seed(&uids, exists);
+        }
+
+        Ok(plausible_search_result(uids, exists))
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
@@ -92,8 +127,16 @@ impl SelectedClient {
         &mut self,
         modseq: ModSeq,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
+        let vanished = if self.supports_qresync() {
+            " VANISHED"
+        } else {
+            ""
+        };
         let command =
-            format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq} VANISHED)");
+            format!("UID FETCH 1:* (UID, ModSeq, FLAGS) (CHANGEDSINCE {modseq}{vanished})");
+        if let Some(tracking) = &mut self.mailbox_handler.tracking {
+            tracking.unsolicited_change = false;
+        }
         self.collect_metadata(command).await
     }
 
@@ -115,15 +158,26 @@ impl SelectedClient {
         command: String,
     ) -> Result<Vec<RemoteMailMetadata>, Error> {
         log::debug!("{command}");
-        let mut handler = Chain(MetadataCollector::default(), &mut self.mailbox_handler);
+        let collector = MetadataCollector {
+            sequences: self.mailbox_handler.tracking.is_some().then(Vec::new),
+            ..MetadataCollector::default()
+        };
+        if let Some(tracking) = &mut self.mailbox_handler.tracking {
+            tracking.uid_map.begin_command();
+        }
+        let mut handler = Chain(collector, &mut self.mailbox_handler);
         self.connection.send(command.into(), &mut handler).await?;
         let MetadataCollector {
             metadata,
             highest_sequence,
+            sequences,
         } = handler.0;
         self.mailbox_handler
             .message_count
             .on_fetch(highest_sequence);
+        if let Some(sequences) = sequences {
+            self.mailbox_handler.apply_fetched_uids(sequences);
+        }
 
         Ok(metadata)
     }
@@ -286,17 +340,29 @@ impl SelectedClient {
         );
         log::debug!("{command}");
 
-        let mut handler = Chain(StoreHandler::default(), &mut self.mailbox_handler);
+        let store_handler = StoreHandler {
+            sequences: self.mailbox_handler.tracking.is_some().then(Vec::new),
+            ..StoreHandler::default()
+        };
+        if let Some(tracking) = &mut self.mailbox_handler.tracking {
+            tracking.uid_map.begin_command();
+        }
+        let mut handler = Chain(store_handler, &mut self.mailbox_handler);
         let response = self
             .connection
             .send(command.into_bytes(), &mut handler)
             .await?;
+        let StoreHandler { modseqs, sequences } = handler.0;
+        // learning UIDs of e.g. own uploads lets a following UID EXPUNGE resolve without rescan
+        if let Some(sequences) = sequences {
+            self.mailbox_handler.apply_fetched_uids(sequences);
+        }
         let modified = modified_uids(&response)?;
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not updating their flags");
         }
 
-        Ok((modified, handler.0.modseqs))
+        Ok((modified, modseqs))
     }
 
     pub async fn delete(
@@ -340,8 +406,8 @@ impl SelectedClient {
     }
 
     pub async fn idle(&mut self, timeout: Duration) -> Result<IdleStopReason, Error> {
-        if self.mailbox_handler.message_count.has_unknown() {
-            log::debug!("not idling due to unfetched remote mail");
+        if self.mailbox_handler.needs_remote_sync() {
+            log::debug!("not idling due to unsynced remote changes");
             return Ok(IdleStopReason::Remote);
         }
         let command = "IDLE";
@@ -365,7 +431,7 @@ impl SelectedClient {
         }
 
         let stop_reason = loop {
-            if handler.message_count.has_unknown() {
+            if handler.needs_remote_sync() {
                 log::trace!("stopping idle");
                 break IdleStopReason::Remote;
             }
@@ -407,6 +473,8 @@ enum IdleEvent {
 struct MetadataCollector {
     metadata: Vec<RemoteMailMetadata>,
     highest_sequence: u32,
+    /// Only collected while tracking the sequence to UID map
+    sequences: Option<Vec<(u32, Uid)>>,
 }
 
 impl ResponseHandler for MetadataCollector {
@@ -428,7 +496,57 @@ impl MetadataCollector {
             && let Some(metadata) = parsed.metadata()?
         {
             self.highest_sequence = self.highest_sequence.max(*sequence);
+            if let Some(sequences) = &mut self.sequences {
+                sequences.push((*sequence, metadata.uid()));
+            }
             self.metadata.push(metadata);
+            Ok(None)
+        } else {
+            Ok(Some(response))
+        }
+    }
+}
+
+fn plausible_search_result(uids: Vec<Uid>, exists: u32) -> Option<Vec<Uid>> {
+    if uids.is_empty() && exists > 0 {
+        log::warn!("UID SEARCH ALL returned no uids for {exists} messages. Ignoring it");
+        None
+    } else {
+        Some(uids)
+    }
+}
+
+#[derive(Default)]
+struct SearchCollector {
+    uids: Vec<Uid>,
+}
+
+impl ResponseHandler for SearchCollector {
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(self.collect(response))
+    }
+}
+
+impl SearchCollector {
+    /// SEARCH results are unordered and may be split across multiple responses
+    fn into_sorted_uids(mut self) -> Vec<Uid> {
+        self.uids.sort_unstable();
+        self.uids.dedup();
+        self.uids
+    }
+
+    fn collect(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
+        if let imap_proto::Response::MailboxData(imap_proto::MailboxDatum::Search(uids)) =
+            response.parsed()
+        {
+            for uid in uids {
+                self.uids.push(uid.try_into()?);
+            }
             Ok(None)
         } else {
             Ok(Some(response))
@@ -439,6 +557,8 @@ impl MetadataCollector {
 #[derive(Default)]
 struct StoreHandler {
     modseqs: HashMap<Uid, ModSeq>,
+    /// Only collected while tracking the sequence to UID map
+    sequences: Option<Vec<(u32, Uid)>>,
 }
 
 impl ResponseHandler for StoreHandler {
@@ -454,7 +574,7 @@ impl ResponseHandler for StoreHandler {
 
 impl StoreHandler {
     fn collect(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
-        if let imap_proto::Response::Fetch(_, attributes) = response.parsed()
+        if let imap_proto::Response::Fetch(sequence, attributes) = response.parsed()
             && let FetchAttributes {
                 uid: Some(uid),
                 modseq: Some(modseq),
@@ -462,10 +582,12 @@ impl StoreHandler {
                 body: None,
             } = FetchAttributes::parse(attributes)
         {
-            self.modseqs.insert(
-                uid.try_into()?,
-                modseq.try_into().map_err(Error::InvalidModSeq)?,
-            );
+            let uid = uid.try_into()?;
+            self.modseqs
+                .insert(uid, modseq.try_into().map_err(Error::InvalidModSeq)?);
+            if let Some(sequences) = &mut self.sequences {
+                sequences.push((*sequence, uid));
+            }
             Ok(None)
         } else {
             Ok(Some(response))
@@ -514,6 +636,32 @@ fn parse_uid_set(uids: &str) -> Result<HashSet<Uid>, Error> {
 struct MailboxHandler {
     task_tx: MAsyncTx<mpsc::Array<Task>>,
     message_count: MessageCount,
+    /// Only tracked without QRESYNC, as VANISHED and FETCH responses carry UIDs otherwise
+    tracking: Option<SequenceTracking>,
+}
+
+/// Resolves sequence numbers of unsolicited responses to UIDs without QRESYNC
+#[derive(Debug)]
+struct SequenceTracking {
+    uid_map: UidMap,
+    /// Remote mails got expunged that could not be resolved to UIDs
+    unknown_expunged: bool,
+    /// Remote flags changed on mails that could not be resolved to UIDs
+    unsolicited_change: bool,
+}
+
+impl SequenceTracking {
+    fn new(exists: u32) -> Self {
+        Self {
+            uid_map: UidMap::new(exists),
+            unknown_expunged: false,
+            unsolicited_change: false,
+        }
+    }
+
+    fn needs_remote_sync(&self) -> bool {
+        self.unknown_expunged || self.unsolicited_change
+    }
 }
 
 impl ResponseHandler for MailboxHandler {
@@ -523,9 +671,23 @@ impl ResponseHandler for MailboxHandler {
         match response.parsed() {
             imap_proto::Response::Fetch(sequence, attributes) => {
                 self.message_count.on_fetch(*sequence);
-                let parsed = FetchAttributes::parse(attributes);
-                log::trace!("FETCH {parsed:?}");
-                let task = match (parsed.metadata()?, parsed.body) {
+                let attributes = FetchAttributes::parse(attributes);
+                log::trace!("FETCH {attributes:?}");
+                let metadata = if let Some(tracking) = &mut self.tracking {
+                    let uid = attributes.uid.map(Uid::try_from).transpose()?;
+                    let resolved = tracking.uid_map.on_fetch(*sequence, uid);
+                    let metadata = attributes.metadata_with_uid(resolved.or(uid))?;
+                    if metadata.is_none() && attributes.uid.is_none() && attributes.flags.is_some()
+                    {
+                        log::debug!("cannot resolve uid of mail {sequence} with changed flags");
+                        tracking.unsolicited_change = true;
+                        return Ok(None);
+                    }
+                    metadata
+                } else {
+                    attributes.metadata()?
+                };
+                let task = match (metadata, attributes.body) {
                     (Some(metadata), Some(Some(content))) => {
                         let content = RemoteContent::new(response.bytes_of(content));
                         Task::NewMail(RemoteMail::new(metadata, content))
@@ -554,10 +716,24 @@ impl ResponseHandler for MailboxHandler {
             imap_proto::Response::MailboxData(imap_proto::MailboxDatum::Exists(exists)) => {
                 log::trace!("mailbox contains {exists} messages");
                 self.message_count.on_exists(*exists);
+                if let Some(tracking) = &mut self.tracking {
+                    tracking.uid_map.on_exists(*exists);
+                }
                 Ok(None)
             }
-            imap_proto::Response::Expunge(_) => {
+            imap_proto::Response::Expunge(sequence) => {
                 self.message_count.on_expunge(1);
+                let Some(tracking) = &mut self.tracking else {
+                    log::warn!("unexpected EXPUNGE {sequence} with QRESYNC enabled");
+                    return Ok(None);
+                };
+                if let Some(uid) = tracking.uid_map.on_expunge(*sequence) {
+                    log::trace!("EXPUNGE {sequence} resolved to uid {uid}");
+                    self.send(Task::Delete(uid.into())).await?;
+                } else {
+                    log::debug!("cannot resolve uid of expunged mail {sequence}");
+                    tracking.unknown_expunged = true;
+                }
                 Ok(None)
             }
             _ => Ok(Some(response)),
@@ -566,6 +742,29 @@ impl ResponseHandler for MailboxHandler {
 }
 
 impl MailboxHandler {
+    /// Records UIDs of FETCH responses collected during the last command. Skipped if mails got
+    /// expunged meanwhile, as the collected sequence numbers may be stale then.
+    fn apply_fetched_uids(&mut self, sequences: Vec<(u32, Uid)>) {
+        let Some(SequenceTracking { uid_map, .. }) = &mut self.tracking else {
+            return;
+        };
+        if uid_map.expunged_in_command() > 0 {
+            log::debug!("not recording fetched uids due to concurrent expunge");
+            return;
+        }
+        for (sequence, uid) in sequences {
+            uid_map.on_fetch(sequence, Some(uid));
+        }
+    }
+
+    fn needs_remote_sync(&self) -> bool {
+        self.message_count.has_unknown()
+            || self
+                .tracking
+                .as_ref()
+                .is_some_and(SequenceTracking::needs_remote_sync)
+    }
+
     async fn send(&self, task: Task) -> Result<(), Error> {
         self.task_tx
             .send(task)
@@ -608,6 +807,179 @@ mod tests {
             information.as_deref(),
             Some("[MODIFIED 7,9] Conditional STORE failed")
         );
+    }
+
+    fn mailbox_handler(exists: u32) -> (MailboxHandler, crossfire::AsyncRx<mpsc::Array<Task>>) {
+        let (task_tx, task_rx) = mpsc::bounded_async(16);
+        let handler = MailboxHandler {
+            task_tx,
+            message_count: MessageCount::new(exists),
+            tracking: Some(SequenceTracking::new(exists)),
+        };
+
+        (handler, task_rx)
+    }
+
+    fn uid(uid: u32) -> Uid {
+        assertables::assert_ok!(Uid::try_from(uid))
+    }
+
+    async fn handle(handler: &mut MailboxHandler, raw: &'static [u8]) {
+        assertables::assert_none!(assertables::assert_ok!(
+            handler.handle(ResponseData::from_raw(raw)).await
+        ));
+    }
+
+    #[test]
+    fn test_search_collector_collects_uids() {
+        let mut collector = SearchCollector::default();
+
+        assertables::assert_none!(assertables::assert_ok!(
+            collector.collect(ResponseData::from_raw(b"* SEARCH 1 4 7\r\n"))
+        ));
+
+        assert_eq!(collector.uids, vec![uid(1), uid(4), uid(7)]);
+    }
+
+    #[compio::test]
+    async fn test_store_handler_uids_resolve_following_expunge() {
+        let (mut handler, task_rx) = mailbox_handler(2);
+        let mut store_handler = StoreHandler {
+            sequences: Some(Vec::new()),
+            ..StoreHandler::default()
+        };
+        assertables::assert_some!(handler.tracking.as_mut())
+            .uid_map
+            .begin_command();
+
+        assertables::assert_none!(assertables::assert_ok!(
+            store_handler.collect(ResponseData::from_raw(b"* 2 FETCH (UID 7 MODSEQ (9))\r\n"))
+        ));
+        handler.apply_fetched_uids(assertables::assert_some!(store_handler.sequences));
+        handle(&mut handler, b"* 2 EXPUNGE\r\n").await;
+
+        assert_eq!(store_handler.modseqs.len(), 1);
+        let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
+            panic!("expunge should be resolved to deletion");
+        };
+        assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(7)]);
+        assert!(!handler.needs_remote_sync());
+    }
+
+    #[test]
+    fn test_plausible_search_result_rejects_empty_result_for_nonempty_mailbox() {
+        assertables::assert_none!(plausible_search_result(Vec::new(), 3));
+        assert_eq!(plausible_search_result(Vec::new(), 0), Some(Vec::new()));
+        assert_eq!(plausible_search_result(vec![uid(2)], 3), Some(vec![uid(2)]));
+    }
+
+    #[test]
+    fn test_search_collector_sorts_and_dedups_uids() {
+        let mut collector = SearchCollector::default();
+
+        assertables::assert_none!(assertables::assert_ok!(
+            collector.collect(ResponseData::from_raw(b"* SEARCH 9 4 7\r\n"))
+        ));
+        assertables::assert_none!(assertables::assert_ok!(
+            collector.collect(ResponseData::from_raw(b"* SEARCH 4 1\r\n"))
+        ));
+
+        assert_eq!(
+            collector.into_sorted_uids(),
+            vec![uid(1), uid(4), uid(7), uid(9)]
+        );
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_resolves_expunge_to_uid() {
+        let (mut handler, task_rx) = mailbox_handler(2);
+        handle(&mut handler, b"* 1 FETCH (UID 3 MODSEQ (1) FLAGS ())\r\n").await;
+        handle(&mut handler, b"* 2 FETCH (UID 5 MODSEQ (1) FLAGS ())\r\n").await;
+        while task_rx.try_recv().is_ok() {}
+
+        handle(&mut handler, b"* 2 EXPUNGE\r\n").await;
+
+        let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
+            panic!("expunge should be resolved to deletion");
+        };
+        assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(5)]);
+        assert!(!handler.needs_remote_sync());
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_skips_fetched_uids_after_concurrent_expunge() {
+        let (mut handler, task_rx) = mailbox_handler(1);
+        handle(&mut handler, b"* 1 FETCH (UID 1 MODSEQ (1) FLAGS ())\r\n").await;
+        handle(&mut handler, b"* 3 EXISTS\r\n").await;
+        while task_rx.try_recv().is_ok() {}
+        let uid_map = &mut assertables::assert_some!(handler.tracking.as_mut()).uid_map;
+        uid_map.begin_command();
+
+        // UID 3 was fetched as sequence 2, then sequence 1 got expunged, shifting UID 3 to 1
+        handle(&mut handler, b"* 1 EXPUNGE\r\n").await;
+        handler.apply_fetched_uids(vec![(2, uid(3))]);
+
+        let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
+            panic!("expunge should be resolved to deletion");
+        };
+        assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(1)]);
+        handle(&mut handler, b"* 2 EXPUNGE\r\n").await;
+        assert!(task_rx.try_recv().is_err());
+        assert!(assertables::assert_some!(&handler.tracking).unknown_expunged);
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_applies_fetched_uids() {
+        let (mut handler, task_rx) = mailbox_handler(2);
+        assertables::assert_some!(handler.tracking.as_mut())
+            .uid_map
+            .begin_command();
+
+        handler.apply_fetched_uids(vec![(1, uid(3)), (2, uid(5))]);
+        handle(&mut handler, b"* 2 EXPUNGE\r\n").await;
+
+        let Ok(Task::Delete(deleted)) = task_rx.try_recv() else {
+            panic!("expunge should be resolved to deletion");
+        };
+        assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(5)]);
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_flags_unresolved_expunge() {
+        let (mut handler, task_rx) = mailbox_handler(2);
+
+        handle(&mut handler, b"* 2 EXPUNGE\r\n").await;
+
+        assert!(task_rx.try_recv().is_err());
+        assert!(assertables::assert_some!(&handler.tracking).unknown_expunged);
+        assert!(handler.needs_remote_sync());
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_resolves_uidless_flag_change() {
+        let (mut handler, task_rx) = mailbox_handler(1);
+        handle(&mut handler, b"* 1 FETCH (UID 3 MODSEQ (1) FLAGS ())\r\n").await;
+        while task_rx.try_recv().is_ok() {}
+
+        handle(&mut handler, b"* 1 FETCH (FLAGS (\\Seen) MODSEQ (5))\r\n").await;
+
+        let Ok(Task::UpdateFlags(metadata)) = task_rx.try_recv() else {
+            panic!("flag change should be resolved to update");
+        };
+        assert_eq!(metadata.uid(), uid(3));
+        assert_eq!(metadata.flags(), Flag::Seen);
+        assert!(!handler.needs_remote_sync());
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_flags_unresolved_flag_change() {
+        let (mut handler, task_rx) = mailbox_handler(1);
+
+        handle(&mut handler, b"* 1 FETCH (FLAGS (\\Seen) MODSEQ (5))\r\n").await;
+
+        assert!(task_rx.try_recv().is_err());
+        assert!(assertables::assert_some!(&handler.tracking).unsolicited_change);
+        assert!(handler.needs_remote_sync());
     }
 
     #[test]

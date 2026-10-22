@@ -29,6 +29,10 @@ impl MessageCount {
         self.known = self.known.saturating_add(count);
     }
 
+    pub fn exists(self) -> u32 {
+        self.exists
+    }
+
     pub fn has_unknown(self) -> bool {
         self.exists > self.known
     }
