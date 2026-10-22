@@ -297,24 +297,45 @@ impl MaildirRepository {
         }
     }
 
+    /// Tracks uploaded mails with their new UIDs. Tracks all of them even if renaming some fails,
+    /// as untracked mails get uploaded again. The state keeps the uploaded flags, so that differing
+    /// local files, e.g. renamed or deleted by other clients, are detected as local changes.
     pub async fn add_synced_all(
         &self,
         synced: Vec<(NewLocalMailMetadata, Uid)>,
     ) -> Result<(), Error> {
-        let stored = stream::iter(synced)
-            .map(|(mail_metadata, uid)| {
+        let results: Vec<_> = stream::iter(synced)
+            .map(|(mail_metadata, uid)| async move {
                 log::info!(
                     "adding {uid} to newly synced mail {}",
                     mail_metadata.filename()
                 );
-                self.maildir.update_uid(mail_metadata, uid)
+                let synced = mail_metadata.clone().set_uid(uid);
+                let result = self.maildir.update_uid(mail_metadata, uid).await;
+
+                (synced, result)
             })
             .buffered(MAX_CONCURRENT_FILE_OPS)
-            .try_collect()
-            .await?;
+            .collect()
+            .await;
+        let mut error = None;
+        let mut stored = Vec::with_capacity(results.len());
+        for (synced, result) in results {
+            match result {
+                Ok(_) => {}
+                Err(maildir::Error::Missing(path)) => {
+                    log::warn!("newly synced mail {} vanished", path.display());
+                }
+                Err(e) => {
+                    log::error!("cannot add uid {} to newly synced mail: {e}", synced.uid());
+                    error.get_or_insert(e);
+                }
+            }
+            stored.push(synced);
+        }
         self.state.insert_all(stored).await?;
 
-        Ok(())
+        error.map_or(Ok(()), |e| Err(e.into()))
     }
 
     pub async fn delete_all(&self, uids: impl Iterator<Item = Uid>) -> Result<(), DeleteError> {
@@ -1139,6 +1160,31 @@ mod tests {
                 .join(mail.filename())
                 .exists()
         );
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_add_synced_tracks_all_mails_if_one_vanished(
+        #[future] repo: TestMaildirRepository,
+    ) {
+        let cur = repo.mail_dir.path().join("cur");
+        let present = assert_ok!(NewLocalMailMetadata::from_str("foo:2,S"));
+        assert_ok!(fs::write(cur.join(present.filename()), "1"));
+        let vanished = assert_ok!(NewLocalMailMetadata::from_str("bar:2,S"));
+        let (present_uid, vanished_uid) = (assert_ok!(Uid::try_from(1)), Uid::MAX);
+
+        assert_ok!(
+            repo.repo
+                .add_synced_all(vec![(vanished, vanished_uid), (present, present_uid)])
+                .await
+        );
+
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(present_uid).await));
+        assert_some!(assert_ok!(repo.repo.state.get_by_id(vanished_uid).await));
+        let changes = assert_ok!(repo.repo.detect_changes().await);
+        assert_eq!(changes.deletions, vec![vanished_uid]);
+        assert_len_eq_x!(changes.news, 0);
     }
 
     #[rstest]
