@@ -160,6 +160,14 @@ impl Maildir {
                 match self.handle_change(change, &change_tx).await {
                     Ok(Ok(())) => {}
                     Ok(Err(SendError(_))) => break,
+                    Err(Error::Missing(path)) => {
+                        // another client renamed or deleted the mail meanwhile. Rescanning
+                        // reconciles the state, as single changes may be incomplete now.
+                        log::warn!("{} vanished while handling its change", path.display());
+                        if change_tx.send(Change::Overflow).await.is_err() {
+                            break;
+                        }
+                    }
                     Err(e) => {
                         // receiver being gone means nobody is interested in the error anymore
                         let _ = change_tx.send(Change::Error(e)).await;
