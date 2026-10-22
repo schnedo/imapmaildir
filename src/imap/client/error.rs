@@ -6,7 +6,7 @@ use crate::{
         client::capability::{AuthCapability, Capability},
         transport,
     },
-    repository::{MailboxMetadataBuilderError, Uid, UidConversionError, UidValidity},
+    repository::{MailboxMetadataBuilderError, UidConversionError, UidValidity},
 };
 
 #[derive(Debug, Error)]
@@ -44,8 +44,6 @@ pub enum Error {
     MissingExists,
     #[error("Received incomplete mail metadata")]
     IncompleteMetadata,
-    #[error("Received mail {0} without content")]
-    MissingContent(Uid),
     #[error("Server did not respond to APPEND with APPENDUID")]
     MissingAppendUid,
     #[error(

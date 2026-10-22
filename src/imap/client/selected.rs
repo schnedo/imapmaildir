@@ -797,7 +797,9 @@ impl ResponseHandler for MailboxHandler {
                         Task::NewMail(RemoteMail::new(metadata, content))
                     }
                     (Some(metadata), Some(None)) => {
-                        return Err(Error::MissingContent(metadata.uid()));
+                        // servers may send NIL for mails expunged by other sessions (RFC 2180 4.1.3)
+                        log::warn!("skipping mail {} without content", metadata.uid());
+                        return Ok(None);
                     }
                     (Some(metadata), None) => Task::UpdateFlags(metadata),
                     (None, _) => return Ok(Some(response)),
