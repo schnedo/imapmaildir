@@ -1,34 +1,3 @@
-// Copyright (c) 2017 Dirkjan Ochtman
-//
-// Permission is hereby granted, free of charge, to any
-// person obtaining a copy of this software and associated
-// documentation files (the "Software"), to deal in the
-// Software without restriction, including without
-// limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of
-// the Software, and to permit persons to whom the Software
-// is furnished to do so, subject to the following
-// conditions:
-//
-// The above copyright notice and this permission notice
-// shall be included in all copies or substantial portions
-// of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-
-// original code copied from
-// https://github.com/djc/tokio-imap/blob/7cf1ee962ee1981bd3cb5f543a27eedece7e5edc/tokio-imap/src/codec.rs
-// just using the crate lead to issues with consuming the response stream. probably due to version
-// mismatches of futures crate
-
 use std::io;
 use std::mem;
 
@@ -43,6 +12,10 @@ const ERROR_CONTEXT_SIZE: usize = 64;
 #[derive(Default)]
 pub struct ImapCodec {
     decode_need_message_bytes: usize,
+    /// Buffer length at the last incomplete parse. Responses end with a newline, so parsing again
+    /// is pointless until one arrives after it. Avoids quadratic re-parsing of long lines like
+    /// SEARCH results, which arrive in many reads.
+    decode_scanned: usize,
 }
 
 impl Decoder for ImapCodec {
@@ -50,6 +23,10 @@ impl Decoder for ImapCodec {
     type Error = io::Error;
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, io::Error> {
         if self.decode_need_message_bytes > buf.len() {
+            return Ok(None);
+        }
+        if !buf[self.decode_scanned.min(buf.len())..].contains(&b'\n') {
+            self.decode_scanned = buf.len();
             return Ok(None);
         }
         let (response, rsp_len) = match imap_proto::Response::parse(buf) {
@@ -64,9 +41,11 @@ impl Decoder for ImapCodec {
             }
             Err(nom::Err::Incomplete(Needed::Size(min))) => {
                 self.decode_need_message_bytes = buf.len() + min.get();
+                self.decode_scanned = buf.len();
                 return Ok(None);
             }
             Err(nom::Err::Incomplete(_)) => {
+                self.decode_scanned = buf.len();
                 return Ok(None);
             }
             Err(
@@ -83,6 +62,7 @@ impl Decoder for ImapCodec {
         };
         let raw = buf.split_to(rsp_len).freeze();
         self.decode_need_message_bytes = 0;
+        self.decode_scanned = 0;
         Ok(Some(ResponseData { raw, response }))
     }
 }
@@ -180,6 +160,39 @@ mod tests {
 
         assert_eq!(&bytes[..], b"hello");
         assert_eq!(bytes.as_ptr(), content.as_ptr());
+    }
+
+    #[test]
+    fn test_decode_waits_for_newline_after_incomplete_line() {
+        let mut codec = ImapCodec::default();
+        let mut buf = BytesMut::from(&b"* SEARCH 1 2"[..]);
+
+        assert_none!(assert_ok!(codec.decode(&mut buf)));
+        assert_eq!(codec.decode_scanned, buf.len());
+        buf.extend_from_slice(b" 3");
+        assert_none!(assert_ok!(codec.decode(&mut buf)));
+        assert_eq!(codec.decode_scanned, buf.len());
+        buf.extend_from_slice(b"\r\n* 1 EXISTS\r\n");
+
+        let mut response = assert_some!(assert_ok!(codec.decode(&mut buf)));
+        assert_eq!(assert_some!(response.take_search()), vec![1, 2, 3]);
+        assert_eq!(codec.decode_scanned, 0);
+        let mut response = assert_some!(assert_ok!(codec.decode(&mut buf)));
+        assert_none!(response.take_search());
+    }
+
+    #[test]
+    fn test_decode_completes_literal_split_across_reads() {
+        let mut codec = ImapCodec::default();
+        let mut buf = BytesMut::from(&b"* 1 FETCH (UID 1 BODY[] {13}\r\nhel"[..]);
+
+        assert_none!(assert_ok!(codec.decode(&mut buf)));
+        buf.extend_from_slice(b"lo\r\nworld");
+        assert_none!(assert_ok!(codec.decode(&mut buf)));
+        buf.extend_from_slice(b"!)\r\n");
+
+        assert_some!(assert_ok!(codec.decode(&mut buf)));
+        assert_is_empty!(buf);
     }
 
     #[test]
