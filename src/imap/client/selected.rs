@@ -86,9 +86,9 @@ impl SelectedClient {
             .is_some_and(|tracking| std::mem::take(&mut tracking.unknown_expunged))
     }
 
-    /// Fetches all UIDs of the selected mailbox in ascending order. `None` if the result is
+    /// Fetches all UIDs of the selected mailbox in ascending order. Errors if the result is
     /// implausible, as it would delete all local mails.
-    pub async fn remote_uids(&mut self) -> Result<Option<Vec<Uid>>, Error> {
+    pub async fn remote_uids(&mut self) -> Result<Vec<Uid>, Error> {
         let command = "UID SEARCH ALL";
         log::debug!("{command}");
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
@@ -98,10 +98,8 @@ impl SelectedClient {
         let mut handler = Chain(SearchCollector::default(), &mut self.mailbox_handler);
         self.connection.send(command.into(), &mut handler).await?;
         let uids = handler.0.into_sorted_uids();
-        let exists = self.mailbox_handler.message_count.exists();
-        self.mailbox_handler.seed_uids(&uids, exists);
 
-        Ok(plausible_search_result(uids, exists))
+        self.mailbox_handler.on_search(uids)
     }
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
@@ -532,12 +530,11 @@ impl MetadataCollector {
     }
 }
 
-fn plausible_search_result(uids: Vec<Uid>, exists: u32) -> Option<Vec<Uid>> {
+fn plausible_search_result(uids: Vec<Uid>, exists: u32) -> Result<Vec<Uid>, Error> {
     if uids.is_empty() && exists > 0 {
-        log::warn!("UID SEARCH ALL returned no uids for {exists} messages. Ignoring it");
-        None
+        Err(Error::ImplausibleSearchResult(exists))
     } else {
-        Some(uids)
+        Ok(uids)
     }
 }
 
@@ -818,6 +815,14 @@ impl MailboxHandler {
         }
     }
 
+    /// Handles the sorted UIDs of a `UID SEARCH ALL`, returning them if plausible
+    fn on_search(&mut self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
+        let exists = self.message_count.exists();
+        self.seed_uids(&uids, exists);
+
+        plausible_search_result(uids, exists)
+    }
+
     /// Replaces the sequence to UID map with the UIDs of a `UID SEARCH ALL`. Skipped if mails got
     /// expunged meanwhile, as the result may predate them while new mails keep the count
     /// matching. The current map stays consistent then, as it processed the expunges itself.
@@ -966,9 +971,18 @@ mod tests {
 
     #[test]
     fn test_plausible_search_result_rejects_empty_result_for_nonempty_mailbox() {
-        assertables::assert_none!(plausible_search_result(Vec::new(), 3));
-        assert_eq!(plausible_search_result(Vec::new(), 0), Some(Vec::new()));
-        assert_eq!(plausible_search_result(vec![uid(2)], 3), Some(vec![uid(2)]));
+        assert!(matches!(
+            plausible_search_result(Vec::new(), 3),
+            Err(Error::ImplausibleSearchResult(3))
+        ));
+        assert_eq!(
+            assertables::assert_ok!(plausible_search_result(Vec::new(), 0)),
+            Vec::new()
+        );
+        assert_eq!(
+            assertables::assert_ok!(plausible_search_result(vec![uid(2)], 3)),
+            vec![uid(2)]
+        );
     }
 
     #[test]
@@ -1048,6 +1062,20 @@ mod tests {
             panic!("expunge should be resolved to deletion");
         };
         assert_eq!(deleted.iter().collect::<Vec<_>>(), vec![uid(2)]);
+    }
+
+    #[test]
+    fn test_on_search_rejects_implausible_result() {
+        let (mut handler, _task_rx) = mailbox_handler(2);
+
+        assert!(matches!(
+            handler.on_search(Vec::new()),
+            Err(Error::ImplausibleSearchResult(2))
+        ));
+        assert_eq!(
+            assertables::assert_ok!(handler.on_search(vec![uid(1), uid(2)])),
+            vec![uid(1), uid(2)]
+        );
     }
 
     #[compio::test]
