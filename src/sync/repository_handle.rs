@@ -80,7 +80,7 @@ impl RepositoryHandle {
         self.request(Task::HighestModseq).await
     }
 
-    /// Stored UIDs missing from `uids` in ascending order
+    /// Stored UIDs missing from the ascending `uids` in ascending order
     pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
         self.request(|reply| Task::UidsNotIn(uids, reply)).await
     }
