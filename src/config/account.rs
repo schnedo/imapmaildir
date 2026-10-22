@@ -1,5 +1,5 @@
 use ::std::env;
-use std::{fs::read_to_string, io, path::PathBuf, time::Duration};
+use std::{fs::read_to_string, io, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use derive_getters::Getters;
 use serde::Deserialize;
@@ -21,8 +21,8 @@ struct AccountConfigFile {
     maildir_base_path: Option<PathBuf>,
     #[serde(default)]
     on_local_change: Vec<String>,
-    store_batch_size: Option<usize>,
-    store_batch_max_bytes: Option<usize>,
+    store_batch_size: Option<NonZeroUsize>,
+    store_batch_max_bytes: Option<NonZeroUsize>,
 }
 
 // todo: move config to code using it
@@ -119,10 +119,10 @@ impl Account {
                 sync::Config::new(
                     config
                         .store_batch_size
-                        .unwrap_or(default.store_batch_size()),
+                        .map_or(default.store_batch_size(), NonZeroUsize::get),
                     config
                         .store_batch_max_bytes
-                        .unwrap_or(default.store_batch_max_bytes()),
+                        .map_or(default.store_batch_max_bytes(), NonZeroUsize::get),
                 )
             },
         })
