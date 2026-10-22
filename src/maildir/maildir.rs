@@ -37,6 +37,15 @@ pub trait MaildirFile {
     fn set_flags(&mut self, flags: BitFlags<Flag>);
     /// Prepends `prefix` to the file prefix to resolve name clashes
     fn prepend_to_fileprefix(&mut self, prefix: &str);
+    /// File name without the info part, which other clients do not change
+    fn stem(&self) -> String {
+        let mut filename = self.filename();
+        if let Some(info_start) = filename.rfind(":2,") {
+            filename.truncate(info_start);
+        }
+
+        filename
+    }
     fn additional_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
         let mut additional_flags = self.flags();
         additional_flags.remove(other.flags());
@@ -547,31 +556,73 @@ impl Maildir {
     ) -> Result<(), Error> {
         log::debug!("updating mail {} flags: {}", entry.filename(), new_flags);
         let current_mail = self.get_path_of(entry);
+        let stem = entry.stem();
         entry.set_flags(new_flags);
         let new_mail = self.get_path_of(entry);
 
         let watch = self.watch.lock().await.clone();
-        Self::rename(watch.as_ref(), current_mail, new_mail).await
+        match Self::rename(watch.as_ref(), current_mail, new_mail.clone()).await {
+            Err(Error::Missing(missing)) => {
+                let Some(current_mail) = self.locate(stem).await? else {
+                    return Err(Error::Missing(missing));
+                };
+                Self::rename(watch.as_ref(), current_mail, new_mail).await
+            }
+            result => result,
+        }
     }
 
     pub async fn delete(&self, entry: &impl MaildirFile) -> io::Result<()> {
-        let file_path = self.get_path_of(entry);
-        log::trace!("deleting {}", file_path.display());
         let watch = self.watch.lock().await.clone();
-        Self::ignoring(
-            watch.as_ref(),
-            &file_path,
-            compio::fs::remove_file(&file_path),
-        )
-        .await
-        .or_else(|e| {
-            if let std::io::ErrorKind::NotFound = e.kind() {
-                log::trace!("{} already gone", file_path.display());
-                Ok(())
-            } else {
-                Err(e)
+        let mut file_path = self.get_path_of(entry);
+        loop {
+            log::trace!("deleting {}", file_path.display());
+            match Self::ignoring(
+                watch.as_ref(),
+                &file_path,
+                compio::fs::remove_file(&file_path),
+            )
+            .await
+            {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    match self.locate(entry.stem()).await? {
+                        Some(current) if current != file_path => file_path = current,
+                        _ => {
+                            log::trace!("{} already gone", file_path.display());
+                            return Ok(());
+                        }
+                    }
+                }
+                result => return result,
             }
+        }
+    }
+
+    /// Finds the file of a mail by its `stem`, as other clients may have changed its flags and
+    /// therefore its name
+    async fn locate(&self, stem: String) -> io::Result<Option<PathBuf>> {
+        let cur = self.cur.clone();
+        let found = compio::runtime::spawn_blocking(move || {
+            for entry in fs::read_dir(&cur)? {
+                let filename = entry?.file_name();
+                if let Some(name) = filename.to_str()
+                    && name
+                        .rsplit_once(":2,")
+                        .is_some_and(|(name_stem, _)| name_stem == stem)
+                {
+                    return Ok(Some(cur.join(name)));
+                }
+            }
+
+            Ok::<_, io::Error>(None)
         })
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))??;
+        if let Some(found) = &found {
+            log::debug!("found renamed mail at {}", found.display());
+        }
+
+        Ok(found)
     }
 
     async fn handle_new_unstructured_file(
@@ -1296,6 +1347,42 @@ mod tests {
 
         assert_ok!(maildir.delete(&entry).await);
         assert!(!assert_ok!(fs::exists(maildir.get_path_of(&entry))));
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_update_flags_updates_mail_renamed_by_other_client(
+        #[future] maildir: TestMaildir,
+        metadata: LocalMailMetadata,
+    ) {
+        let maildir = maildir.maildir;
+        let mut entry = metadata;
+        let mut renamed = entry.clone();
+        renamed.set_flags(Flag::Seen | Flag::Answered);
+        assert_ok!(fs::write(maildir.get_path_of(&renamed), "content"));
+
+        assert_ok!(maildir.update_flags(&mut entry, Flag::Flagged.into()).await);
+
+        assert!(maildir.get_path_of(&entry).exists());
+        assert!(!maildir.get_path_of(&renamed).exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_delete_deletes_mail_renamed_by_other_client(
+        #[future] maildir: TestMaildir,
+        metadata: LocalMailMetadata,
+    ) {
+        let maildir = maildir.maildir;
+        let mut renamed = metadata.clone();
+        renamed.set_flags(Flag::Seen | Flag::Answered);
+        assert_ok!(fs::write(maildir.get_path_of(&renamed), "content"));
+
+        assert_ok!(maildir.delete(&metadata).await);
+
+        assert!(!maildir.get_path_of(&renamed).exists());
     }
 
     #[rstest]
