@@ -5,7 +5,7 @@ use std::{
     os::fd::AsFd as _,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use compio::runtime::fd::PollFd;
@@ -16,10 +16,20 @@ use thiserror::Error;
 
 type ChangeTx = MAsyncTx<mpsc::Array<Change>>;
 
+/// Time to wait for the second event of a rename, before treating the first one as a move into or
+/// out of the watched directory
+const MOVE_MATCH_TIMEOUT: Duration = Duration::from_millis(50);
+
 enum WatchEvent {
     Inotify(inotify::Event<OsString>),
-    MoveTimeout(u32, EventMask),
     Error(Error),
+}
+
+/// Unmatched half of a rename
+struct PendingMove {
+    filename: OsString,
+    mask: EventMask,
+    deadline: Instant,
 }
 
 pub async fn move_new_to_cur(new: &Path, cur: &Path) -> io::Result<()> {
@@ -67,9 +77,6 @@ fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Erro
                 let event = match watch_event {
                     WatchEvent::Inotify(event) => event,
                     WatchEvent::Error(e) => return Err(e),
-                    WatchEvent::MoveTimeout(..) => {
-                        unreachable!("new watch should not time out moves")
-                    }
                 };
                 log::trace!("{event:?}");
                 if event.mask.contains(EventMask::ISDIR) {
@@ -117,25 +124,42 @@ impl Watch {
         )?;
 
         let (event_tx, event_rx) = mpsc::bounded_async(32);
-        Self::spawn_inotify_reader(inotify, event_tx.clone())?;
+        Self::spawn_inotify_reader(inotify, event_tx)?;
         watch_new(new, cur.to_path_buf(), change_tx.clone())?;
 
         let ignored = ignore_files.clone();
         let cur = cur.to_path_buf();
         compio::runtime::spawn(async move {
-            let mut move_matches: HashMap<u32, OsString> = HashMap::new();
+            let mut move_matches: HashMap<u32, PendingMove> = HashMap::new();
             let mut created: HashSet<OsString> = HashSet::new();
-            while let Ok(watch_event) = event_rx.recv().await {
-                let result = Self::handle_watch_event(
-                    watch_event,
-                    &cur,
-                    &mut move_matches,
-                    &mut created,
-                    &change_tx,
-                    &event_tx,
-                    &ignored,
-                )
-                .await;
+            loop {
+                // waiting on the event queue instead of a timer makes queued second halves of
+                // renames always match, even if the queue is backed up
+                let next_deadline = move_matches.values().map(|pending| pending.deadline).min();
+                let watch_event = if let Some(deadline) = next_deadline {
+                    compio::time::timeout_at(deadline, event_rx.recv())
+                        .await
+                        .ok()
+                } else {
+                    Some(event_rx.recv().await)
+                };
+                let result = match watch_event {
+                    Some(Ok(watch_event)) => {
+                        Self::handle_watch_event(
+                            watch_event,
+                            &cur,
+                            &mut move_matches,
+                            &mut created,
+                            &change_tx,
+                            &ignored,
+                        )
+                        .await
+                    }
+                    Some(Err(_)) => break,
+                    None => {
+                        Self::handle_move_timeouts(&mut move_matches, &change_tx, &ignored).await
+                    }
+                };
                 match result {
                     Ok(Ok(())) => {}
                     Ok(Err(SendError(_))) => break,
@@ -151,31 +175,48 @@ impl Watch {
         Ok((Self { ignore_files }, change_rx))
     }
 
+    /// Treats renames without second half until their deadline as moves into or out of the
+    /// watched directory
+    async fn handle_move_timeouts(
+        move_matches: &mut HashMap<u32, PendingMove>,
+        change_tx: &ChangeTx,
+        ignored: &Arc<Mutex<HashSet<OsString>>>,
+    ) -> Result<Result<(), SendError<Change>>, Error> {
+        let now = Instant::now();
+        let timed_out: Vec<u32> = move_matches
+            .iter()
+            .filter(|(_, pending)| pending.deadline <= now)
+            .map(|(cookie, _)| *cookie)
+            .collect();
+        for cookie in timed_out {
+            log::trace!("file {cookie:?} timed out");
+            let Some(PendingMove { filename, mask, .. }) = move_matches.remove(&cookie) else {
+                continue;
+            };
+            let change = match mask {
+                EventMask::MOVED_TO => Change::New,
+                EventMask::MOVED_FROM => Change::Deletion,
+                _ => unreachable!("mask should only be defined values"),
+            };
+            if let Err(e) = Self::send_unless_ignored(filename, ignored, change_tx, change).await? {
+                return Ok(Err(e));
+            }
+        }
+
+        Ok(Ok(()))
+    }
+
     /// Outer error: watching failed, inner error: change receiver is gone
     async fn handle_watch_event(
         watch_event: WatchEvent,
         cur: &Path,
-        move_matches: &mut HashMap<u32, OsString>,
+        move_matches: &mut HashMap<u32, PendingMove>,
         created: &mut HashSet<OsString>,
         change_tx: &ChangeTx,
-        event_tx: &MAsyncTx<mpsc::Array<WatchEvent>>,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         match watch_event {
             WatchEvent::Error(e) => Err(e),
-            WatchEvent::MoveTimeout(cookie, mask) => {
-                log::trace!("file {cookie:?} timed out");
-                if let Some(filename) = move_matches.remove(&cookie) {
-                    let change = match mask {
-                        EventMask::MOVED_TO => Change::New,
-                        EventMask::MOVED_FROM => Change::Deletion,
-                        _ => unreachable!("mask should only be defined values"),
-                    };
-                    Self::send_unless_ignored(filename, ignored, change_tx, change).await
-                } else {
-                    Ok(Ok(()))
-                }
-            }
             WatchEvent::Inotify(event) => {
                 log::trace!("{event:?}");
                 if event.mask.contains(EventMask::ISDIR) {
@@ -183,8 +224,7 @@ impl Watch {
                 }
                 match event.mask {
                     EventMask::MOVED_FROM | EventMask::MOVED_TO => {
-                        Self::handle_move_event(event, move_matches, change_tx, event_tx, ignored)
-                            .await
+                        Self::handle_move_event(event, move_matches, change_tx, ignored).await
                     }
                     EventMask::DELETE => {
                         let filename = event.name.ok_or(Error::MissingName(event.mask))?;
@@ -286,13 +326,16 @@ impl Watch {
 
     async fn handle_move_event(
         event: inotify::Event<OsString>,
-        move_matches: &mut HashMap<u32, OsString>,
+        move_matches: &mut HashMap<u32, PendingMove>,
         change_tx: &ChangeTx,
-        event_tx: &MAsyncTx<mpsc::Array<WatchEvent>>,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         let filename = event.name.ok_or(Error::MissingName(event.mask))?;
-        if let Some(stored_name) = move_matches.remove(&event.cookie) {
+        if let Some(PendingMove {
+            filename: stored_name,
+            ..
+        }) = move_matches.remove(&event.cookie)
+        {
             let mut ignored = ignored.lock().await;
             let filename_ignored = ignored.remove(&filename);
             let stored_name_ignored = ignored.remove(&stored_name);
@@ -315,16 +358,14 @@ impl Watch {
             };
             Ok(change_tx.send(change).await)
         } else {
-            move_matches.insert(event.cookie, filename);
-            let event_tx = event_tx.clone();
-            compio::runtime::spawn(async move {
-                compio::time::sleep(Duration::from_millis(50)).await;
-                // watch task being gone means nobody waits for the timeout anymore
-                let _ = event_tx
-                    .send(WatchEvent::MoveTimeout(event.cookie, event.mask))
-                    .await;
-            })
-            .detach();
+            move_matches.insert(
+                event.cookie,
+                PendingMove {
+                    filename,
+                    mask: event.mask,
+                    deadline: Instant::now() + MOVE_MATCH_TIMEOUT,
+                },
+            );
 
             Ok(Ok(()))
         }
