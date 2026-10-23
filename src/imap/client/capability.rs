@@ -88,6 +88,23 @@ impl Capabilities {
         self.capabilities.contains(other)
     }
 
+    /// Replaces all capabilities with those of a CAPABILITY response after login, as capability
+    /// lists are complete (RFC 3501 7.2.1)
+    pub fn replace(&mut self, caps: &[imap_proto::Capability]) {
+        *self = Self::default();
+        for cap in caps {
+            match cap {
+                imap_proto::Capability::Imap4rev1 | imap_proto::Capability::Atom(_) => {
+                    self.insert(cap);
+                }
+                imap_proto::Capability::Auth(_) => {
+                    log::warn!("unexpected capability respone {cap:?}");
+                }
+            }
+        }
+        log::trace!("updated capabilities to {self:?}");
+    }
+
     pub fn append_limit(&self) -> Option<NonZeroU64> {
         self.append_limit
     }
