@@ -71,8 +71,8 @@ impl Error {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Transport(e) => e.is_transient(),
-            // e.g. password manager not unlocked yet
-            Self::Auth(_) | Self::ConnectionRejected(_) | Self::InvalidGreeting => true,
+            Self::Auth(e) => e.is_transient(),
+            Self::ConnectionRejected(_) | Self::InvalidGreeting => true,
             // retrying wrong credentials could lock the account, and servers do not always
             // mark them with a response code
             Self::LoginRejected(information) => information.as_deref().is_some_and(|info| {
