@@ -7,7 +7,7 @@ use crate::{
         NewLocalMailMetadata,
     },
     repository::{ModSeq, SequenceSet, Uid, UidValidity},
-    sync::{Config, Error, RepositoryHandle, task::Task},
+    sync::{ByteBudget, Config, Error, RepositoryHandle, task::Task},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -307,6 +307,7 @@ impl Syncer {
         on_local_change: impl FnMut() + Send + 'static,
     ) -> Result<Synced, Error> {
         let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let budget = Self::store_budget(config);
         let repository = RepositoryHandle::new(task_tx.clone());
         let (local_changes, selected) =
             futures::join!(maildir_repository.detect_changes(), async {
@@ -316,7 +317,13 @@ impl Syncer {
                 );
                 let (uid_validity, highest_modseq) = (uid_validity?, highest_modseq?);
                 let selection = client
-                    .resync_select(task_tx, mailbox, uid_validity, highest_modseq)
+                    .resync_select(
+                        task_tx,
+                        budget.clone(),
+                        mailbox,
+                        uid_validity,
+                        highest_modseq,
+                    )
                     .await?;
                 Ok::<_, Error>((uid_validity, highest_modseq, selection))
             });
@@ -330,8 +337,13 @@ impl Syncer {
         } = selection;
         Self::check_uid_validity(uid_validity, mailbox_data.uid_validity())?;
         let local_watcher = maildir_repository.local_watcher();
-        let task_handle =
-            Self::setup_task_processing(maildir_repository, task_rx, config, on_local_change);
+        let task_handle = Self::setup_task_processing(
+            maildir_repository,
+            task_rx,
+            budget,
+            config,
+            on_local_change,
+        );
 
         let synced = async {
             let mut synced_modseq = mailbox_data.highest_modseq();
@@ -597,9 +609,10 @@ impl Syncer {
         on_local_change: impl FnMut() + Send + 'static,
     ) -> Result<Synced, Error> {
         let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
+        let budget = Self::store_budget(config);
         let repository = RepositoryHandle::new(task_tx.clone());
         let (selection, local_state) = futures::join!(
-            client.select(task_tx, mailbox),
+            client.select(task_tx, budget.clone(), mailbox),
             OptionFuture::from(maildir_repository.as_ref().map(|repository| async {
                 futures::join!(repository.uid_validity(), repository.uids())
             }))
@@ -623,8 +636,13 @@ impl Syncer {
             )
         };
         let local_watcher = maildir_repository.local_watcher();
-        let task_handle =
-            Self::setup_task_processing(maildir_repository, task_rx, config, on_local_change);
+        let task_handle = Self::setup_task_processing(
+            maildir_repository,
+            task_rx,
+            budget,
+            config,
+            on_local_change,
+        );
 
         let synced = async {
             if local_uids.is_empty() {
@@ -771,13 +789,21 @@ impl Syncer {
         Ok(())
     }
 
+    /// Allows downloading one batch while storing another, so that neither waits for the other
+    fn store_budget(config: Config) -> ByteBudget {
+        ByteBudget::new(config.store_batch_max_bytes().saturating_mul(2))
+    }
+
     fn setup_task_processing(
         maildir_repository: MaildirRepository,
         task_rx: AsyncRx<Array<Task>>,
+        budget: ByteBudget,
         config: Config,
         mut on_local_change: impl FnMut() + Send + 'static,
     ) -> TaskHandle {
         compio::runtime::spawn(async move {
+            // downloads must not wait for budget nobody releases anymore, even on panics
+            let _close_budget = CloseOnDrop(budget.clone());
             log::debug!("Listening to incoming mail...");
             let mut next_task = None;
             loop {
@@ -794,6 +820,12 @@ impl Syncer {
                             Self::collect_store_batch(remote_mail, &task_rx, config);
                         next_task = task;
                         let result = maildir_repository.store_batch(&batch).await;
+                        budget.release(
+                            batch
+                                .iter()
+                                .map(|mail| budget.cost(mail.content().len()))
+                                .sum(),
+                        );
                         if result.is_ok() {
                             on_local_change();
                         }
@@ -823,6 +855,14 @@ impl Syncer {
 
             Ok(())
         })
+    }
+}
+
+struct CloseOnDrop(ByteBudget);
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
     }
 }
 

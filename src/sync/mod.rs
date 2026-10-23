@@ -1,3 +1,4 @@
+mod byte_budget;
 mod change_hook;
 mod config;
 mod error;
@@ -5,6 +6,7 @@ mod repository_handle;
 mod syncer;
 mod task;
 
+pub use byte_budget::ByteBudget;
 pub use change_hook::on_local_change;
 pub use config::Config;
 pub use error::Error;
