@@ -367,3 +367,42 @@ async fn test_interrupted_initial_sync_gets_resumed(#[future] mail_setup: MailSe
     assert_eq!(server_mails, client_mails);
     assert!(client_mails.iter().all(|mail| mail.uid() != deleted_uid));
 }
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_oauth2_login_syncs(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    client_mail.wipe();
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let auth = mail_setup.oauth2_auth(&oauth2_token(mail_setup.user()));
+
+    assert_ok!(mail_setup.sync_with_auth("INBOX", &auth).await);
+
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_oauth2_login_with_invalid_token_fails_permanently(#[future] mail_setup: MailSetup) {
+    let auth = mail_setup.oauth2_auth(&oauth2_token("someone-else"));
+
+    let result = assert_ok!(
+        compio::time::timeout(
+            std::time::Duration::from_secs(10),
+            mail_setup.sync_with_auth("INBOX", &auth)
+        )
+        .await
+    );
+
+    let error = assert_err!(result);
+    assert!(
+        matches!(error, imapmaildir::ClientError::LoginRejected(_)),
+        "unexpected error {error}"
+    );
+    assert!(!error.is_transient());
+}

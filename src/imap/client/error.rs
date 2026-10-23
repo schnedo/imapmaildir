@@ -1,9 +1,11 @@
 use thiserror::Error;
 
 use crate::{
-    config::AuthError,
     imap::{
-        client::capability::{AuthCapability, Capability},
+        client::{
+            auth::Error as AuthError,
+            capability::{AuthCapability, Capability},
+        },
         transport,
     },
     repository::{MailboxMetadataBuilderError, UidConversionError, UidValidity},
@@ -19,6 +21,8 @@ pub enum Error {
     MissingCapability(Capability),
     #[error("Server does not support {0:?} authentication")]
     MissingAuthCapability(AuthCapability),
+    #[error("Server supports neither OAUTHBEARER nor XOAUTH2 authentication")]
+    MissingOAuth2Mechanism,
     #[error("Server rejected login: {}", .0.as_deref().unwrap_or("NO"))]
     LoginRejected(Option<String>),
     #[error("Server rejected connection: {}", .0.as_deref().unwrap_or("BAD"))]
@@ -82,6 +86,7 @@ impl Error {
             }),
             Self::MissingCapability(_)
             | Self::MissingAuthCapability(_)
+            | Self::MissingOAuth2Mechanism
             | Self::PreAuthUnsupported
             | Self::InvalidUid(_)
             | Self::InvalidModSeq(_)

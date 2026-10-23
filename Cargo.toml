@@ -14,6 +14,7 @@ include = ["/src/**/*.rs", "/migrations/*", "/build.rs"]
 anstyle = "1.0.14"
 anyhow = "1.0.104"
 asynchronous-codec = "0.7.0"
+base64 = "0.22.1"
 bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive"] }
 compio = { version = "0.19.2", features = [
@@ -62,6 +63,7 @@ allow_attributes = "warn"
 [dev-dependencies]
 assertables = "=10.1.0"
 derivative = "=2.2.0"
+ring = "=0.17.14"
 rstest = "=0.28.0"
 tempfile = "=3.27.0"
 testcontainers = { version = "=0.28.0", features = ["blocking"] }

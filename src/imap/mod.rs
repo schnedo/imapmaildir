@@ -3,10 +3,14 @@ mod remote_changes;
 mod remote_mail;
 mod transport;
 
+pub use client::Auth;
+pub use client::AuthError;
 pub use client::AuthenticatedClient;
 pub use client::Client;
 pub use client::Error as ClientError;
 pub use client::IdleStopReason;
+pub use client::OAuth2Auth;
+pub use client::PlainAuth;
 pub use client::SelectedClient;
 pub use remote_changes::RemoteChanges;
 pub use remote_changes::Selection;

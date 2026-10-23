@@ -70,6 +70,14 @@ Configure using the home-manager module:
         enable = true;
         # List the mailboxes you want to sync. Currently, there is no autodiscover.
         mailboxes = [ ];
+        # Optional OAuth2 login (OAUTHBEARER or XOAUTH2), e.g. for Gmail without app passwords.
+        # imapmaildir does not run the OAuth2 flow itself. Use a helper like oama or pizauth,
+        # that prints a valid access token.
+        oauth2 = {
+            enable = true;
+            # Defaults to the account's passwordCommand
+            tokenCommand = [ "oama" "access" "me@example.com" ];
+        };
         # Optional service configuration.
         # There are default values in place so you do not need to configure this.
         service = {

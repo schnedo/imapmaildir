@@ -18,6 +18,7 @@ pub enum Capability {
     LiteralPlus,  // rfc7888
     Multiappend,  // rfc3502
     QResync,      // rfc7162
+    SaslIr,       // rfc4959
     UidPlus,      // rfc4315
 }
 #[derive(Debug, Default)]
@@ -58,6 +59,9 @@ impl Capabilities {
                 }
                 "QRESYNC" => {
                     self.capabilities.insert(Capability::QResync);
+                }
+                "SASL-IR" => {
+                    self.capabilities.insert(Capability::SaslIr);
                 }
                 "UIDPLUS" => {
                     self.capabilities.insert(Capability::UidPlus);
@@ -103,7 +107,9 @@ impl Capabilities {
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
 pub enum AuthCapability {
+    OAuthBearer, // rfc7628
     Plain,
+    XOAuth2,
 }
 #[derive(Debug, Default)]
 pub struct AuthCapabilities {
@@ -114,8 +120,14 @@ impl AuthCapabilities {
     pub fn insert(&mut self, capability: &imap_proto::Capability) {
         match capability {
             imap_proto::Capability::Auth(cow) => match cow.as_ref() {
+                "OAUTHBEARER" => {
+                    self.capabilities.insert(AuthCapability::OAuthBearer);
+                }
                 "PLAIN" => {
                     self.capabilities.insert(AuthCapability::Plain);
+                }
+                "XOAUTH2" => {
+                    self.capabilities.insert(AuthCapability::XOAuth2);
                 }
                 _ => {
                     log::trace!("unknown auth capability {cow}");
@@ -139,6 +151,20 @@ mod tests {
     use rstest::*;
 
     use super::*;
+
+    #[test]
+    fn test_oauth2_mechanisms_and_sasl_ir_are_parsed() {
+        let mut auth_capabilities = AuthCapabilities::default();
+        auth_capabilities.insert(&imap_proto::Capability::Auth(Cow::Borrowed("XOAUTH2")));
+        auth_capabilities.insert(&imap_proto::Capability::Auth(Cow::Borrowed("OAUTHBEARER")));
+        let mut capabilities = Capabilities::default();
+        capabilities.insert(&imap_proto::Capability::Atom(Cow::Borrowed("SASL-IR")));
+
+        assert!(auth_capabilities.contains(AuthCapability::XOAuth2));
+        assert!(auth_capabilities.contains(AuthCapability::OAuthBearer));
+        assert!(!auth_capabilities.contains(AuthCapability::Plain));
+        assert!(capabilities.contains(Capability::SaslIr));
+    }
 
     #[rstest]
     #[case("APPENDLIMIT=35651584", Some(35_651_584))]
