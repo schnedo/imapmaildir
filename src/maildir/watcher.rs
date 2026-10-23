@@ -99,47 +99,60 @@ struct PendingMove {
     deadline: Instant,
 }
 
+/// Moves all files in `new` to `cur` on a blocking thread, as listing and renaming them would
+/// block the runtime and therefore IMAP traffic
 pub async fn move_new_to_cur(new: &Path, cur: &Path) -> io::Result<()> {
-    for entry in std::fs::read_dir(new)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            move_to_cur(new, cur, &entry.file_name()).await?;
+    let (new, cur) = (new.to_path_buf(), cur.to_path_buf());
+    compio::runtime::spawn_blocking(move || {
+        for entry in std::fs::read_dir(&new)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                move_file_to_cur(&new, &cur, &entry.file_name())?;
+            }
         }
-    }
 
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| io::Error::other(e.to_string()))?
 }
 
 async fn move_to_cur(new: &Path, cur: &Path, filename: &OsStr) -> io::Result<()> {
+    let (new, cur, filename) = (
+        new.to_path_buf(),
+        cur.to_path_buf(),
+        filename.to_os_string(),
+    );
+    compio::runtime::spawn_blocking(move || move_file_to_cur(&new, &cur, &filename))
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?
+}
+
+fn move_file_to_cur(new: &Path, cur: &Path, filename: &OsStr) -> io::Result<()> {
     let mut target = filename.to_os_string();
     if !filename.to_string_lossy().contains(":2,") {
         target.push(":2,");
     }
     log::debug!("moving {} from new to cur", filename.display());
     let source = new.join(filename);
-    let cur = cur.to_path_buf();
-    compio::runtime::spawn_blocking(move || {
-        loop {
-            match rustix::fs::renameat_with(
-                CWD,
-                &source,
-                CWD,
-                cur.join(&target),
-                RenameFlags::NOREPLACE,
-            ) {
-                Ok(()) | Err(Errno::NOENT) => return Ok(()),
-                Err(Errno::EXIST) => {
-                    // keeps mails with clashing names instead of overwriting them
-                    let mut prefixed = OsString::from("1");
-                    prefixed.push(&target);
-                    target = prefixed;
-                }
-                Err(e) => return Err(e.into()),
+    loop {
+        match rustix::fs::renameat_with(
+            CWD,
+            &source,
+            CWD,
+            cur.join(&target),
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) | Err(Errno::NOENT) => return Ok(()),
+            Err(Errno::EXIST) => {
+                // keeps mails with clashing names instead of overwriting them
+                let mut prefixed = OsString::from("1");
+                prefixed.push(&target);
+                target = prefixed;
             }
+            Err(e) => return Err(e.into()),
         }
-    })
-    .await
-    .map_err(|e| io::Error::other(e.to_string()))?
+    }
 }
 
 fn init_inotify(path: &Path, mask: WatchMask) -> Result<Inotify, Error> {

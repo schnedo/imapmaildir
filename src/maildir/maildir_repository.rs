@@ -407,7 +407,7 @@ impl MaildirRepository {
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
         self.maildir.move_new_to_cur().await?;
-        let maildir_metadata = self.maildir.list_cur()?;
+        let maildir_metadata = self.maildir.list_cur().await?;
 
         let mut maildir_mails: HashMap<Uid, Vec<LocalMailMetadata>> = HashMap::new();
 
@@ -977,11 +977,11 @@ mod tests {
     #[awt]
     async fn test_store_stores_new_mail(#[future] repo: TestMaildirRepository, mail: RemoteMail) {
         let uid = mail.metadata().uid();
-        assert_err!(assert_ok!(repo.repo.maildir.list_cur()).recv().await);
+        assert_err!(assert_ok!(repo.repo.maildir.list_cur().await).recv().await);
 
         assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
-        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur().await);
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
 
@@ -996,14 +996,14 @@ mod tests {
     ) {
         let RepoWithMail { repo, mail, .. } = repo_with_mail;
         let uid = mail.metadata().uid();
-        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur().await);
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
         assert_some!(assert_ok!(repo.repo.state.get_by_id(uid).await));
 
         assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
 
-        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur().await);
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
 
@@ -1195,7 +1195,7 @@ mod tests {
                 .await
         );
         assert_err!(
-            assert_ok!(repo_with_mail.repo.repo.maildir.list_cur())
+            assert_ok!(repo_with_mail.repo.repo.maildir.list_cur().await)
                 .recv()
                 .await
         );
@@ -1562,7 +1562,7 @@ mod tests {
                 .await
         );
 
-        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur().await);
         assert_ok!(assert_ok!(list_rx.recv().await));
         assert_err!(list_rx.recv().await);
         let tmp_files = assert_ok!(repo.mail_dir.path().join("tmp").read_dir()).count();
@@ -1608,7 +1608,7 @@ mod tests {
 
         let expected: HashSet<_> = mails.iter().map(|mail| mail.metadata().uid()).collect();
         assert_eq!(assert_ok!(repo.repo.uids().await), expected);
-        let list_rx = assert_ok!(repo.repo.maildir.list_cur());
+        let list_rx = assert_ok!(repo.repo.maildir.list_cur().await);
         let mut count = 0;
         while let Ok(entry) = list_rx.recv().await {
             assert_ok!(entry);

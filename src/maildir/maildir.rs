@@ -367,9 +367,17 @@ impl Maildir {
         watcher::move_new_to_cur(&self.new, &self.cur).await
     }
 
-    pub fn list_cur(&self) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {
-        // renaming unstructured files while reading the directory may list them again
-        let dir_contents: Vec<_> = fs::read_dir(self.cur.as_path())?.collect();
+    pub async fn list_cur(
+        &self,
+    ) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {
+        let cur = self.cur.clone();
+        // renaming unstructured files while reading the directory may list them again. Reading
+        // it on a blocking thread keeps large directories from blocking the runtime.
+        let dir_contents: Vec<_> = compio::runtime::spawn_blocking(move || {
+            fs::read_dir(&cur).map(Iterator::collect::<Vec<_>>)
+        })
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))??;
         let watch = self.watch.clone();
         let cur = self.cur.clone();
         let (list_tx, list_rx) = spsc::bounded_async(32);
@@ -1064,7 +1072,7 @@ mod tests {
             MaildirEntry::MaybeTracked(mail2),
             MaildirEntry::New(mail3),
         ]);
-        let list_rx = assert_ok!(maildir.list_cur());
+        let list_rx = assert_ok!(maildir.list_cur().await);
         let mut result: HashSet<_> = HashSet::new();
         while let Ok(entry) = list_rx.recv().await {
             let entry = assert_ok!(entry);
@@ -1081,7 +1089,7 @@ mod tests {
         let maildir = maildir.maildir;
         assert_ok!(fs::remove_dir(&maildir.cur));
 
-        let result = maildir.list_cur();
+        let result = maildir.list_cur().await;
 
         let result = assert_err!(result);
         assert_matches!(result, io::Error { .. });
@@ -1095,7 +1103,7 @@ mod tests {
         let filename = OsString::from_vec(vec![255]);
         assert_ok!(fs::write(maildir.cur.join(filename), ""));
 
-        let result = assert_ok!(maildir.list_cur());
+        let result = assert_ok!(maildir.list_cur().await);
         let file_read = assert_ok!(result.recv().await);
         let read_error = assert_err!(file_read);
         assert_matches!(read_error, MaildirListError::InvalidFilename(_));
@@ -1113,7 +1121,7 @@ mod tests {
         let metadata = NewLocalMailMetadata::new(Flag::Seen.into(), fileprefix.to_string());
         assert_ok!(fs::File::create_new(&mail));
 
-        let list_rx = assert_ok!(maildir.list_cur());
+        let list_rx = assert_ok!(maildir.list_cur().await);
         while list_rx.recv().await.is_ok() {}
 
         assert!(!mail.exists());
@@ -1138,7 +1146,7 @@ mod tests {
             "1".to_string() + fileprefix,
         ));
 
-        let list_rx = assert_ok!(maildir.list_cur());
+        let list_rx = assert_ok!(maildir.list_cur().await);
         let mut listed = Vec::new();
         while let Ok(entry) = list_rx.recv().await {
             listed.push(assert_ok!(entry));
