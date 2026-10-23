@@ -103,7 +103,9 @@ impl Syncer {
         log::info!("listening for mail changes...");
         let local_change_rx = match local_watcher.watch().await {
             Ok(local_change_rx) => local_change_rx,
-            Err(e) => return Err(Self::task_error(e.into(), task_handle).await),
+            Err(e) => {
+                return Err(Self::shut_down(e.into(), client, repository, task_handle).await);
+            }
         };
         compio::runtime::spawn(async move {
             while let Ok(event) = local_change_rx.recv().await {
@@ -132,7 +134,7 @@ impl Syncer {
         }
         .await;
         if let Err(e) = rescanned {
-            return Err(Self::task_error(e, task_handle).await);
+            return Err(Self::shut_down(e, client, repository, task_handle).await);
         }
 
         let error = loop {
@@ -150,7 +152,26 @@ impl Syncer {
             }
         };
 
-        Err(Self::task_error(error, task_handle).await)
+        Err(Self::shut_down(error, client, repository, task_handle).await)
+    }
+
+    /// Lets task processing store the remote changes received before `error` and close the
+    /// state, so that a new session can load it right away
+    async fn shut_down(
+        error: Error,
+        client: SelectedClient,
+        repository: RepositoryHandle,
+        task_handle: TaskHandle,
+    ) -> Error {
+        // closes the task channel
+        drop(client);
+        drop(repository);
+        match task_handle.await {
+            // local errors are permanent, so they must not hide behind a transient remote one
+            Ok(Err(e)) => e,
+            Ok(Ok(())) => error,
+            Err(_) => Error::TaskProcessingPanicked,
+        }
     }
 
     async fn handle_idle(
@@ -805,56 +826,74 @@ impl Syncer {
             // downloads must not wait for budget nobody releases anymore, even on panics
             let _close_budget = CloseOnDrop(budget.clone());
             log::debug!("Listening to incoming mail...");
-            let mut next_task = None;
-            loop {
-                let task = if let Some(task) = next_task.take() {
-                    task
-                } else if let Ok(task) = task_rx.recv().await {
-                    task
-                } else {
-                    break;
-                };
-                let result = match task {
-                    Task::NewMail(remote_mail) => {
-                        let (batch, task) =
-                            Self::collect_store_batch(remote_mail, &task_rx, config);
-                        next_task = task;
-                        let result = maildir_repository.store_batch(&batch).await;
-                        budget.release(
-                            batch
-                                .iter()
-                                .map(|mail| budget.cost(mail.content().len()))
-                                .sum(),
-                        );
-                        if result.is_ok() {
-                            on_local_change();
-                        }
-                        result.map_err(Error::from)
-                    }
-                    Task::Delete(sequence_set) => {
-                        let (batch, task) =
-                            Self::collect_delete_batch(&sequence_set, &task_rx, config);
-                        next_task = task;
-                        log::debug!("deleting {} mails", batch.len());
-                        let result = maildir_repository.delete_all(batch.into_iter()).await;
-                        if result.is_ok() {
-                            on_local_change();
-                        }
-                        result.map_err(Error::from)
-                    }
-                    task => {
-                        Self::process_task(&maildir_repository, task, &mut on_local_change).await
-                    }
-                };
-                if let Err(e) = result {
-                    log::error!("task processing failed: {e}");
-                    return Err(e);
-                }
+            let result = Self::process_tasks(
+                &maildir_repository,
+                &task_rx,
+                &budget,
+                config,
+                &mut on_local_change,
+            )
+            .await;
+            if let Err(e) = maildir_repository.close().await {
+                log::warn!("cannot close state: {e}");
             }
-            log::debug!("Task channel closed. Stopping task processing");
 
-            Ok(())
+            result
         })
+    }
+
+    async fn process_tasks(
+        maildir_repository: &MaildirRepository,
+        task_rx: &AsyncRx<Array<Task>>,
+        budget: &ByteBudget,
+        config: Config,
+        on_local_change: &mut impl FnMut(),
+    ) -> Result<(), Error> {
+        let mut next_task = None;
+        loop {
+            let task = if let Some(task) = next_task.take() {
+                task
+            } else if let Ok(task) = task_rx.recv().await {
+                task
+            } else {
+                break;
+            };
+            let result = match task {
+                Task::NewMail(remote_mail) => {
+                    let (batch, task) = Self::collect_store_batch(remote_mail, task_rx, config);
+                    next_task = task;
+                    let result = maildir_repository.store_batch(&batch).await;
+                    budget.release(
+                        batch
+                            .iter()
+                            .map(|mail| budget.cost(mail.content().len()))
+                            .sum(),
+                    );
+                    if result.is_ok() {
+                        on_local_change();
+                    }
+                    result.map_err(Error::from)
+                }
+                Task::Delete(sequence_set) => {
+                    let (batch, task) = Self::collect_delete_batch(&sequence_set, task_rx, config);
+                    next_task = task;
+                    log::debug!("deleting {} mails", batch.len());
+                    let result = maildir_repository.delete_all(batch.into_iter()).await;
+                    if result.is_ok() {
+                        on_local_change();
+                    }
+                    result.map_err(Error::from)
+                }
+                task => Self::process_task(maildir_repository, task, on_local_change).await,
+            };
+            if let Err(e) = result {
+                log::error!("task processing failed: {e}");
+                return Err(e);
+            }
+        }
+        log::debug!("Task channel closed. Stopping task processing");
+
+        Ok(())
     }
 }
 

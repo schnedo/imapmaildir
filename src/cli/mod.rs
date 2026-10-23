@@ -5,7 +5,7 @@ use std::io::{self, stdin};
 
 use clap::{Parser, Subcommand};
 use imapmaildir::{
-    ClientError, SyncError, Tls, TransportError,
+    ClientError, SyncError, Tls, Transient, TransportError,
     config::{Account, AccountError},
     logging,
 };
@@ -79,6 +79,22 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             } else {
                 sync_all(config, sync_args.idle)
             }
+        }
+    }
+}
+
+impl Transient for Error {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Login(e) => e.is_transient(),
+            Self::Sync { cause, .. } => cause.is_transient(),
+            Self::Config(_)
+            | Self::Tls(_)
+            | Self::Input(_)
+            | Self::Nuke(_)
+            | Self::Runtime(_)
+            | Self::Spawn { .. }
+            | Self::SyncAll(_) => false,
         }
     }
 }

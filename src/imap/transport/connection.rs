@@ -424,6 +424,43 @@ pub enum Error {
     UnexpectedTaggedStatus(String),
 }
 
+impl Error {
+    /// Whether the error is caused by a broken connection or temporary server condition, so that
+    /// reconnecting may succeed
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Connection { .. } | Self::Closed | Self::Receive(_) | Self::Send(_) => true,
+            Self::TlsError(TlsError::Validation(e)) => is_transient_io(e),
+            Self::No(information) => information.as_deref().is_some_and(is_transient_no),
+            Self::TlsError(_)
+            | Self::Bad(_)
+            | Self::UnexpectedTag { .. }
+            | Self::UnexpectedTaggedStatus(_) => false,
+        }
+    }
+}
+
+/// Whether `e` broke the connection instead of e.g. rejecting the server certificate
+fn is_transient_io(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+    )
+}
+
+/// Whether a NO response reports a temporary failure (RFC 5530). imap-proto keeps these codes
+/// in the information text.
+fn is_transient_no(information: &str) -> bool {
+    ["[UNAVAILABLE]", "[INUSE]", "[LIMIT]"]
+        .iter()
+        .any(|code| information.starts_with(code))
+}
+
 /// Writes `parts` to `writer` in chunks of `chunk_size`. Reads the next chunk while writing the
 /// current one, so that slow storage and network do not wait for each other.
 async fn write_parts(
@@ -810,5 +847,62 @@ mod tests {
         );
         let tls = assert_ok!(Tls::new(&config));
         let _connection = assert_ok!(Connection::start(&config, &tls).await);
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+
+    #[test]
+    fn test_broken_connections_are_transient() {
+        assert!(Error::Closed.is_transient());
+        assert!(Error::Receive(io::Error::from(io::ErrorKind::TimedOut)).is_transient());
+        assert!(Error::Send(io::Error::from(io::ErrorKind::BrokenPipe)).is_transient());
+        assert!(
+            Error::TlsError(TlsError::Validation(io::Error::from(
+                io::ErrorKind::ConnectionReset
+            )))
+            .is_transient()
+        );
+    }
+
+    #[test]
+    fn test_rejected_certificate_is_permanent() {
+        assert!(
+            !Error::TlsError(TlsError::Validation(io::Error::other(
+                "invalid certificate"
+            )))
+            .is_transient()
+        );
+    }
+
+    #[test]
+    fn test_no_is_transient_only_for_temporary_codes() {
+        assert!(Error::No(Some("[UNAVAILABLE] try later".to_string())).is_transient());
+        assert!(Error::No(Some("[LIMIT] too many connections".to_string())).is_transient());
+        assert!(!Error::No(Some("[OVERQUOTA] mailbox full".to_string())).is_transient());
+        assert!(!Error::No(None).is_transient());
+        assert!(!Error::Bad(None).is_transient());
+    }
+
+    #[test]
+    fn test_imap_proto_keeps_rfc5530_codes_in_information() {
+        let (_, response) = imap_proto::Response::parse(
+            b"a1 NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)\r\n",
+        )
+        .expect("response should parse");
+        let imap_proto::Response::Done {
+            outcome: imap_proto::Outcome { code, information },
+            ..
+        } = response
+        else {
+            panic!("response should be tagged");
+        };
+        assert!(code.is_none());
+        assert_eq!(
+            information.as_deref(),
+            Some("[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
+        );
     }
 }

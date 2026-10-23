@@ -386,3 +386,49 @@ async fn test_repeated_local_changes_of_same_mail_are_synced(#[future] mail_setu
     drop(handle);
     while call_rx.recv().await.is_ok() {}
 }
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_sync_continues_after_server_disconnect(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let sync = mail_setup.sync_reconnecting("INBOX");
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    mail_setup.server_mail().kick();
+    let remote_content = b"after disconnect remote".as_slice();
+    server_mailbox.add_mail(remote_content);
+    let maildir = mail_setup.config().maildir_base_path().join("INBOX");
+    let local_content = b"after disconnect local".as_slice();
+    assert_ok!(fs::write(maildir.join("tmp/reconnect"), local_content));
+    assert_ok!(fs::rename(
+        maildir.join("tmp/reconnect"),
+        maildir.join("cur/reconnect:2,S")
+    ));
+
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(20), async {
+            // client mails can only be listed once the new local mail got its uid
+            while !server_mailbox
+                .mails()
+                .await
+                .iter()
+                .any(|mail| mail.content() == local_content)
+            {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+            while !client_mailbox
+                .mails()
+                .await
+                .iter()
+                .any(|mail| mail.content() == remote_content)
+            {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+    drop(sync);
+}

@@ -6,6 +6,11 @@ use std::{
     marker::PhantomData,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
     time::Duration,
 };
 
@@ -16,7 +21,10 @@ use crossfire::{
     mpsc::{self, Array},
 };
 use derivative::Derivative;
-use imapmaildir::{Client, Syncer, Tls, config as config_m, logging};
+use imapmaildir::{
+    Client, ClientError, SyncError, Syncer, Tls, Transient, config as config_m, logging,
+    reconnecting,
+};
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
 use testcontainers::{
@@ -358,6 +366,19 @@ pub struct ServerMailStorage {
     container: Container<GenericImage>,
 }
 
+impl ServerMailStorage {
+    /// Disconnects all sessions of the user like a server restart
+    ///
+    /// # Panics
+    /// If kicking the user fails
+    pub fn kick(&self) {
+        assert_ok!(
+            self.container
+                .exec(ExecCommand::new(["doveadm", "kick", "user"]))
+        );
+    }
+}
+
 impl MailStorage for ServerMailStorage {
     fn dir(&self) -> &Path {
         &self.dir
@@ -384,7 +405,7 @@ pub trait MailStorage: Sized {
 }
 
 pub struct MailSetup {
-    config: config_m::Account,
+    config: Arc<config_m::Account>,
     #[expect(unused)]
     tmp_dir: TempDir,
     server_mail_storge: ServerMailStorage,
@@ -474,6 +495,107 @@ impl MailSetup {
     }
 }
 
+#[derive(Debug)]
+enum SessionError {
+    Login(ClientError),
+    Sync(SyncError),
+    Stopped,
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Login(e) => write!(f, "{e}"),
+            Self::Sync(e) => write!(f, "{e}"),
+            Self::Stopped => write!(f, "stopped"),
+        }
+    }
+}
+
+impl Transient for SessionError {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::Login(e) => e.is_transient(),
+            Self::Sync(e) => e.is_transient(),
+            Self::Stopped => false,
+        }
+    }
+}
+
+/// Continuous sync reconnecting after transient errors. Stops when dropped.
+pub struct ReconnectingSync {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for ReconnectingSync {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            assert_ok!(thread.join());
+        }
+    }
+}
+
+impl MailSetup {
+    /// Runs continuous sync like the CLI does: each session on a new runtime, reconnecting after
+    /// transient errors
+    ///
+    /// # Panics
+    /// If the sync fails permanently
+    #[must_use]
+    pub fn sync_reconnecting(&self, mailbox: &str) -> ReconnectingSync {
+        let config = self.config.clone();
+        let mailbox = mailbox.to_string();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = thread::spawn(move || {
+            let tls = assert_ok!(Tls::new(config.connection()));
+            let error = reconnecting(&mailbox, || {
+                let rt = assert_ok!(compio::runtime::Runtime::new());
+                rt.block_on(async {
+                    let session = async {
+                        let client = Client::login(config.connection(), &tls, config.auth())
+                            .await
+                            .map_err(SessionError::Login)?;
+                        Syncer::sync_continuously(
+                            &mailbox,
+                            config.maildir_base_path(),
+                            config.state_dir(),
+                            client,
+                            config.idle_timout(),
+                            config.sync(),
+                            || {},
+                        )
+                        .await
+                        .map_err(SessionError::Sync)
+                    };
+                    let stop = async {
+                        while !stopped.load(Ordering::Relaxed) {
+                            compio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        Err(SessionError::Stopped)
+                    };
+                    futures::pin_mut!(session, stop);
+                    futures::future::select(session, stop)
+                        .await
+                        .factor_first()
+                        .0
+                })
+            });
+            assert!(
+                matches!(error, SessionError::Stopped),
+                "reconnecting sync failed: {error}"
+            );
+        });
+
+        ReconnectingSync {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
 #[fixture]
 #[once]
 fn __setup_logging() {
@@ -553,7 +675,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
     );
 
     MailSetup {
-        config: config_m::Account::new(
+        config: Arc::new(config_m::Account::new(
             config_m::Auth::Plain(config_m::PlainAuth::new(
                 "user".to_string(),
                 vec!["echo".to_string(), password],
@@ -567,7 +689,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             Duration::from_secs(30),
             Vec::new(),
             config_m::SyncConfig::default(),
-        ),
+        )),
         tmp_dir,
         server_mail_storge: ServerMailStorage {
             dir: server_dir,
