@@ -351,9 +351,19 @@ impl SelectedClient {
         change: FlagChange,
         sequence_set: &SequenceSet,
     ) -> Result<HashSet<Uid>, Error> {
-        let mut pending = self
+        let pending = self
             .own_modseqs
             .unchanged_since(highest_modseq, sequence_set);
+        self.store_flag_change_since(pending, change).await
+    }
+
+    /// Stores `change` on mails unchanged since their modseq in `pending` and returns the UIDs
+    /// rejected due to remote changes
+    pub async fn store_flag_change_since(
+        &mut self,
+        mut pending: HashMap<Uid, ModSeq>,
+        change: FlagChange,
+    ) -> Result<HashSet<Uid>, Error> {
         let mut rejected = HashSet::new();
         for (operation, flags) in [('+', change.added), ('-', change.removed)] {
             if flags.is_empty() {
@@ -461,9 +471,18 @@ impl SelectedClient {
         highest_modseq: ModSeq,
         sequence_set: &SequenceSet,
     ) -> Result<HashSet<Uid>, Error> {
-        let mut pending = self
+        let pending = self
             .own_modseqs
             .unchanged_since(highest_modseq, sequence_set);
+        self.delete_since(pending).await
+    }
+
+    /// Deletes mails unchanged since their modseq in `pending` and returns the UIDs rejected due
+    /// to remote changes
+    pub async fn delete_since(
+        &mut self,
+        mut pending: HashMap<Uid, ModSeq>,
+    ) -> Result<HashSet<Uid>, Error> {
         let modified = self
             .store_flags_grouped(&mut pending, '+', Flag::Deleted.into())
             .await?;
