@@ -100,6 +100,11 @@ impl MaildirRepository {
         );
     }
 
+    /// Waits for the state to be written completely, so that it can be loaded again right away
+    pub async fn close(self) -> Result<(), state::Error> {
+        self.state.close().await
+    }
+
     pub fn local_watcher(&self) -> LocalWatcher {
         LocalWatcher {
             maildir: self.maildir.clone(),

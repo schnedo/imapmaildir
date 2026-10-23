@@ -6,7 +6,7 @@ use crate::{
             capability::{AuthCapabilities, AuthCapability, Capabilities},
             encoding::CommandBuilder,
         },
-        transport::{Connection, ResponseData, ResponseHandler, Tls},
+        transport::{self, Connection, ResponseData, ResponseHandler, Tls},
     },
 };
 
@@ -100,7 +100,13 @@ impl Client {
                             auth_capabilities: &mut self.auth_capabilities,
                         },
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| match e {
+                        Error::Transport(transport::Error::No(information)) => {
+                            Error::LoginRejected(information)
+                        }
+                        e => e,
+                    })?;
                 if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
                     response.unsafe_get_tagged_response_code()
                 {

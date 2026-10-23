@@ -41,6 +41,15 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether reconnecting may succeed. Local errors are never transient.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Imap(e) => e.is_transient(),
+            _ => false,
+        }
+    }
+
     #[must_use]
     pub fn is_task_processing_stopped(&self) -> bool {
         matches!(

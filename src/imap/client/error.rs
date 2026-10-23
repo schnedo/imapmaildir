@@ -19,6 +19,8 @@ pub enum Error {
     MissingCapability(Capability),
     #[error("Server does not support {0:?} authentication")]
     MissingAuthCapability(AuthCapability),
+    #[error("Server rejected login: {}", .0.as_deref().unwrap_or("NO"))]
+    LoginRejected(Option<String>),
     #[error("Server rejected connection: {}", .0.as_deref().unwrap_or("BAD"))]
     ConnectionRejected(Option<String>),
     #[error("Pre-authenticated connections are not supported")]
@@ -58,6 +60,46 @@ pub enum Error {
     TaskProcessingStopped,
 }
 
+impl Error {
+    /// Whether reconnecting may succeed, e.g. because the connection broke or the server is
+    /// temporarily unavailable
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Transport(e) => e.is_transient(),
+            // e.g. password manager not unlocked yet
+            Self::Auth(_) | Self::ConnectionRejected(_) | Self::InvalidGreeting => true,
+            // retrying wrong credentials could lock the account
+            Self::LoginRejected(information) => !information.as_deref().is_some_and(|info| {
+                [
+                    "[AUTHENTICATIONFAILED]",
+                    "[AUTHORIZATIONFAILED]",
+                    "[EXPIRED]",
+                    "[PRIVACYREQUIRED]",
+                ]
+                .iter()
+                .any(|code| info.starts_with(code))
+            }),
+            Self::MissingCapability(_)
+            | Self::MissingAuthCapability(_)
+            | Self::PreAuthUnsupported
+            | Self::InvalidUid(_)
+            | Self::InvalidModSeq(_)
+            | Self::InvalidUidValidity(_)
+            | Self::InvalidUidSet(_)
+            | Self::UidValidityMismatch { .. }
+            | Self::IncompleteMailboxData(_)
+            | Self::MissingExists
+            | Self::IncompleteMetadata
+            | Self::MissingAppendUid
+            | Self::ImplausibleUidList(_)
+            | Self::IdleRejected
+            | Self::IdleStopClosed
+            | Self::TaskProcessingStopped => false,
+        }
+    }
+}
+
 impl From<transport::Error> for Error {
     fn from(value: transport::Error) -> Self {
         Self::Transport(value)
@@ -73,5 +115,42 @@ impl From<AuthError> for Error {
 impl From<UidConversionError> for Error {
     fn from(value: UidConversionError) -> Self {
         Self::InvalidUid(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrong_credentials_are_permanent() {
+        assert!(
+            !Error::LoginRejected(Some(
+                "[AUTHENTICATIONFAILED] Invalid credentials (Failure)".to_string()
+            ))
+            .is_transient()
+        );
+    }
+
+    #[test]
+    fn test_other_login_rejections_are_transient() {
+        assert!(
+            Error::LoginRejected(Some(
+                "Too many simultaneous connections. (Failure)".to_string()
+            ))
+            .is_transient()
+        );
+        assert!(Error::LoginRejected(None).is_transient());
+    }
+
+    #[test]
+    fn test_broken_connection_is_transient() {
+        assert!(Error::Transport(transport::Error::Closed).is_transient());
+    }
+
+    #[test]
+    fn test_protocol_errors_are_permanent() {
+        assert!(!Error::MissingCapability(Capability::Condstore).is_transient());
+        assert!(!Error::ImplausibleUidList(3).is_transient());
     }
 }
