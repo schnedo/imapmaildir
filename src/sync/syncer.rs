@@ -345,7 +345,13 @@ impl Syncer {
                 }
                 remote_changes = RemoteChanges { updates, deletions };
             }
-            Self::handle_conflicts(&remote_changes, &mut local_changes);
+            let restored = Self::handle_conflicts(&remote_changes, &mut local_changes);
+            if let Ok(restored) = SequenceSet::from_sorted(restored) {
+                log::warn!("mails {restored} changed on server. Restoring locally deleted mails");
+                // forgetting them makes applying the remote updates fetch them again, even if
+                // their flags did not change
+                repository.delete(restored).await?;
+            }
             Self::handle_remote_changes(&mut client, &repository, remote_changes).await?;
             client.commit_highest_modseq(synced_modseq).await?;
             Self::handle_local_changes(
@@ -525,7 +531,12 @@ impl Syncer {
         Ok(())
     }
 
-    fn handle_conflicts(remote_changes: &RemoteChanges, local_changes: &mut LocalChanges) {
+    /// Discards local changes of mails changed remotely, as remote changes win. Returns the
+    /// ascending UIDs of locally deleted mails, that got updated remotely and need restoring.
+    fn handle_conflicts(
+        remote_changes: &RemoteChanges,
+        local_changes: &mut LocalChanges,
+    ) -> Vec<Uid> {
         let mut remote_deletions: HashSet<Uid> = remote_changes
             .deletions
             .as_ref()
@@ -536,8 +547,16 @@ impl Syncer {
             .map(RemoteMailMetadata::uid)
             .collect();
 
+        let mut restored = Vec::new();
         local_changes.deletions.retain(|deletion| {
-            !remote_updates.contains(deletion) && !remote_deletions.contains(deletion)
+            if remote_deletions.contains(deletion) {
+                false
+            } else if remote_updates.contains(deletion) {
+                restored.push(*deletion);
+                false
+            } else {
+                true
+            }
         });
         for uid in remote_updates.drain() {
             local_changes.updates.remove(uid);
@@ -545,6 +564,9 @@ impl Syncer {
         for uid in remote_deletions.drain() {
             local_changes.updates.remove(uid);
         }
+        restored.sort_unstable();
+
+        restored
     }
 
     async fn sync_initial(
@@ -922,6 +944,34 @@ mod tests {
 
         assert_eq!(batch, vec![1, 2]);
         assert_matches!(next, Some(Task::SetHighestModseq(_)));
+    }
+
+    #[test]
+    fn test_handle_conflicts_restores_locally_deleted_mails_updated_remotely() {
+        let uid = |uid: u32| assert_ok!(Uid::try_from(uid));
+        let remote_changes = RemoteChanges {
+            updates: [5, 2]
+                .into_iter()
+                .map(|updated| {
+                    RemoteMailMetadata::new(
+                        uid(updated),
+                        Flag::Seen.into(),
+                        assert_ok!(ModSeq::try_from(9)),
+                    )
+                })
+                .collect(),
+            deletions: Some(SequenceSet::from(uid(3))),
+        };
+        let mut local_changes = LocalChanges::new(
+            vec![uid(5), uid(3), uid(4), uid(2)],
+            Vec::new(),
+            crate::maildir::LocalFlagChangesBuilder::default(),
+        );
+
+        let restored = Syncer::handle_conflicts(&remote_changes, &mut local_changes);
+
+        assert_eq!(restored, vec![uid(2), uid(5)]);
+        assert_eq!(local_changes.deletions, vec![uid(4)]);
     }
 
     #[compio::test]
