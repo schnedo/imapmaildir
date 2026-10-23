@@ -168,6 +168,9 @@ fn update_capabilities(
     auth_capabilities: &mut AuthCapabilities,
     caps: &[imap_proto::Capability],
 ) {
+    // capability lists are complete and replace previous ones, e.g. after login (RFC 3501 7.2.1)
+    *capabilities = Capabilities::default();
+    *auth_capabilities = AuthCapabilities::default();
     for cap in caps {
         match cap {
             imap_proto::Capability::Auth(_) => auth_capabilities.insert(cap),
@@ -177,4 +180,35 @@ fn update_capabilities(
         }
     }
     log::trace!("updated capabilities to {capabilities:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::*;
+    use crate::imap::client::encoding::LiteralMode;
+
+    #[test]
+    fn test_update_capabilities_replaces_previous_ones() {
+        let mut capabilities = Capabilities::default();
+        let mut auth_capabilities = AuthCapabilities::default();
+        update_capabilities(
+            &mut capabilities,
+            &mut auth_capabilities,
+            &[
+                imap_proto::Capability::Atom(Cow::Borrowed("LITERAL+")),
+                imap_proto::Capability::Atom(Cow::Borrowed("APPENDLIMIT=100")),
+            ],
+        );
+
+        update_capabilities(
+            &mut capabilities,
+            &mut auth_capabilities,
+            &[imap_proto::Capability::Atom(Cow::Borrowed("LITERAL-"))],
+        );
+
+        assert_eq!(capabilities.literal_mode(), LiteralMode::Minus);
+        assert_eq!(capabilities.append_limit(), None);
+    }
 }

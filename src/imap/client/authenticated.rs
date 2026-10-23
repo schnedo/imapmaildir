@@ -225,6 +225,22 @@ impl SelectHandler<'_> {
         Ok(())
     }
 
+    fn update_capabilities(&mut self, caps: &[imap_proto::Capability]) {
+        // capability lists are complete and replace previous ones
+        *self.capabilities = Capabilities::default();
+        for cap in caps {
+            match cap {
+                imap_proto::Capability::Imap4rev1 | imap_proto::Capability::Atom(_) => {
+                    self.capabilities.insert(cap);
+                }
+                imap_proto::Capability::Auth(_) => {
+                    log::warn!("unexpected capability respone {cap:?}");
+                }
+            }
+        }
+        log::trace!("updated capabilities to {:?}", self.capabilities);
+    }
+
     fn handle_response(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
         match response.parsed() {
             imap_proto::Response::MailboxData(mailbox_datum) => match mailbox_datum {
@@ -244,15 +260,7 @@ impl SelectHandler<'_> {
                     );
                 }
             },
-            imap_proto::Response::Capabilities(caps) => {
-                for cap in caps {
-                    match cap {
-                        imap_proto::Capability::Atom(_) => self.capabilities.insert(cap),
-                        _ => log::warn!("unexpected capability respone {cap:?}"),
-                    }
-                }
-                log::trace!("updated capabilities to {:?}", self.capabilities);
-            }
+            imap_proto::Response::Capabilities(caps) => self.update_capabilities(caps),
             imap_proto::Response::Data {
                 status: imap_proto::Status::Ok,
                 outcome:
