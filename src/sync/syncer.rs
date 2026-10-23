@@ -383,7 +383,12 @@ impl Syncer {
             updates,
             deletions,
             news,
+            other_flags,
         } = local_changes;
+        // storing them first lets following flag changes rename the files without searching them
+        if !other_flags.is_empty() {
+            repository.update_other_flags(other_flags).await?;
+        }
         let mut news = news.into_iter();
         let mut batch = Self::read_store_batch(&mut news, repository, config).await?;
         while !batch.is_empty() {
@@ -686,6 +691,11 @@ impl Syncer {
             }
             Task::ApplyFlagChanges(uids, change) => {
                 maildir_repository.apply_flag_changes(&uids, change).await?;
+            }
+            Task::UpdateOtherFlags(other_flags) => {
+                maildir_repository
+                    .update_other_flags_all(other_flags)
+                    .await?;
             }
             Task::ReadMail(metadata, reply) => {
                 reply.send(maildir_repository.read_mail(metadata).await?);

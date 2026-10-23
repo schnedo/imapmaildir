@@ -20,7 +20,7 @@ use rusqlite_migration::Migrations;
 use thiserror::Error;
 
 use crate::{
-    maildir::{LocalMailMetadata, MaildirFile as _},
+    maildir::{LocalMailMetadata, MaildirFile as _, OtherFlags},
     repository::{Flag, ModSeq, Uid, UidValidity},
 };
 
@@ -33,7 +33,7 @@ const JOB_QUEUE_SIZE: usize = 64;
 const GET_ALL_BY_ID_CHUNK_SIZE: usize = 256;
 static GET_ALL_BY_ID_QUERY: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "select uid,flags,fileprefix from mail_metadata where uid in ({})",
+        "select uid,flags,fileprefix,other_flags from mail_metadata where uid in ({})",
         vec!["?"; GET_ALL_BY_ID_CHUNK_SIZE].join(",")
     )
 });
@@ -255,10 +255,15 @@ impl State {
 
     pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
         log::trace!("updating mail cache {data:?}");
-        let (flags, uid) = (data.flags().bits(), u32::from(data.uid()));
+        let (flags, other_flags, uid) = (
+            data.flags().bits(),
+            data.other_flags().as_str().to_owned(),
+            u32::from(data.uid()),
+        );
         self.call(move |db| {
-            let mut stmt = db.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
-            stmt.execute((flags, uid))?;
+            let mut stmt = db
+                .prepare_cached("update mail_metadata set flags=?1, other_flags=?2 where uid=?3")?;
+            stmt.execute((flags, other_flags, uid))?;
 
             Ok(())
         })
@@ -276,13 +281,14 @@ impl State {
             let mut conflicts = Vec::new();
             {
                 let mut stmt = transaction.prepare_cached(
-                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+                    "insert into mail_metadata (uid,flags,fileprefix,other_flags) values (?1,?2,?3,?4)",
                 )?;
                 for entry in data {
                     match stmt.execute((
                         u32::from(entry.uid()),
                         entry.flags().bits(),
                         &entry.fileprefix(),
+                        entry.other_flags().as_str(),
                     )) {
                         Ok(_) => stored.push(entry),
                         Err(rusqlite::Error::SqliteFailure(
@@ -306,7 +312,9 @@ impl State {
     pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata with {uid:?}");
         self.call(move |db| {
-            let mut stmt = db.prepare_cached("select * from mail_metadata where uid = ?1")?;
+            let mut stmt = db.prepare_cached(
+                "select uid,flags,fileprefix,other_flags from mail_metadata where uid = ?1",
+            )?;
 
             stmt.query_one([u32::from(uid)], |row| row.try_into())
                 .optional()
@@ -339,10 +347,34 @@ impl State {
         self.call(move |db| {
             let transaction = db.transaction()?;
             {
-                let mut stmt =
-                    transaction.prepare_cached("update mail_metadata set flags=?1 where uid=?2")?;
+                let mut stmt = transaction.prepare_cached(
+                    "update mail_metadata set flags=?1, other_flags=?2 where uid=?3",
+                )?;
                 for entry in data {
-                    stmt.execute((entry.flags().bits(), u32::from(entry.uid())))?;
+                    stmt.execute((
+                        entry.flags().bits(),
+                        entry.other_flags().as_str(),
+                        u32::from(entry.uid()),
+                    ))?;
+                }
+            }
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// Updates flags without IMAP equivalent, which other clients changed in the maildir
+    pub async fn update_other_flags_all(&self, data: Vec<(Uid, OtherFlags)>) -> Result<(), Error> {
+        log::trace!("updating other flags of {} mail caches", data.len());
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            {
+                let mut stmt = transaction
+                    .prepare_cached("update mail_metadata set other_flags=?1 where uid=?2")?;
+                for (uid, other_flags) in data {
+                    stmt.execute((other_flags.as_str(), u32::from(uid)))?;
                 }
             }
             transaction.commit()?;
@@ -358,13 +390,14 @@ impl State {
             let transaction = db.transaction()?;
             {
                 let mut stmt = transaction.prepare_cached(
-                    "insert into mail_metadata (uid,flags,fileprefix) values (?1,?2,?3)",
+                    "insert into mail_metadata (uid,flags,fileprefix,other_flags) values (?1,?2,?3,?4)",
                 )?;
                 for entry in data {
                     stmt.execute((
                         u32::from(entry.uid()),
                         entry.flags().bits(),
                         &entry.fileprefix(),
+                        entry.other_flags().as_str(),
                     ))?;
                 }
             }
@@ -444,8 +477,9 @@ impl State {
             .call(|db| {
                 let db = db.transaction()?;
                 let entries = {
-                    let mut stmt =
-                        db.prepare_cached("select uid,flags,fileprefix from mail_metadata;")?;
+                    let mut stmt = db.prepare_cached(
+                        "select uid,flags,fileprefix,other_flags from mail_metadata;",
+                    )?;
                     stmt.query_map([], |row| LocalMailMetadata::try_from(row))?
                         .collect::<Result<Vec<_>, _>>()?
                 };
@@ -484,7 +518,10 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
             )
         })?;
         let flags = Flag::from_bits_truncate(value.get(1)?);
-        Ok(Self::new(uid, flags, value.get(2)?))
+        let mut metadata = Self::new(uid, flags, value.get(2)?);
+        metadata.set_other_flags(OtherFlags::from(value.get::<_, String>(3)?));
+
+        Ok(metadata)
     }
 }
 
@@ -885,6 +922,30 @@ mod tests {
         assert_ok!(state.state.update(&metadata).await);
         let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_other_flags_are_stored_and_updated(
+        #[future] state: TestState,
+        mut metadata: LocalMailMetadata,
+    ) {
+        metadata.set_other_flags(OtherFlags::from("P".to_string()));
+        assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_eq!(metadata, stored);
+
+        let other_flags = OtherFlags::from("Pa".to_string());
+        assert_ok!(
+            state
+                .state
+                .update_other_flags_all(vec![(metadata.uid(), other_flags.clone())])
+                .await
+        );
+        let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
+        assert_eq!(stored.other_flags(), &other_flags);
+        assert_eq!(stored.flags(), metadata.flags());
     }
 
     #[rstest]

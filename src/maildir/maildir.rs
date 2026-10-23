@@ -24,7 +24,7 @@ use crate::{
     imap::RemoteMail,
     maildir::{
         LocalMailMetadata,
-        local_mail::{NewLocalMailMetadata, ParseLocalMailMetadataError},
+        local_mail::{NewLocalMailMetadata, OtherFlags, ParseLocalMailMetadataError},
         watcher::{self, Watch},
     },
     repository::{Flag, Uid},
@@ -35,6 +35,8 @@ pub trait MaildirFile {
     fn set_uid(self, uid: Uid) -> LocalMailMetadata;
     fn flags(&self) -> BitFlags<Flag>;
     fn set_flags(&mut self, flags: BitFlags<Flag>);
+    fn other_flags(&self) -> &OtherFlags;
+    fn set_other_flags(&mut self, other_flags: OtherFlags);
     /// Prepends `prefix` to the file prefix to resolve name clashes
     fn prepend_to_fileprefix(&mut self, prefix: &str);
     /// File name without the info part, which other clients do not change
@@ -615,6 +617,15 @@ impl Maildir {
                 let Some(current_mail) = self.locate(stem).await? else {
                     return Err(Error::Missing(missing));
                 };
+                // the state does not know flags without IMAP equivalent, which the file may carry
+                if let Some(Ok(located)) = current_mail
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(NewLocalMailMetadata::from_str)
+                {
+                    entry.set_other_flags(located.other_flags().clone());
+                }
+                let new_mail = self.get_path_of(entry);
                 Self::rename(watch.as_ref(), current_mail, new_mail).await
             }
             result => result,
