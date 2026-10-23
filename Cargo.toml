@@ -14,7 +14,7 @@ include = ["/src/**/*.rs", "/migrations/*", "/build.rs"]
 anstyle = "1.0.14"
 anyhow = "1.0.104"
 asynchronous-codec = "0.7.0"
-base64 = "0.22.1"
+base64 = "0.23.1"
 bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive"] }
 compio = { version = "0.19.2", features = [
