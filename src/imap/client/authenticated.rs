@@ -14,7 +14,7 @@ use crate::{
         transport::{Connection, ResponseData, ResponseHandler},
     },
     repository::{MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder, UidValidity},
-    sync::Task,
+    sync::{ByteBudget, Task},
 };
 
 pub struct AuthenticatedClient {
@@ -52,6 +52,7 @@ impl AuthenticatedClient {
     pub async fn select(
         mut self,
         task_tx: MAsyncTx<Array<Task>>,
+        budget: ByteBudget,
         mailbox: &str,
     ) -> Result<Selection, Error> {
         if self.qresync {
@@ -59,13 +60,14 @@ impl AuthenticatedClient {
         }
         let command = format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox));
 
-        self.do_select(task_tx, &command, None).await
+        self.do_select(task_tx, budget, &command, None).await
     }
 
     /// Selects `mailbox` and reports changes since `highest_modseq` if the server supports QRESYNC
     pub async fn resync_select(
         mut self,
         task_tx: MAsyncTx<Array<Task>>,
+        budget: ByteBudget,
         mailbox: &str,
         uid_validity: UidValidity,
         highest_modseq: ModSeq,
@@ -80,7 +82,8 @@ impl AuthenticatedClient {
             format!("SELECT {} (CONDSTORE)", encoding::mailbox(mailbox))
         };
 
-        self.do_select(task_tx, &command, Some(uid_validity)).await
+        self.do_select(task_tx, budget, &command, Some(uid_validity))
+            .await
     }
 
     /// Enables QRESYNC if supported. Must not be sent otherwise, as servers may reject ENABLE or
@@ -105,6 +108,7 @@ impl AuthenticatedClient {
     async fn do_select(
         mut self,
         task_tx: MAsyncTx<Array<Task>>,
+        budget: ByteBudget,
         command: &str,
         cached_uid_validity: Option<UidValidity>,
     ) -> Result<Selection, Error> {
@@ -137,6 +141,7 @@ impl AuthenticatedClient {
             &self.capabilities,
             self.qresync,
             task_tx,
+            budget,
             exists.ok_or(Error::MissingExists)?,
             mailbox_data.uid_validity(),
         )?;

@@ -25,7 +25,7 @@ use crate::{
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid, UidValidity},
-    sync::Task,
+    sync::{ByteBudget, Task},
 };
 
 pub enum IdleStopReason {
@@ -60,6 +60,7 @@ impl SelectedClient {
         capabilities: &Capabilities,
         qresync: bool,
         task_tx: MAsyncTx<mpsc::Array<Task>>,
+        budget: ByteBudget,
         exists: u32,
         uid_validity: UidValidity,
     ) -> Result<Self, Error> {
@@ -74,6 +75,7 @@ impl SelectedClient {
             connection,
             mailbox_handler: MailboxHandler {
                 task_tx,
+                budget,
                 message_count: MessageCount::new(exists),
                 tracking: (!qresync).then(|| SequenceTracking::new(exists)),
             },
@@ -800,6 +802,8 @@ fn parse_uid_set(uids: &str) -> Result<Vec<RangeInclusive<u32>>, Error> {
 #[derive(Debug)]
 struct MailboxHandler {
     task_tx: MAsyncTx<mpsc::Array<Task>>,
+    /// Bounds the bytes of downloaded mails queued for storing
+    budget: ByteBudget,
     message_count: MessageCount,
     /// Only tracked without QRESYNC, as VANISHED and FETCH responses carry UIDs otherwise
     tracking: Option<SequenceTracking>,
@@ -854,6 +858,10 @@ impl ResponseHandler for MailboxHandler {
                 };
                 let task = match (metadata, attributes.body) {
                     (Some(metadata), Some(Some(content))) => {
+                        self.budget
+                            .acquire(content.len())
+                            .await
+                            .map_err(|_| Error::TaskProcessingStopped)?;
                         let content = RemoteContent::new(response.bytes_of(content));
                         Task::NewMail(RemoteMail::new(metadata, content))
                     }
@@ -1003,6 +1011,7 @@ mod tests {
         let (task_tx, task_rx) = mpsc::bounded_async(16);
         let handler = MailboxHandler {
             task_tx,
+            budget: ByteBudget::new(usize::MAX),
             message_count: MessageCount::new(exists),
             tracking: Some(SequenceTracking::new(exists)),
         };
