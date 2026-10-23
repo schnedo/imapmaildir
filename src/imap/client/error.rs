@@ -73,16 +73,12 @@ impl Error {
             Self::Transport(e) => e.is_transient(),
             // e.g. password manager not unlocked yet
             Self::Auth(_) | Self::ConnectionRejected(_) | Self::InvalidGreeting => true,
-            // retrying wrong credentials could lock the account
-            Self::LoginRejected(information) => !information.as_deref().is_some_and(|info| {
-                [
-                    "[AUTHENTICATIONFAILED]",
-                    "[AUTHORIZATIONFAILED]",
-                    "[EXPIRED]",
-                    "[PRIVACYREQUIRED]",
-                ]
-                .iter()
-                .any(|code| info.starts_with(code))
+            // retrying wrong credentials could lock the account, and servers do not always
+            // mark them with a response code
+            Self::LoginRejected(information) => information.as_deref().is_some_and(|info| {
+                // Gmail's connection limit lacks a temporary response code
+                transport::is_transient_no(info)
+                    || info.contains("Too many simultaneous connections")
             }),
             Self::MissingCapability(_)
             | Self::MissingAuthCapability(_)
@@ -138,14 +134,25 @@ mod tests {
     }
 
     #[test]
-    fn test_other_login_rejections_are_transient() {
+    fn test_login_rejections_without_code_are_permanent() {
+        assert!(!Error::LoginRejected(Some("LOGIN failed.".to_string())).is_transient());
+        assert!(!Error::LoginRejected(None).is_transient());
+    }
+
+    #[test]
+    fn test_temporary_login_rejections_are_transient() {
         assert!(
             Error::LoginRejected(Some(
-                "Too many simultaneous connections. (Failure)".to_string()
+                "[ALERT] Too many simultaneous connections. (Failure)".to_string()
             ))
             .is_transient()
         );
-        assert!(Error::LoginRejected(None).is_transient());
+        assert!(
+            Error::LoginRejected(Some(
+                "[UNAVAILABLE] Temporary authentication failure.".to_string()
+            ))
+            .is_transient()
+        );
     }
 
     #[test]
