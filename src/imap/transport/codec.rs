@@ -53,11 +53,14 @@ impl Decoder for ImapCodec {
                 | nom::Err::Failure(nom::error::Error { code, .. }),
             ) => {
                 let start = buf.split_at(buf.len().min(ERROR_CONTEXT_SIZE)).0;
-                return Err(io::Error::other(format!(
-                    "{code:?} during parsing of {} bytes starting with {:?}",
-                    buf.len(),
-                    String::from_utf8_lossy(start)
-                )));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{code:?} during parsing of {} bytes starting with {:?}",
+                        buf.len(),
+                        String::from_utf8_lossy(start)
+                    ),
+                ));
             }
         };
         let raw = buf.split_to(rsp_len).freeze();
@@ -160,6 +163,15 @@ mod tests {
 
         assert_eq!(&bytes[..], b"hello");
         assert_eq!(bytes.as_ptr(), content.as_ptr());
+    }
+
+    #[test]
+    fn test_unparseable_response_is_invalid_data() {
+        let mut buf = BytesMut::from(&b"garbage\r\n"[..]);
+
+        let error = assert_err!(ImapCodec::default().decode(&mut buf));
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
