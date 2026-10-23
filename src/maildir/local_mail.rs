@@ -9,6 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use compio::fs::File;
 use enumflags2::BitFlags;
 use rustix::system::uname;
 use thiserror::Error;
@@ -29,27 +30,39 @@ static PID_AND_HOSTNAME: LazyLock<(u32, String)> = LazyLock::new(|| {
     )
 });
 
-#[derive(PartialEq, Clone)]
+/// Local mail opened for uploading, whose content gets streamed from the file instead of being
+/// held in memory. The open file keeps the content readable, even if other clients rename or
+/// delete the mail meanwhile.
 pub struct LocalMail {
     metadata: NewLocalMailMetadata,
-    content: Vec<u8>,
+    file: File,
+    size: usize,
 }
 
 impl LocalMail {
-    pub fn new(content: Vec<u8>, metadata: NewLocalMailMetadata) -> Self {
-        Self { metadata, content }
+    pub fn new(metadata: NewLocalMailMetadata, file: File, size: usize) -> Self {
+        Self {
+            metadata,
+            file,
+            size,
+        }
     }
 
     pub fn metadata(&self) -> &NewLocalMailMetadata {
         &self.metadata
     }
 
-    pub fn content(&self) -> &[u8] {
-        &self.content
+    pub fn file(&self) -> &File {
+        &self.file
     }
 
-    pub fn unpack(self) -> (NewLocalMailMetadata, Vec<u8>) {
-        (self.metadata, self.content)
+    /// Size of the content in bytes
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn into_metadata(self) -> NewLocalMailMetadata {
+        self.metadata
     }
 }
 
@@ -57,6 +70,7 @@ impl Debug for LocalMail {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalMail")
             .field("metadata", &self.metadata)
+            .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
@@ -341,16 +355,6 @@ mod tests {
         NewLocalMailMetadata::new(flags, prefix)
     }
 
-    #[fixture]
-    fn content() -> Vec<u8> {
-        "asdfjklsadfjklsadfj".into()
-    }
-
-    #[fixture]
-    fn mail(new_metadata: NewLocalMailMetadata, content: Vec<u8>) -> LocalMail {
-        LocalMail::new(content, new_metadata)
-    }
-
     #[rstest]
     fn test_maildir_flags_in_ascii_order(metadata: LocalMailMetadata) {
         assert_ends_with!(metadata.filename(), ":2,DFRST");
@@ -420,24 +424,6 @@ mod tests {
         let result = LocalMailMetadata::from(&remote);
         assert_eq!(remote.uid(), result.uid());
         assert_eq!(remote.flags(), result.flags());
-    }
-
-    #[rstest]
-    fn test_local_mail_unpacks(new_metadata: NewLocalMailMetadata) {
-        let content: Vec<u8> = "foo".into();
-        let expected_content = content.clone();
-        let expected_metadata = new_metadata.clone();
-
-        let mail = LocalMail::new(content, new_metadata);
-        assert_eq!(&expected_metadata, mail.metadata());
-        let (metadata, content) = mail.unpack();
-        assert_eq!(expected_metadata, metadata);
-        assert_eq!(expected_content, content);
-    }
-
-    #[rstest]
-    fn test_local_mail_debug_format_does_not_include_content(mail: LocalMail, content: Vec<u8>) {
-        assert_not_contains!(&format!("{mail:?}"), &format!("{content:?}"));
     }
 
     #[rstest]

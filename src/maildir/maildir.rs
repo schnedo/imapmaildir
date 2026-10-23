@@ -441,10 +441,14 @@ impl Maildir {
         }
     }
 
-    pub async fn read_content(&self, metadata: &impl MaildirFile) -> io::Result<Vec<u8>> {
+    /// Opens the mail of `metadata` and returns it with the size of its content
+    pub async fn open(&self, metadata: &impl MaildirFile) -> io::Result<(compio::fs::File, usize)> {
         let mailpath = self.get_path_of(metadata);
-        log::trace!("Getting content of {}", mailpath.display());
-        compio::fs::read(mailpath).await
+        log::trace!("opening {}", mailpath.display());
+        let file = compio::fs::File::open(mailpath).await?;
+        let size = usize::try_from(file.metadata().await?.len()).map_err(io::Error::other)?;
+
+        Ok((file, size))
     }
 
     fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
@@ -837,9 +841,10 @@ mod tests {
 
     use crate::{
         imap::{RemoteContent, RemoteMailMetadata},
-        maildir::LocalMail,
         repository::ModSeq,
     };
+
+    use compio::io::AsyncReadAtExt as _;
 
     use super::*;
 
@@ -870,10 +875,10 @@ mod tests {
     }
 
     #[fixture]
-    fn local_mail() -> LocalMail {
-        LocalMail::new(
-            "foo".into(),
+    fn local_mail() -> (NewLocalMailMetadata, Vec<u8>) {
+        (
             NewLocalMailMetadata::new(Flag::all(), "prefix".to_string()),
+            "foo".into(),
         )
     }
 
@@ -1214,26 +1219,35 @@ mod tests {
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_read_reads_mail(#[future] maildir: TestMaildir, local_mail: LocalMail) {
+    async fn test_read_reads_mail(
+        #[future] maildir: TestMaildir,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
+    ) {
         let maildir = maildir.maildir;
-        let (metadata, expected_content) = local_mail.unpack();
+        let (metadata, expected_content) = local_mail;
         assert_ok!(fs::write(
             maildir.cur.join(metadata.filename()),
             &expected_content
         ));
 
-        let result = assert_ok!(maildir.read_content(&metadata).await);
-        assert_eq!(result, expected_content);
+        let (file, size) = assert_ok!(maildir.open(&metadata).await);
+        let BufResult(read, content) = file.read_to_end_at(Vec::new(), 0).await;
+        assert_ok!(read);
+        assert_eq!(size, expected_content.len());
+        assert_eq!(content, expected_content);
     }
 
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_read_errors_on_io_error(#[future] maildir: TestMaildir, local_mail: LocalMail) {
+    async fn test_read_errors_on_io_error(
+        #[future] maildir: TestMaildir,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
+    ) {
         let maildir = maildir.maildir;
-        let (metadata, _) = local_mail.unpack();
+        let (metadata, _) = local_mail;
 
-        let result = assert_err!(maildir.read_content(&metadata).await);
+        let result = assert_err!(maildir.open(&metadata).await);
         assert_matches!(result, io::Error { .. });
     }
 
@@ -1435,9 +1449,12 @@ mod tests {
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_update_uid_updates_uid(#[future] maildir: TestMaildir, local_mail: LocalMail) {
+    async fn test_update_uid_updates_uid(
+        #[future] maildir: TestMaildir,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
+    ) {
         let maildir = maildir.maildir;
-        let (entry, content) = local_mail.unpack();
+        let (entry, content) = local_mail;
         assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
 
         let expected_uid = assert_ok!(Uid::try_from(&3));
@@ -1453,10 +1470,10 @@ mod tests {
     #[awt]
     async fn test_update_uid_keeps_flags_of_mail_renamed_by_other_client(
         #[future] maildir: TestMaildir,
-        local_mail: LocalMail,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
     ) {
         let maildir = maildir.maildir;
-        let (entry, content) = local_mail.unpack();
+        let (entry, content) = local_mail;
         let mut renamed = entry.clone();
         renamed.set_flags(Flag::Seen.into());
         assert_ok!(fs::write(maildir.get_path_of(&renamed), &content));
@@ -1473,10 +1490,10 @@ mod tests {
     #[awt]
     async fn test_update_flags_errors_on_missing_mail(
         #[future] maildir: TestMaildir,
-        local_mail: LocalMail,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
     ) {
         let maildir = maildir.maildir;
-        let (mut entry, content) = local_mail.unpack();
+        let (mut entry, content) = local_mail;
         assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
 
         let expected_flags = Flag::empty();
@@ -1491,10 +1508,10 @@ mod tests {
     #[awt]
     async fn test_delete_deletes_existing_mail(
         #[future] maildir: TestMaildir,
-        local_mail: LocalMail,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
     ) {
         let maildir = maildir.maildir;
-        let (entry, content) = local_mail.unpack();
+        let (entry, content) = local_mail;
         assert_ok!(fs::write(maildir.get_path_of(&entry), &content));
 
         assert_ok!(maildir.delete(&entry).await);
@@ -1542,10 +1559,10 @@ mod tests {
     #[awt]
     async fn test_delete_succeeds_on_already_gone_mail(
         #[future] maildir: TestMaildir,
-        local_mail: LocalMail,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
     ) {
         let maildir = maildir.maildir;
-        let (entry, ..) = local_mail.unpack();
+        let (entry, ..) = local_mail;
 
         assert_ok!(maildir.delete(&entry).await);
         assert!(!assert_ok!(fs::exists(maildir.get_path_of(&entry))));
@@ -1556,9 +1573,9 @@ mod tests {
     #[awt]
     async fn test_delete_propagates_deletion_error(
         #[future] maildir: TestMaildir,
-        local_mail: LocalMail,
+        local_mail: (NewLocalMailMetadata, Vec<u8>),
     ) {
-        let (entry, ..) = local_mail.unpack();
+        let (entry, ..) = local_mail;
         let mut permissions = assert_ok!(maildir.dir.path().metadata()).permissions();
         permissions.set_mode(0o000);
         assert_ok!(fs::set_permissions(maildir.dir.path(), permissions));

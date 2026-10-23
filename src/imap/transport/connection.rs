@@ -2,12 +2,16 @@ use std::{fmt::Debug, io, path::PathBuf, time::Duration};
 
 use asynchronous_codec::Framed;
 use compio::{
+    BufResult,
+    buf::{IntoInner as _, IoBuf as _},
+    fs::File,
+    io::AsyncReadAtExt as _,
     io::compat::AsyncStream,
     native_tls::{self, Certificate},
     net::TcpStream,
     tls::{TlsConnector, TlsStream},
 };
-use futures::{SinkExt, StreamExt};
+use futures::{AsyncWrite, AsyncWriteExt as _, SinkExt, StreamExt};
 use thiserror::Error;
 
 use crate::{
@@ -20,6 +24,20 @@ use crate::{
 };
 
 const READ_BUFFER_SIZE: usize = 256 * 1024;
+
+/// Size of the chunks, in which commands with file contents get written
+const STREAM_CHUNK_SIZE: usize = 256 * 1024;
+
+/// Part of a command, whose file contents get streamed instead of being held in memory
+pub enum CommandPart<'a> {
+    Bytes(&'a [u8]),
+    /// The first `len` bytes of `file`. Errors if the file got shorter meanwhile, as the server
+    /// expects exactly `len` bytes then.
+    File {
+        file: &'a File,
+        len: usize,
+    },
+}
 
 pub struct Connection {
     tag_generator: TagGenerator,
@@ -124,6 +142,29 @@ impl Connection {
         let tag = self.tag_generator.next();
         self.write(&tag, parts).await?;
         self.receive_completion(&tag, handler).await
+    }
+
+    /// Like [`Self::send_parts`], but streams file contents in chunks instead of buffering the
+    /// whole command
+    pub async fn send_streamed<H: ResponseHandler>(
+        &mut self,
+        parts: &[CommandPart<'_>],
+        handler: &mut H,
+    ) -> Result<ResponseData, H::Error> {
+        let tag = self.tag_generator.next();
+        self.write_streamed(&tag, parts).await?;
+        self.receive_completion(&tag, handler).await
+    }
+
+    async fn write_streamed(&mut self, tag: &str, parts: &[CommandPart<'_>]) -> Result<(), Error> {
+        log::trace!("{tag:?}: streaming");
+        // the stream gets written directly, which must not overtake buffered commands
+        SinkExt::flush(&mut self.stream)
+            .await
+            .map_err(Error::Send)?;
+        write_parts(&mut *self.stream, tag, parts, STREAM_CHUNK_SIZE)
+            .await
+            .map_err(Error::Send)
     }
 
     pub async fn write_command(&mut self, command: Vec<u8>) -> Result<String, Error> {
@@ -322,6 +363,50 @@ pub enum Error {
     UnexpectedTaggedStatus(String),
 }
 
+/// Writes `tag` and `parts` as command to `writer` in chunks of `chunk_size`, reading file
+/// contents directly into the chunk
+async fn write_parts(
+    writer: &mut (impl AsyncWrite + Unpin),
+    tag: &str,
+    parts: &[CommandPart<'_>],
+    chunk_size: usize,
+) -> io::Result<()> {
+    let mut chunk = Vec::with_capacity(chunk_size);
+    chunk.extend_from_slice(tag.as_bytes());
+    chunk.push(b' ');
+    for part in parts {
+        match part {
+            CommandPart::Bytes(bytes) => {
+                if chunk.len() + bytes.len() > chunk_size {
+                    writer.write_all(&chunk).await?;
+                    chunk.clear();
+                }
+                chunk.extend_from_slice(bytes);
+            }
+            CommandPart::File { file, len } => {
+                let mut written = 0;
+                while written < *len {
+                    if chunk.len() >= chunk_size {
+                        writer.write_all(&chunk).await?;
+                        chunk.clear();
+                    }
+                    let start = chunk.len();
+                    let end = start + (len - written).min(chunk_size - start);
+                    let BufResult(read, slice) = file
+                        .read_exact_at(chunk.slice(start..end), written as u64)
+                        .await;
+                    chunk = slice.into_inner();
+                    read?;
+                    written += end - start;
+                }
+            }
+        }
+    }
+    chunk.extend_from_slice(b"\r\n");
+    writer.write_all(&chunk).await?;
+    writer.flush().await
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -346,6 +431,110 @@ mod tests {
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock/", $($suffix),*)
         };
     }
+    async fn file_with(dir: &Path, name: &str, content: &[u8]) -> File {
+        let path = dir.join(name);
+        assert_ok!(fs::write(&path, content));
+        assert_ok!(File::open(path).await)
+    }
+
+    /// Writes `parts` with tag `A1` and returns the written bytes and number of writes
+    async fn written(parts: &[CommandPart<'_>], chunk_size: usize) -> io::Result<(Vec<u8>, usize)> {
+        #[derive(Default)]
+        struct Recorder(Vec<u8>, usize);
+        impl AsyncWrite for Recorder {
+            fn poll_write(
+                mut self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                buf: &[u8],
+            ) -> std::task::Poll<io::Result<usize>> {
+                self.0.extend_from_slice(buf);
+                self.1 += 1;
+                std::task::Poll::Ready(Ok(buf.len()))
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn poll_close(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        let mut recorder = Recorder::default();
+        write_parts(&mut recorder, "A1", parts, chunk_size).await?;
+
+        Ok((recorder.0, recorder.1))
+    }
+
+    #[compio::test]
+    async fn test_write_parts_streams_files_across_chunks() {
+        let dir = assert_ok!(tempdir());
+        let first = file_with(dir.path(), "first", b"0123456789").await;
+        let second = file_with(dir.path(), "second", b"abcdefghijklmnopqrstuvwxyz").await;
+        let parts = [
+            CommandPart::Bytes(b"APPEND INBOX {10+}\r\n"),
+            CommandPart::File {
+                file: &first,
+                len: 10,
+            },
+            CommandPart::Bytes(b" {26+}\r\n"),
+            CommandPart::File {
+                file: &second,
+                len: 26,
+            },
+        ];
+
+        let (bytes, writes) = assert_ok!(written(&parts, 8).await);
+
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "A1 APPEND INBOX {10+}\r\n0123456789 {26+}\r\nabcdefghijklmnopqrstuvwxyz\r\n"
+        );
+        assert_gt!(writes, 1);
+    }
+
+    #[compio::test]
+    async fn test_write_parts_sends_only_announced_length() {
+        let dir = assert_ok!(tempdir());
+        let file = file_with(dir.path(), "grown", b"0123456789").await;
+
+        let (bytes, _) = assert_ok!(
+            written(
+                &[CommandPart::File {
+                    file: &file,
+                    len: 4
+                }],
+                64
+            )
+            .await
+        );
+
+        assert_eq!(bytes, b"A1 0123\r\n");
+    }
+
+    #[compio::test]
+    async fn test_write_parts_errors_on_shrunk_file() {
+        let dir = assert_ok!(tempdir());
+        let file = file_with(dir.path(), "shrunk", b"0123").await;
+
+        let error = assert_err!(
+            written(
+                &[CommandPart::File {
+                    file: &file,
+                    len: 10
+                }],
+                64
+            )
+            .await
+        );
+
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
     const IMAPS_PORT: ContainerPort = ContainerPort::Tcp(31993);
     const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 

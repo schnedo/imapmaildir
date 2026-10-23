@@ -19,7 +19,7 @@ pub enum Task {
     AddSynced(Vec<(NewLocalMailMetadata, Uid)>),
     ApplyFlagChanges(Vec<Uid>, FlagChange),
     UpdateOtherFlags(Vec<(Uid, OtherFlags)>),
-    ReadMail(NewLocalMailMetadata, TxOneshot<Option<LocalMail>>),
+    OpenMail(NewLocalMailMetadata, TxOneshot<Option<LocalMail>>),
     Flags(Vec<Uid>, TxOneshot<HashMap<Uid, BitFlags<Flag>>>),
     HighestModseq(TxOneshot<ModSeq>),
     UidsNotIn(Vec<Uid>, TxOneshot<Vec<Uid>>),

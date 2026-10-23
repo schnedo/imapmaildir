@@ -408,11 +408,11 @@ impl Syncer {
             repository.update_other_flags(other_flags).await?;
         }
         let mut news = news.into_iter();
-        let mut batch = Self::read_store_batch(&mut news, repository, config).await?;
+        let mut batch = Self::open_store_batch(&mut news, repository, config).await?;
         while !batch.is_empty() {
             let (stored, next_batch) = futures::join!(
                 client.store(mailbox, batch),
-                Self::read_store_batch(&mut news, repository, config)
+                Self::open_store_batch(&mut news, repository, config)
             );
             let synced = stored?
                 .into_iter()
@@ -447,7 +447,7 @@ impl Syncer {
         Ok(())
     }
 
-    async fn read_store_batch(
+    async fn open_store_batch(
         news: &mut impl Iterator<Item = NewLocalMailMetadata>,
         repository: &RepositoryHandle,
         config: Config,
@@ -458,8 +458,8 @@ impl Syncer {
             && bytes < config.store_batch_max_bytes()
             && let Some(metadata) = news.next()
         {
-            if let Some(mail) = repository.read_mail(metadata).await? {
-                bytes += mail.content().len();
+            if let Some(mail) = repository.open_mail(metadata).await? {
+                bytes += mail.size();
                 batch.push(mail);
             }
         }
@@ -755,8 +755,8 @@ impl Syncer {
                     .update_other_flags_all(other_flags)
                     .await?;
             }
-            Task::ReadMail(metadata, reply) => {
-                reply.send(maildir_repository.read_mail(metadata).await?);
+            Task::OpenMail(metadata, reply) => {
+                reply.send(maildir_repository.open_mail(metadata).await?);
             }
             Task::Flags(uids, reply) => {
                 reply.send(maildir_repository.flags(uids).await?);
