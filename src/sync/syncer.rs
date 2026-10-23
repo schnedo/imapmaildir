@@ -469,38 +469,56 @@ impl Syncer {
             .map(|metadata| (metadata.uid(), metadata))
             .collect();
         let local = repository.flags(uids).await?;
-        let mut conflicts = Vec::new();
+        // retries are batched per change, as rejections may affect many mails at once
+        let mut flag_retries: HashMap<FlagChange, HashMap<Uid, ModSeq>> = HashMap::new();
+        let mut delete_retries: HashMap<Uid, ModSeq> = HashMap::new();
+        let mut flag_changes: HashMap<FlagChange, Vec<Uid>> = HashMap::new();
+        let mut still_rejected: Vec<(Uid, Option<FlagChange>)> = Vec::new();
         for (uid, change) in rejected {
             let Some(remote_mail) = remote.get(&uid) else {
                 continue;
             };
-            let set = SequenceSet::from(uid);
-            let still_rejected = if local.get(&uid) == Some(&remote_mail.flags()) {
-                match change {
-                    Some(change) => !client
-                        .store_flag_change(remote_mail.modseq(), change, &set)
-                        .await?
-                        .is_empty(),
-                    None => !client.delete(remote_mail.modseq(), &set).await?.is_empty(),
-                }
+            if let Some(change) = change {
+                flag_changes.entry(change).or_default().push(uid);
+            }
+            if local.get(&uid) == Some(&remote_mail.flags()) {
+                let retries = match change {
+                    Some(change) => flag_retries.entry(change).or_default(),
+                    None => &mut delete_retries,
+                };
+                retries.insert(uid, remote_mail.modseq());
             } else {
-                true
-            };
-            match (change, still_rejected) {
-                (Some(change), false) => repository.apply_flag_changes(vec![uid], change).await?,
-                (Some(change), true) => {
-                    log::warn!("mail {uid} changed on server. Discarding local flag change");
-                    repository.apply_flag_changes(vec![uid], change).await?;
-                    conflicts.push(remote_mail.clone());
-                }
-                (None, false) => {}
-                (None, true) => {
-                    log::warn!("mail {uid} changed on server. Restoring locally deleted mail");
-                    repository.delete(set).await?;
-                    conflicts.push(remote_mail.clone());
-                }
+                still_rejected.push((uid, change));
             }
         }
+        for (change, pending) in flag_retries {
+            let rejected = client.store_flag_change_since(pending, change).await?;
+            still_rejected.extend(rejected.into_iter().map(|uid| (uid, Some(change))));
+        }
+        if !delete_retries.is_empty() {
+            let rejected = client.delete_since(delete_retries).await?;
+            still_rejected.extend(rejected.into_iter().map(|uid| (uid, None)));
+        }
+        // accepted and discarded flag changes alike make the state match the local files, so
+        // that applying the conflicting remote updates renames them
+        for (change, uids) in flag_changes {
+            repository.apply_flag_changes(uids, change).await?;
+        }
+        let mut conflicts = HashMap::new();
+        let mut restored = Vec::new();
+        for (uid, change) in still_rejected {
+            if change.is_some() {
+                log::warn!("mail {uid} changed on server. Discarding local flag change");
+            } else {
+                log::warn!("mail {uid} changed on server. Restoring locally deleted mail");
+                restored.push(uid);
+            }
+            conflicts.insert(uid, remote[&uid].clone());
+        }
+        if let Ok(restored) = SequenceSet::try_from(&restored) {
+            repository.delete(restored).await?;
+        }
+        let conflicts: Vec<RemoteMailMetadata> = conflicts.into_values().collect();
         if !conflicts.is_empty() {
             let remote_changes = RemoteChanges {
                 updates: conflicts,
