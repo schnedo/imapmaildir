@@ -234,19 +234,6 @@ impl Syncer {
             .await
     }
 
-    /// Replaces `error` with the cause of stopped task processing if that caused it
-    async fn task_error(error: Error, task_handle: TaskHandle) -> Error {
-        if error.is_task_processing_stopped() {
-            match task_handle.await {
-                Ok(Err(e)) => e,
-                Ok(Ok(())) => error,
-                Err(_) => Error::TaskProcessingPanicked,
-            }
-        } else {
-            error
-        }
-    }
-
     async fn sync(
         mailbox: &str,
         mail_dir: &Path,
@@ -399,7 +386,7 @@ impl Syncer {
         }
         .await;
         if let Err(e) = synced {
-            return Err(Self::task_error(e, task_handle).await);
+            return Err(Self::shut_down(e, client, repository, task_handle).await);
         }
 
         Ok(Synced {
@@ -687,7 +674,7 @@ impl Syncer {
         }
         .await;
         if let Err(e) = synced {
-            return Err(Self::task_error(e, task_handle).await);
+            return Err(Self::shut_down(e, client, repository, task_handle).await);
         }
 
         Ok(Synced {

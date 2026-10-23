@@ -49,14 +49,6 @@ impl Error {
             _ => false,
         }
     }
-
-    #[must_use]
-    pub fn is_task_processing_stopped(&self) -> bool {
-        matches!(
-            self,
-            Self::TaskProcessingStopped | Self::Imap(ClientError::TaskProcessingStopped)
-        )
-    }
 }
 
 impl From<ClientError> for Error {
