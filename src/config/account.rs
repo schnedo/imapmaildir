@@ -5,7 +5,7 @@ use derive_getters::Getters;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{config::auth::Auth, sync};
+use crate::{config::Auth, sync};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

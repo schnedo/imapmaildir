@@ -42,6 +42,10 @@ jobs:
         run: nix develop -c cargo nextest run --profile ci --test once --test continuous
         env:
           IMAPMAILDIR_TEST_LITERAL_MINUS: 1
+      - name: Run OAuth2 integration tests with XOAUTH2 without SASL-IR
+        run: nix develop -c cargo nextest run --profile ci --test once oauth2
+        env:
+          IMAPMAILDIR_TEST_XOAUTH2: 1
       - name: Lint
         run: nix develop -c cargo clippy --all-targets --all-features
 

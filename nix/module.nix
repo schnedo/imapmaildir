@@ -35,6 +35,26 @@
                 };
               };
             };
+            oauth2 = lib.mkOption {
+              type = lib.types.submodule {
+                options = {
+                  enable = lib.mkEnableOption "OAuth2 login via OAUTHBEARER or XOAUTH2 instead of a password";
+                  tokenCommand = lib.mkOption {
+                    type =
+                      with lib.types;
+                      nullOr (either str (listOf str));
+                    default = null;
+                    description = "Command printing a valid OAuth2 access token. Defaults to the account's passwordCommand";
+                    example = [
+                      "oama"
+                      "access"
+                      "me@example.com"
+                    ];
+                  };
+                };
+              };
+              default = { };
+            };
             onChange = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
@@ -140,6 +160,8 @@
         name: account:
         let
           toml = pkgs.formats.toml { };
+          toCmd = cmd: if builtins.isList cmd then cmd else [ cmd ];
+          inherit (account.imapmaildir) oauth2;
         in
         {
           "imapmaildir/accounts/${name}.toml" = {
@@ -156,16 +178,25 @@
                 idle_timeout = "${builtins.toString account.imapmaildir.idle.timeoutSeconds}s";
                 on_local_change = account.imapmaildir.onChange;
                 maildir_base_path = account.maildir.absPath;
-                auth = {
-                  type = "Plain";
-                  user = account.userName;
-                  # todo: assert passwordCommand not null
-                  password_cmd =
-                    if builtins.isList account.passwordCommand then
-                      account.passwordCommand
-                    else
-                      [ account.passwordCommand ];
-                };
+                auth =
+                  if oauth2.enable then
+                    {
+                      type = "OAuth2";
+                      user = account.userName;
+                      token_cmd = toCmd (
+                        if builtins.isNull oauth2.tokenCommand then
+                          account.passwordCommand
+                        else
+                          oauth2.tokenCommand
+                      );
+                    }
+                  else
+                    {
+                      type = "Plain";
+                      user = account.userName;
+                      # todo: assert passwordCommand not null
+                      password_cmd = toCmd account.passwordCommand;
+                    };
               };
           };
         };

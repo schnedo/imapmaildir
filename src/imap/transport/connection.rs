@@ -168,10 +168,10 @@ impl Connection {
         while let Some(segment) = segments.next() {
             self.write_streamed(&tag, segment).await?;
             if segments.peek().is_some()
-                && let Some(completion) = self.receive_continuation(&tag, handler).await?
+                && let Continued::Done(completion) = self.receive_continued(&tag, handler).await?
             {
                 log::debug!("{tag:?}: completed before sending literal");
-                return completion.map_err(Into::into);
+                return Ok(completion);
             }
         }
         self.receive_completion(&tag, handler).await
@@ -188,21 +188,21 @@ impl Connection {
             .map_err(Error::Send)
     }
 
-    /// Passes untagged responses to `handler` until receiving a continuation request. Returns the
-    /// completion instead, if the server completes the command with `tag` before.
-    async fn receive_continuation<H: ResponseHandler>(
+    /// Passes untagged responses to `handler` until receiving a continuation request or the
+    /// completion of the command with `tag`
+    pub async fn receive_continued<H: ResponseHandler>(
         &mut self,
         tag: &str,
         handler: &mut H,
-    ) -> Result<Option<Result<ResponseData, Error>>, H::Error> {
+    ) -> Result<Continued, H::Error> {
         match self.receive_next(handler).await? {
-            Received::Continuation => Ok(None),
+            Received::Continuation(text) => Ok(Continued::Request(text)),
             Received::Done(received, _) if received != tag => Err(Error::UnexpectedTag {
                 expected: tag.to_string(),
                 received,
             }
             .into()),
-            Received::Done(_, completion) => Ok(Some(completion)),
+            Received::Done(_, completion) => Ok(Continued::Done(completion?)),
         }
     }
 
@@ -276,7 +276,7 @@ impl Connection {
     ) -> Result<(String, Result<ResponseData, Error>), H::Error> {
         loop {
             match self.receive_next(handler).await? {
-                Received::Continuation => {
+                Received::Continuation(_) => {
                     log::warn!("ignoring unexpected continuation request");
                 }
                 Received::Done(tag, completion) => return Ok((tag, completion)),
@@ -315,7 +315,9 @@ impl Connection {
                 }
                 imap_proto::Response::Continue(imap_proto::Outcome { code, information }) => {
                     log::trace!("continuation request {code:?} {information:?}");
-                    return Ok(Received::Continuation);
+                    return Ok(Received::Continuation(
+                        information.as_ref().map(ToString::to_string),
+                    ));
                 }
                 _ => {
                     handler.handle_or_log(response).await?;
@@ -328,8 +330,17 @@ impl Connection {
     }
 }
 
+/// Reaction of the server to a command waiting for continuation requests
+pub enum Continued {
+    /// Continuation request with its text, e.g. a SASL challenge
+    Request(Option<String>),
+    /// Completion with OK. NO and BAD become errors.
+    Done(ResponseData),
+}
+
 enum Received {
-    Continuation,
+    /// Continuation request with its text, e.g. a SASL challenge
+    Continuation(Option<String>),
     /// Tag and the response if OK
     Done(String, Result<ResponseData, Error>),
 }

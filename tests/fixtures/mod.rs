@@ -453,6 +453,61 @@ impl MailSetup {
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
     }
 
+    /// Configured user
+    ///
+    /// # Panics
+    /// If the configured auth has no user
+    #[must_use]
+    pub fn user(&self) -> &str {
+        match self.config.auth() {
+            config_m::Auth::Plain(plain) => plain.user(),
+            config_m::Auth::OAuth2(oauth2) => oauth2.user(),
+        }
+    }
+
+    /// OAuth 2.0 auth of the configured user with a fixed `token`
+    #[must_use]
+    pub fn oauth2_auth(&self, token: &str) -> config_m::Auth {
+        config_m::Auth::OAuth2(config_m::OAuth2Auth::new(
+            self.user().to_string(),
+            vec!["echo".to_string(), token.to_string()],
+        ))
+    }
+
+    /// Syncs `mailbox` once after logging in with `auth`
+    ///
+    /// # Errors
+    /// If logging in fails
+    ///
+    /// # Panics
+    /// If syncing fails
+    pub async fn sync_with_auth(
+        &self,
+        mailbox: &str,
+        auth: &config_m::Auth,
+    ) -> Result<(), ClientError> {
+        let config = self.config();
+        let client = Client::login(
+            config.connection(),
+            &assert_ok!(Tls::new(config.connection())),
+            auth,
+        )
+        .await?;
+
+        Syncer::sync_once(
+            mailbox,
+            config.maildir_base_path(),
+            config.state_dir(),
+            client,
+            config.sync(),
+            || {},
+        )
+        .await
+        .unwrap_or_else(|e| panic!("sync failed: {e}"));
+
+        Ok(())
+    }
+
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
@@ -616,6 +671,23 @@ fn fix_permissions(path: &Path) {
 
 const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
+/// Secret of the HS256 key in `mock/oauth2-keys`, which dovecot validates tokens with
+const OAUTH2_KEY: &[u8] = b"imapmaildir-test-key-0123456789ab";
+
+/// Signs a JWT for `user`, that dovecot accepts as OAuth 2.0 access token
+#[must_use]
+pub fn oauth2_token(user: &str) -> String {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
+    let claims = URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"{user}","exp":4102444800}}"#));
+    let signing_input = format!("{header}.{claims}");
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, OAUTH2_KEY);
+    let signature = URL_SAFE_NO_PAD.encode(ring::hmac::sign(&key, signing_input.as_bytes()));
+
+    format!("{signing_input}.{signature}")
+}
+
 /// Disables QRESYNC on the server if `IMAPMAILDIR_TEST_NO_QRESYNC` is set to test the CONDSTORE
 /// fallback. Replaces LITERAL+ with LITERAL- if `IMAPMAILDIR_TEST_LITERAL_MINUS` is set to test
 /// synchronizing literals.
@@ -623,7 +695,9 @@ fn dovecot_config(tmp_dir: &Path) -> String {
     let config = mock_path!("dovecot.conf");
     let no_qresync = std::env::var_os("IMAPMAILDIR_TEST_NO_QRESYNC").is_some();
     let literal_minus = std::env::var_os("IMAPMAILDIR_TEST_LITERAL_MINUS").is_some();
-    if !no_qresync && !literal_minus {
+    // like servers without OAUTHBEARER and SASL-IR, which wait for the initial client response
+    let xoauth2 = std::env::var_os("IMAPMAILDIR_TEST_XOAUTH2").is_some();
+    if !no_qresync && !literal_minus && !xoauth2 {
         return config.to_string();
     }
     let mut content = assert_ok!(fs::read_to_string(config));
@@ -632,6 +706,11 @@ fn dovecot_config(tmp_dir: &Path) -> String {
     }
     if literal_minus {
         content.push_str("\nimap_literal_minus = yes\n");
+    }
+    if xoauth2 {
+        content.push_str(
+            "\nauth_mechanisms = plain login xoauth2\nimap_capability {\n  SASL-IR = no\n}\n",
+        );
     }
     let path = tmp_dir.join("dovecot.conf");
     assert_ok!(fs::write(&path, content));
@@ -664,6 +743,10 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             )
             .with_mount(
                 Mount::bind_mount(dovecot_config, "/etc/dovecot/dovecot.conf")
+                    .with_access_mode(AccessMode::ReadOnly),
+            )
+            .with_mount(
+                Mount::bind_mount(mock_path!("oauth2-keys"), "/etc/dovecot/oauth2-keys")
                     .with_access_mode(AccessMode::ReadOnly),
             )
             .with_mount(Mount::bind_mount(

@@ -1,12 +1,12 @@
 use crate::{
-    config::{self, Auth},
+    config,
     imap::{
         client::{
             AuthenticatedClient, Error,
-            capability::{AuthCapabilities, AuthCapability, Capabilities},
-            encoding::CommandBuilder,
+            auth::{Auth, Server},
+            capability::{AuthCapabilities, Capabilities, Capability},
         },
-        transport::{self, Connection, ResponseData, ResponseHandler, Tls},
+        transport::{Connection, ResponseData, ResponseHandler, Tls},
     },
 };
 
@@ -26,7 +26,7 @@ impl Client {
         auth_config: &Auth,
     ) -> Result<AuthenticatedClient, Error> {
         let connected = Self::connect(connection_config, tls).await?;
-        connected.authenticate(auth_config).await
+        connected.authenticate(connection_config, auth_config).await
     }
 
     async fn connect(connection_config: &config::Connection, tls: &Tls) -> Result<Self, Error> {
@@ -79,50 +79,46 @@ impl Client {
         })
     }
 
-    async fn authenticate(mut self, auth_config: &Auth) -> Result<AuthenticatedClient, Error> {
-        match auth_config {
-            Auth::Plain(plain_auth_config) => {
-                if !self.auth_capabilities.contains(AuthCapability::Plain) {
-                    return Err(Error::MissingAuthCapability(AuthCapability::Plain));
-                }
-                let password = plain_auth_config.password().await?;
-                log::debug!("LOGIN <user> <password>");
-                let mut command = CommandBuilder::new(self.capabilities.literal_mode(), "LOGIN ");
-                command.push_astring(plain_auth_config.user());
-                command.push_str(" ");
-                command.push_astring(&password);
-                let response = self
-                    .connection
-                    .send_streamed(
-                        &command.parts(),
-                        &mut CapabilityHandler {
-                            capabilities: &mut self.capabilities,
-                            auth_capabilities: &mut self.auth_capabilities,
-                        },
-                    )
-                    .await
-                    .map_err(|e| match e {
-                        Error::Transport(transport::Error::No(information)) => {
-                            Error::LoginRejected(information)
-                        }
-                        e => e,
-                    })?;
-                if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
-                    response.unsafe_get_tagged_response_code()
-                {
-                    update_capabilities(&mut self.capabilities, &mut self.auth_capabilities, caps);
-                } else {
-                    request_capabilities(
-                        &mut self.connection,
-                        &mut self.capabilities,
-                        &mut self.auth_capabilities,
-                    )
-                    .await?;
-                }
-
-                AuthenticatedClient::new(self.connection, self.capabilities)
-            }
+    async fn authenticate(
+        mut self,
+        connection_config: &config::Connection,
+        auth_config: &Auth,
+    ) -> Result<AuthenticatedClient, Error> {
+        let server = Server {
+            host: connection_config.host(),
+            port: connection_config.port(),
+            literal_mode: self.capabilities.literal_mode(),
+            sasl_ir: self.capabilities.contains(Capability::SaslIr),
+            auth_capabilities: &self.auth_capabilities,
+        };
+        let mut new_capabilities = Capabilities::default();
+        let mut new_auth_capabilities = AuthCapabilities::default();
+        let response = auth_config
+            .authenticate(
+                &mut self.connection,
+                server,
+                &mut CapabilityHandler {
+                    capabilities: &mut new_capabilities,
+                    auth_capabilities: &mut new_auth_capabilities,
+                },
+            )
+            .await?;
+        self.capabilities = new_capabilities;
+        self.auth_capabilities = new_auth_capabilities;
+        if let Some(imap_proto::ResponseCode::Capabilities(caps)) =
+            response.unsafe_get_tagged_response_code()
+        {
+            update_capabilities(&mut self.capabilities, &mut self.auth_capabilities, caps);
+        } else {
+            request_capabilities(
+                &mut self.connection,
+                &mut self.capabilities,
+                &mut self.auth_capabilities,
+            )
+            .await?;
         }
+
+        AuthenticatedClient::new(self.connection, self.capabilities)
     }
 }
 
