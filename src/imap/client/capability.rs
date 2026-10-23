@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use enumflags2::{BitFlags, bitflags};
 
 use crate::imap::client::encoding::LiteralMode;
@@ -18,10 +20,12 @@ pub enum Capability {
     QResync,      // rfc7162
     UidPlus,      // rfc4315
 }
-#[repr(transparent)]
 #[derive(Debug, Default)]
 pub struct Capabilities {
     capabilities: BitFlags<Capability>,
+    /// Maximum size of appended mails in octets, if the server announces one for all mailboxes
+    /// (RFC 7889)
+    append_limit: Option<NonZeroU64>,
 }
 
 impl Capabilities {
@@ -58,6 +62,17 @@ impl Capabilities {
                 "UIDPLUS" => {
                     self.capabilities.insert(Capability::UidPlus);
                 }
+                "APPENDLIMIT" => {
+                    // limits per mailbox require STATUS (APPENDLIMIT), which imap-proto cannot
+                    // parse. The server rejects too large mails then.
+                    log::debug!("server announced append limits per mailbox, ignoring them");
+                }
+                atom if let Some(limit) = atom.strip_prefix("APPENDLIMIT=") => {
+                    match limit.parse() {
+                        Ok(limit) => self.append_limit = Some(limit),
+                        Err(e) => log::warn!("ignoring invalid capability {atom}: {e}"),
+                    }
+                }
                 _ => {
                     log::trace!("unknown capability {cow}");
                 }
@@ -67,6 +82,10 @@ impl Capabilities {
 
     pub fn contains(&self, other: Capability) -> bool {
         self.capabilities.contains(other)
+    }
+
+    pub fn append_limit(&self) -> Option<NonZeroU64> {
+        self.append_limit
     }
 
     pub fn literal_mode(&self) -> LiteralMode {
@@ -110,5 +129,28 @@ impl AuthCapabilities {
 
     pub fn contains(&self, other: AuthCapability) -> bool {
         self.capabilities.contains(other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use rstest::*;
+
+    use super::*;
+
+    #[rstest]
+    #[case("APPENDLIMIT=35651584", Some(35_651_584))]
+    #[case("APPENDLIMIT", None)]
+    #[case("APPENDLIMIT=", None)]
+    #[case("APPENDLIMIT=0", None)]
+    #[case("APPENDLIMIT=-1", None)]
+    fn test_insert_append_limit(#[case] atom: &'static str, #[case] expected: Option<u64>) {
+        let mut capabilities = Capabilities::default();
+
+        capabilities.insert(&imap_proto::Capability::Atom(Cow::Borrowed(atom)));
+
+        assert_eq!(capabilities.append_limit().map(NonZeroU64::get), expected);
     }
 }
