@@ -29,6 +29,7 @@ const READ_BUFFER_SIZE: usize = 256 * 1024;
 const STREAM_CHUNK_SIZE: usize = 256 * 1024;
 
 /// Part of a command, whose file contents get streamed instead of being held in memory
+#[derive(Clone, Copy)]
 pub enum CommandPart<'a> {
     Bytes(&'a [u8]),
     /// The first `len` bytes of `file`. Errors if the file got shorter meanwhile, as the server
@@ -363,48 +364,82 @@ pub enum Error {
     UnexpectedTaggedStatus(String),
 }
 
-/// Writes `tag` and `parts` as command to `writer` in chunks of `chunk_size`, reading file
-/// contents directly into the chunk
+/// Writes `tag` and `parts` as command to `writer` in chunks of `chunk_size`. Reads the next
+/// chunk while writing the current one, so that slow storage and network do not wait for each
+/// other.
 async fn write_parts(
     writer: &mut (impl AsyncWrite + Unpin),
     tag: &str,
     parts: &[CommandPart<'_>],
     chunk_size: usize,
 ) -> io::Result<()> {
-    let mut chunk = Vec::with_capacity(chunk_size);
-    chunk.extend_from_slice(tag.as_bytes());
-    chunk.push(b' ');
-    for part in parts {
-        match part {
-            CommandPart::Bytes(bytes) => {
-                if chunk.len() + bytes.len() > chunk_size {
-                    writer.write_all(&chunk).await?;
-                    chunk.clear();
+    let tag = format!("{tag} ");
+    let mut command = Vec::with_capacity(parts.len() + 2);
+    command.push(CommandPart::Bytes(tag.as_bytes()));
+    command.extend_from_slice(parts);
+    command.push(CommandPart::Bytes(b"\r\n"));
+    let mut filler = ChunkFiller {
+        parts: &command,
+        index: 0,
+        offset: 0,
+        chunk_size,
+    };
+    let mut current = filler.fill(Vec::with_capacity(chunk_size)).await?;
+    let mut spare = Vec::with_capacity(chunk_size);
+    while let Some(chunk) = current {
+        let (written, next) = futures::join!(writer.write_all(&chunk), filler.fill(spare));
+        written?;
+        current = next?;
+        spare = chunk;
+    }
+    writer.flush().await
+}
+
+/// Fills chunks with the consecutive bytes of command parts, reading file contents directly
+/// into them
+struct ChunkFiller<'a, 'b> {
+    parts: &'a [CommandPart<'b>],
+    index: usize,
+    /// Bytes of the current part already in chunks
+    offset: usize,
+    chunk_size: usize,
+}
+
+impl ChunkFiller<'_, '_> {
+    /// Fills `chunk` with the next bytes. Returns `None` after all parts got filled in.
+    async fn fill(&mut self, mut chunk: Vec<u8>) -> io::Result<Option<Vec<u8>>> {
+        chunk.clear();
+        while chunk.len() < self.chunk_size
+            && let Some(part) = self.parts.get(self.index)
+        {
+            let start = chunk.len();
+            match *part {
+                CommandPart::Bytes(bytes) => {
+                    let end = bytes.len().min(self.offset + self.chunk_size - start);
+                    chunk.extend_from_slice(&bytes[self.offset..end]);
                 }
-                chunk.extend_from_slice(bytes);
-            }
-            CommandPart::File { file, len } => {
-                let mut written = 0;
-                while written < *len {
-                    if chunk.len() >= chunk_size {
-                        writer.write_all(&chunk).await?;
-                        chunk.clear();
-                    }
-                    let start = chunk.len();
-                    let end = start + (len - written).min(chunk_size - start);
+                CommandPart::File { file, len } => {
+                    let end = start + (len - self.offset).min(self.chunk_size - start);
                     let BufResult(read, slice) = file
-                        .read_exact_at(chunk.slice(start..end), written as u64)
+                        .read_exact_at(chunk.slice(start..end), self.offset as u64)
                         .await;
                     chunk = slice.into_inner();
                     read?;
-                    written += end - start;
                 }
             }
+            self.offset += chunk.len() - start;
+            let part_len = match *part {
+                CommandPart::Bytes(bytes) => bytes.len(),
+                CommandPart::File { len, .. } => len,
+            };
+            if self.offset == part_len {
+                self.index += 1;
+                self.offset = 0;
+            }
         }
+
+        Ok((!chunk.is_empty()).then_some(chunk))
     }
-    chunk.extend_from_slice(b"\r\n");
-    writer.write_all(&chunk).await?;
-    writer.flush().await
 }
 
 #[cfg(test)]
@@ -495,6 +530,30 @@ mod tests {
             "A1 APPEND INBOX {10+}\r\n0123456789 {26+}\r\nabcdefghijklmnopqrstuvwxyz\r\n"
         );
         assert_gt!(writes, 1);
+    }
+
+    #[compio::test]
+    async fn test_write_parts_handles_empty_files_and_tiny_chunks() {
+        let dir = assert_ok!(tempdir());
+        let empty = file_with(dir.path(), "empty", b"").await;
+        let mail = file_with(dir.path(), "mail", b"hello").await;
+        let parts = [
+            CommandPart::Bytes(b"X {0+}\r\n"),
+            CommandPart::File {
+                file: &empty,
+                len: 0,
+            },
+            CommandPart::Bytes(b" {5+}\r\n"),
+            CommandPart::File {
+                file: &mail,
+                len: 5,
+            },
+        ];
+
+        let (bytes, writes) = assert_ok!(written(&parts, 1).await);
+
+        assert_eq!(bytes, b"A1 X {0+}\r\n {5+}\r\nhello\r\n");
+        assert_eq!(writes, bytes.len());
     }
 
     #[compio::test]
