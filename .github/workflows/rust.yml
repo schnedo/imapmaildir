@@ -38,6 +38,10 @@ jobs:
         run: nix develop -c cargo nextest run --profile ci --test once --test continuous
         env:
           IMAPMAILDIR_TEST_NO_QRESYNC: 1
+      - name: Run integration tests with LITERAL-
+        run: nix develop -c cargo nextest run --profile ci --test once --test continuous
+        env:
+          IMAPMAILDIR_TEST_LITERAL_MINUS: 1
       - name: Lint
         run: nix develop -c cargo clippy --all-targets --all-features
 

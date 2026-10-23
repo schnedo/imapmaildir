@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::io::Write as _;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
@@ -17,11 +16,11 @@ use crate::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
         client::Error,
         client::capability::{Capabilities, Capability},
-        client::encoding,
+        client::encoding::{self, CommandBuilder, LiteralMode},
         client::fetch::FetchAttributes,
         client::message_count::MessageCount,
         client::uid_map::UidMap,
-        transport::{self, Chain, CommandPart, Connection, ResponseData, ResponseHandler},
+        transport::{self, Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid, UidValidity},
@@ -51,6 +50,7 @@ pub struct SelectedClient {
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     multiappend: bool,
+    literal_mode: LiteralMode,
     own_modseqs: OwnModSeqs,
     uid_validity: UidValidity,
 }
@@ -64,10 +64,8 @@ impl SelectedClient {
         exists: u32,
         uid_validity: UidValidity,
     ) -> Result<Self, Error> {
-        for capability in [Capability::LiteralPlus, Capability::UidPlus] {
-            if !capabilities.contains(capability) {
-                return Err(Error::MissingCapability(capability));
-            }
+        if !capabilities.contains(Capability::UidPlus) {
+            return Err(Error::MissingCapability(Capability::UidPlus));
         }
         let (idle_stop_tx, idle_stop_rx) = spsc::bounded_async(1);
 
@@ -82,6 +80,7 @@ impl SelectedClient {
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
+            literal_mode: capabilities.literal_mode(),
             own_modseqs: OwnModSeqs::default(),
             uid_validity,
         })
@@ -296,27 +295,19 @@ impl SelectedClient {
 
     async fn append(&mut self, mailbox: &str, mails: &[LocalMail]) -> Result<Vec<Uid>, Error> {
         log::debug!("APPEND {mailbox}");
-        let mut headers = b"APPEND ".to_vec();
-        headers.extend_from_slice(mailbox.as_bytes());
-        let mut header_ends = Vec::with_capacity(mails.len());
+        let mut command = CommandBuilder::new(self.literal_mode, "APPEND ");
+        command.push_str(mailbox);
         for mail in mails {
-            mail.write_append_header(&mut headers);
-            header_ends.push(headers.len());
-        }
-        let mut parts = Vec::with_capacity(mails.len() * 2);
-        let mut header_start = 0;
-        for (mail, header_end) in mails.iter().zip(header_ends) {
-            parts.push(CommandPart::Bytes(&headers[header_start..header_end]));
-            parts.push(CommandPart::File {
-                file: mail.file(),
-                len: mail.size(),
-            });
-            header_start = header_end;
+            if let Some(flags) = Flag::format(mail.metadata().flags()) {
+                command.push_str(&format!(" ({flags})"));
+            }
+            command.push_str(" ");
+            command.push_file_literal(mail.file(), mail.size());
         }
 
         let response = self
             .connection
-            .send_streamed(&parts, &mut self.mailbox_handler)
+            .send_streamed(&command.parts(), &mut self.mailbox_handler)
             .await?;
 
         let Some(imap_proto::ResponseCode::AppendUid(uid_validity, uid_set_members)) =
@@ -971,17 +962,6 @@ impl MailboxHandler {
             .send(task)
             .await
             .map_err(|_| Error::TaskProcessingStopped)
-    }
-}
-
-impl LocalMail {
-    fn write_append_header(&self, command: &mut Vec<u8>) {
-        if let Some(flags) = Flag::format(self.metadata().flags()) {
-            write!(command, " ({flags})")
-                .expect("appending formatted flags to APPEND command should succeed");
-        }
-        write!(command, " {{{}+}}\r\n", self.size())
-            .expect("appending content length to APPEND command should succeed");
     }
 }
 

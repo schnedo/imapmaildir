@@ -181,6 +181,29 @@ async fn test_adding_new_mail_works(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
+async fn test_adding_new_mail_larger_than_non_synchronizing_literal_limit_works(
+    #[future] mail_setup: MailSetup,
+) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let initial_server_mails = server_mailbox.mails().await;
+    // LITERAL- only allows non-synchronizing literals up to 4096 octets
+    let cur = client_mail.dir().join("INBOX/cur");
+    assert_ok!(std::fs::write(cur.join("large:2,S"), "large".repeat(1000)));
+    assert_ok!(std::fs::write(cur.join("small:2,S"), "small"));
+
+    mail_setup.sync("INBOX").await;
+
+    let server_mails: HashSet<_> = server_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails.len(), initial_server_mails.len() + 2);
+    let client_mails: HashSet<_> = client_mailbox.mails().await.into_iter().collect();
+    assert_eq!(server_mails, client_mails);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
 async fn test_adding_more_new_mails_than_fit_in_a_batch_works(#[future] mail_setup: MailSetup) {
     let client_mail = mail_setup.client_mail();
     let client_mailbox = client_mail.mailbox("INBOX");

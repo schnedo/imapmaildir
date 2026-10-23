@@ -4,7 +4,7 @@ use crate::{
         client::{
             AuthenticatedClient, Error,
             capability::{AuthCapabilities, AuthCapability, Capabilities},
-            encoding,
+            encoding::CommandBuilder,
         },
         transport::{Connection, ResponseData, ResponseHandler, Tls},
     },
@@ -87,15 +87,14 @@ impl Client {
                 }
                 let password = plain_auth_config.password().await?;
                 log::debug!("LOGIN <user> <password>");
+                let mut command = CommandBuilder::new(self.capabilities.literal_mode(), "LOGIN ");
+                command.push_astring(plain_auth_config.user());
+                command.push_str(" ");
+                command.push_astring(&password);
                 let response = self
                     .connection
-                    .send(
-                        format!(
-                            "LOGIN {} {}",
-                            encoding::quote(plain_auth_config.user()),
-                            encoding::quote(&password)
-                        )
-                        .into(),
+                    .send_streamed(
+                        &command.parts(),
                         &mut CapabilityHandler {
                             capabilities: &mut self.capabilities,
                             auth_capabilities: &mut self.auth_capabilities,

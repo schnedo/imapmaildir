@@ -1,7 +1,9 @@
 use enumflags2::{BitFlags, bitflags};
 
+use crate::imap::client::encoding::LiteralMode;
+
 #[bitflags]
-#[repr(u8)]
+#[repr(u16)]
 #[derive(Copy, Clone, Debug)]
 // todo: check https://datatracker.ietf.org/doc/html/rfc5550#section-12 and update readme regarding
 // compatibility to lemonade mail stores
@@ -10,10 +12,11 @@ pub enum Capability {
     Enable,    // rfc5161
     Idle,      // rfc2177
     Imap4rev1,
-    LiteralPlus, // rfc7888
-    Multiappend, // rfc3502
-    QResync,     // rfc7162
-    UidPlus,     // rfc4315
+    LiteralMinus, // rfc7888
+    LiteralPlus,  // rfc7888
+    Multiappend,  // rfc3502
+    QResync,      // rfc7162
+    UidPlus,      // rfc4315
 }
 #[repr(transparent)]
 #[derive(Debug, Default)]
@@ -40,6 +43,9 @@ impl Capabilities {
                 "IDLE" => {
                     self.capabilities.insert(Capability::Idle);
                 }
+                "LITERAL-" => {
+                    self.capabilities.insert(Capability::LiteralMinus);
+                }
                 "LITERAL+" => {
                     self.capabilities.insert(Capability::LiteralPlus);
                 }
@@ -61,6 +67,16 @@ impl Capabilities {
 
     pub fn contains(&self, other: Capability) -> bool {
         self.capabilities.contains(other)
+    }
+
+    pub fn literal_mode(&self) -> LiteralMode {
+        if self.contains(Capability::LiteralPlus) {
+            LiteralMode::Plus
+        } else if self.contains(Capability::LiteralMinus) {
+            LiteralMode::Minus
+        } else {
+            LiteralMode::Sync
+        }
     }
 }
 

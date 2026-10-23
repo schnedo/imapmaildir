@@ -495,14 +495,22 @@ fn fix_permissions(path: &Path) {
 const CERTIFICATE_PATH: &str = mock_path!("certificate.crt");
 
 /// Disables QRESYNC on the server if `IMAPMAILDIR_TEST_NO_QRESYNC` is set to test the CONDSTORE
-/// fallback
+/// fallback. Replaces LITERAL+ with LITERAL- if `IMAPMAILDIR_TEST_LITERAL_MINUS` is set to test
+/// synchronizing literals.
 fn dovecot_config(tmp_dir: &Path) -> String {
     let config = mock_path!("dovecot.conf");
-    if std::env::var_os("IMAPMAILDIR_TEST_NO_QRESYNC").is_none() {
+    let no_qresync = std::env::var_os("IMAPMAILDIR_TEST_NO_QRESYNC").is_some();
+    let literal_minus = std::env::var_os("IMAPMAILDIR_TEST_LITERAL_MINUS").is_some();
+    if !no_qresync && !literal_minus {
         return config.to_string();
     }
     let mut content = assert_ok!(fs::read_to_string(config));
-    content.push_str("\nimap_capability {\n  QRESYNC = no\n}\n");
+    if no_qresync {
+        content.push_str("\nimap_capability {\n  QRESYNC = no\n}\n");
+    }
+    if literal_minus {
+        content.push_str("\nimap_literal_minus = yes\n");
+    }
     let path = tmp_dir.join("dovecot.conf");
     assert_ok!(fs::write(&path, content));
     fix_permissions(&path);
