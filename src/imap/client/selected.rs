@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroU64;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
@@ -17,7 +16,7 @@ use crate::{
         RemoteContent, RemoteMail, RemoteMailMetadata,
         client::Error,
         client::capability::{Capabilities, Capability},
-        client::encoding::{self, CommandBuilder, LiteralMode},
+        client::encoding::{self, CommandBuilder},
         client::fetch::FetchAttributes,
         client::message_count::MessageCount,
         client::uid_map::UidMap,
@@ -50,16 +49,13 @@ pub struct SelectedClient {
     mailbox_handler: MailboxHandler,
     idle_stop_rx: AsyncRx<Array<IdleStopReason>>,
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
-    multiappend: bool,
-    literal_mode: LiteralMode,
-    append_limit: Option<NonZeroU64>,
     own_modseqs: OwnModSeqs,
     uid_validity: UidValidity,
 }
 impl SelectedClient {
     pub fn new(
         connection: Connection,
-        capabilities: &Capabilities,
+        capabilities: Capabilities,
         qresync: bool,
         task_tx: MAsyncTx<mpsc::Array<Task>>,
         budget: ByteBudget,
@@ -78,12 +74,10 @@ impl SelectedClient {
                 budget,
                 message_count: MessageCount::new(exists),
                 tracking: (!qresync).then(|| SequenceTracking::new(exists)),
+                capabilities,
             },
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
-            multiappend: capabilities.contains(Capability::Multiappend),
-            literal_mode: capabilities.literal_mode(),
-            append_limit: capabilities.append_limit(),
             own_modseqs: OwnModSeqs::default(),
             uid_validity,
         })
@@ -260,7 +254,7 @@ impl SelectedClient {
         mut mails: Vec<LocalMail>,
     ) -> Result<Vec<(Uid, NewLocalMailMetadata)>, Error> {
         let mailbox = encoding::mailbox(mailbox);
-        if let Some(limit) = self.append_limit {
+        if let Some(limit) = self.mailbox_handler.capabilities.append_limit() {
             mails.retain(|mail| {
                 let fits = u64::try_from(mail.size()).is_ok_and(|size| size <= limit.get());
                 if !fits {
@@ -274,7 +268,12 @@ impl SelectedClient {
                 fits
             });
         }
-        if self.multiappend && mails.len() > 1 {
+        if self
+            .mailbox_handler
+            .capabilities
+            .contains(Capability::Multiappend)
+            && mails.len() > 1
+        {
             match self.append(&mailbox, &mails).await {
                 Ok(uids) => return Ok(uids.into_iter().zip(Self::metadatas(mails)).collect()),
                 Err(Error::Transport(transport::Error::No(reason))) => {
@@ -312,7 +311,8 @@ impl SelectedClient {
 
     async fn append(&mut self, mailbox: &str, mails: &[LocalMail]) -> Result<Vec<Uid>, Error> {
         log::debug!("APPEND {mailbox}");
-        let mut command = CommandBuilder::new(self.literal_mode, "APPEND ");
+        let mut command =
+            CommandBuilder::new(self.mailbox_handler.capabilities.literal_mode(), "APPEND ");
         command.push_str(mailbox);
         for mail in mails {
             if let Some(flags) = Flag::format(mail.metadata().flags()) {
@@ -818,6 +818,8 @@ struct MailboxHandler {
     message_count: MessageCount,
     /// Only tracked without QRESYNC, as VANISHED and FETCH responses carry UIDs otherwise
     tracking: Option<SequenceTracking>,
+    /// Updated by unsolicited CAPABILITY responses
+    capabilities: Capabilities,
 }
 
 /// Resolves sequence numbers of unsolicited responses to UIDs without QRESYNC
@@ -923,6 +925,10 @@ impl ResponseHandler for MailboxHandler {
                 }
                 Ok(None)
             }
+            imap_proto::Response::Capabilities(caps) => {
+                self.capabilities.replace(caps);
+                Ok(None)
+            }
             _ => Ok(Some(response)),
         }
     }
@@ -987,6 +993,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::imap::client::encoding::LiteralMode;
 
     #[test]
     fn test_imap_proto_keeps_modified_code_in_information() {
@@ -1014,6 +1021,7 @@ mod tests {
             budget: ByteBudget::new(usize::MAX),
             message_count: MessageCount::new(exists),
             tracking: Some(SequenceTracking::new(exists)),
+            capabilities: Capabilities::default(),
         };
 
         (handler, task_rx)
@@ -1146,6 +1154,26 @@ mod tests {
             assertables::assert_ok!(plausible_uids(vec![uid(2)], 3)),
             vec![uid(2)]
         );
+    }
+
+    #[compio::test]
+    async fn test_mailbox_handler_replaces_capabilities() {
+        let (mut handler, _task_rx) = mailbox_handler(0);
+
+        handle(
+            &mut handler,
+            b"* CAPABILITY IMAP4rev1 LITERAL+ APPENDLIMIT=100\r\n",
+        )
+        .await;
+        handle(
+            &mut handler,
+            b"* CAPABILITY IMAP4rev1 LITERAL- MULTIAPPEND\r\n",
+        )
+        .await;
+
+        assert_eq!(handler.capabilities.literal_mode(), LiteralMode::Minus);
+        assert_eq!(handler.capabilities.append_limit(), None);
+        assert!(handler.capabilities.contains(Capability::Multiappend));
     }
 
     #[compio::test]
