@@ -88,6 +88,21 @@ pub enum Error {
     InvalidOutput(&'static str, FromUtf8Error),
 }
 
+impl Error {
+    /// Whether running the command again may succeed, e.g. once the password manager is unlocked
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::EmptyOutput(_) => true,
+            Self::Execution(_, e) => !matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+            ),
+            Self::NoProgram(_) | Self::InvalidOutput(..) => false,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum Auth {
@@ -243,6 +258,23 @@ mod tests {
 
         let error = assert_err!(auth.token().await);
         assert_eq!(error.to_string(), "token_cmd should specify a program");
+    }
+
+    #[compio::test]
+    async fn test_missing_program_is_permanent() {
+        let auth = OAuth2Auth::new(
+            "user".to_string(),
+            vec!["/nonexistent/token-helper".to_string()],
+        );
+
+        assert!(!assert_err!(auth.token().await).is_transient());
+    }
+
+    #[compio::test]
+    async fn test_empty_output_is_transient() {
+        let auth = PlainAuth::new("user".to_string(), vec!["true".to_string()]);
+
+        assert!(assert_err!(auth.password().await).is_transient());
     }
 
     #[test]
