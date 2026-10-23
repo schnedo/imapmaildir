@@ -441,7 +441,9 @@ impl Error {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Connection { .. } | Self::Closed | Self::Receive(_) | Self::Send(_) => true,
+            Self::Connection { .. } | Self::Closed => true,
+            // unparseable responses repeat after reconnecting
+            Self::Receive(e) | Self::Send(e) => e.kind() != io::ErrorKind::InvalidData,
             Self::TlsError(TlsError::Validation(e)) => is_transient_io(e),
             Self::No(information) => information.as_deref().is_some_and(is_transient_no),
             Self::TlsError(_)
@@ -876,6 +878,11 @@ mod transient_tests {
             )))
             .is_transient()
         );
+    }
+
+    #[test]
+    fn test_unparseable_response_is_permanent() {
+        assert!(!Error::Receive(io::Error::from(io::ErrorKind::InvalidData)).is_transient());
     }
 
     #[test]

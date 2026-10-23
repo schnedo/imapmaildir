@@ -72,7 +72,7 @@ impl Error {
         match self {
             Self::Transport(e) => e.is_transient(),
             Self::Auth(e) => e.is_transient(),
-            Self::ConnectionRejected(_) | Self::InvalidGreeting => true,
+            Self::ConnectionRejected(_) => true,
             // retrying wrong credentials could lock the account, and servers do not always
             // mark them with a response code
             Self::LoginRejected(information) => information.as_deref().is_some_and(|info| {
@@ -83,6 +83,7 @@ impl Error {
             Self::MissingCapability(_)
             | Self::MissingAuthCapability(_)
             | Self::MissingOAuth2Mechanism
+            | Self::InvalidGreeting
             | Self::PreAuthUnsupported
             | Self::InvalidUid(_)
             | Self::InvalidModSeq(_)

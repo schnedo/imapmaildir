@@ -56,7 +56,8 @@ impl Client {
                 }
             }
             imap_proto::Response::Data {
-                status: imap_proto::Status::Bad,
+                // BYE rejects the connection, e.g. due to overload (RFC 3501 7.1.5)
+                status: imap_proto::Status::Bad | imap_proto::Status::Bye,
                 outcome: imap_proto::Outcome { information, .. },
             } => {
                 return Err(Error::ConnectionRejected(
