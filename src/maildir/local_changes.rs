@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use enumflags2::BitFlags;
 
 use crate::{
-    maildir::NewLocalMailMetadata,
+    maildir::{NewLocalMailMetadata, OtherFlags},
     repository::{Flag, SequenceSet, SequenceSetBuilder, Uid},
 };
 
@@ -72,6 +72,8 @@ pub struct LocalChanges {
     pub updates: LocalFlagChangesBuilder,
     pub deletions: Vec<Uid>,
     pub news: Vec<NewLocalMailMetadata>,
+    /// Flags without IMAP equivalent changed by other clients, which only need storing
+    pub other_flags: Vec<(Uid, OtherFlags)>,
 }
 
 impl LocalChanges {
@@ -84,6 +86,7 @@ impl LocalChanges {
             updates,
             deletions,
             news,
+            other_flags: Vec::new(),
         }
     }
 }

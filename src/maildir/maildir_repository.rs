@@ -16,7 +16,7 @@ use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
         FlagChange, LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata,
-        NewLocalMailMetadata,
+        NewLocalMailMetadata, OtherFlags,
         maildir::{self, Change, MaildirFile},
         state::{self, State},
     },
@@ -124,6 +124,13 @@ impl MaildirRepository {
 
     pub async fn is_initial_sync_complete(&self) -> Result<bool, state::Error> {
         self.state.is_initial_sync_complete().await
+    }
+
+    pub async fn update_other_flags_all(
+        &self,
+        other_flags: Vec<(Uid, OtherFlags)>,
+    ) -> Result<(), state::Error> {
+        self.state.update_other_flags_all(other_flags).await
     }
 
     pub async fn uids(&self) -> Result<HashSet<Uid>, state::Error> {
@@ -314,8 +321,12 @@ impl MaildirRepository {
                     "adding {uid} to newly synced mail {}",
                     mail_metadata.filename()
                 );
-                let synced = mail_metadata.clone().set_uid(uid);
+                let mut synced = mail_metadata.clone().set_uid(uid);
                 let result = self.maildir.update_uid(mail_metadata, uid).await;
+                // keeps the uploaded flags, but other clients may have changed other flags
+                if let Ok(renamed) = &result {
+                    synced.set_other_flags(renamed.other_flags().clone());
+                }
 
                 (synced, result)
             })
@@ -425,6 +436,7 @@ impl MaildirRepository {
         let mut updates = LocalFlagChangesBuilder::default();
         let mut missing = Vec::new();
         let mut duplicates = Vec::new();
+        let mut other_flag_changes = Vec::new();
 
         self.state
             .fore_each(|entry| {
@@ -437,12 +449,23 @@ impl MaildirRepository {
                         .unwrap_or_default();
                     let data = files.swap_remove(tracked);
                     Self::update_flag_changes(&mut updates, &entry, &data);
+                    // keeps the stored file name accurate, so renames need not search the file
+                    if data.fileprefix() == entry.fileprefix()
+                        && data.other_flags() != entry.other_flags()
+                    {
+                        other_flag_changes.push((uid, data.other_flags().clone()));
+                    }
                     duplicates.extend(files);
                 } else {
                     missing.push(entry);
                 }
             })
             .await?;
+        if !other_flag_changes.is_empty() {
+            self.state
+                .update_other_flags_all(other_flag_changes)
+                .await?;
+        }
         let mut deletions = Vec::new();
         for entry in missing {
             if self.maildir.recover_from_tmp(&entry).await? {
@@ -499,6 +522,7 @@ impl LocalWatcher {
                 let mut deletions = Vec::new();
                 let mut news = Vec::new();
                 let mut updates = LocalFlagChangesBuilder::default();
+                let mut other_flags = Vec::new();
                 let mut overflowed = false;
                 let mut error = None;
                 let mut handle_change = |change| match change {
@@ -510,6 +534,9 @@ impl LocalWatcher {
                     }
                     Change::Rename { from, to } => {
                         MaildirRepository::update_flag_changes(&mut updates, &from, &to);
+                        if from.other_flags() != to.other_flags() {
+                            other_flags.push((to.uid(), to.other_flags().clone()));
+                        }
                     }
                     Change::Overflow => {
                         overflowed = true;
@@ -535,6 +562,7 @@ impl LocalWatcher {
                             updates,
                             deletions,
                             news,
+                            other_flags,
                         }),
                         false,
                     )
@@ -1382,6 +1410,94 @@ mod tests {
         assert_eq!(change.removed, BitFlags::from_flag(Flag::Seen));
         assert_eq!(change.added, BitFlags::from_flag(Flag::Deleted));
         assert_eq!(uids.iter().collect::<Vec<_>>(), vec![uid]);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_detect_changes_keeps_mail_with_other_flags_tracked(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        let passed = format!("{},U={uid}:2,PS", tracked.fileprefix());
+        assert_ok!(fs::rename(cur.join(tracked.filename()), cur.join(&passed)));
+
+        let result = assert_ok!(repo.detect_changes().await);
+
+        assert_is_empty!(result.deletions);
+        assert_is_empty!(result.news);
+        assert_is_empty!(result.updates.build().iter().collect::<Vec<_>>());
+        assert!(cur.join(passed).exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_watcher_reports_changed_other_flags(#[future] repo_with_mail: RepoWithMail) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        let events = assert_ok!(repo.local_watcher().watch().await);
+
+        assert_ok!(fs::rename(
+            cur.join(tracked.filename()),
+            cur.join(format!("{},U={uid}:2,PS", tracked.fileprefix()))
+        ));
+
+        let event = assert_ok!(compio::time::timeout(Duration::from_secs(5), events.recv()).await);
+        let LocalEvent::Changes(changes) = assert_ok!(event) else {
+            panic!("rename should be reported as changes");
+        };
+        assert_eq!(
+            changes.other_flags,
+            vec![(uid, OtherFlags::from("P".to_string()))]
+        );
+        assert_is_empty!(changes.updates.build().iter().collect::<Vec<_>>());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_detect_changes_stores_other_flags(#[future] repo_with_mail: RepoWithMail) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        let passed = format!("{},U={uid}:2,PS", tracked.fileprefix());
+        assert_ok!(fs::rename(cur.join(tracked.filename()), cur.join(&passed)));
+
+        assert_ok!(repo.detect_changes().await);
+
+        let stored = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        assert_eq!(stored.filename(), passed);
+        assert_eq!(stored.flags(), tracked.flags());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_apply_flag_changes_keeps_other_flags(#[future] repo_with_mail: RepoWithMail) {
+        let repo = repo_with_mail.repo.repo;
+        let uid = repo_with_mail.mail.metadata().uid();
+        let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        let cur = repo_with_mail.repo.mail_dir.path().join("cur");
+        assert_ok!(fs::rename(
+            cur.join(tracked.filename()),
+            cur.join(format!("{},U={uid}:2,PSa", tracked.fileprefix()))
+        ));
+
+        assert_ok!(repo.apply_flag_changes(&[uid], added(Flag::Flagged)).await);
+
+        assert!(
+            cur.join(format!("{},U={uid}:2,FPSa", tracked.fileprefix()))
+                .exists()
+        );
+        let stored = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
+        assert_eq!(stored.flags(), Flag::Flagged | Flag::Seen);
     }
 
     #[rstest]

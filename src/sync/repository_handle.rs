@@ -10,7 +10,7 @@ use enumflags2::BitFlags;
 
 use crate::{
     imap::RemoteMailMetadata,
-    maildir::{FlagChange, LocalChanges, LocalMail, NewLocalMailMetadata},
+    maildir::{FlagChange, LocalChanges, LocalMail, NewLocalMailMetadata, OtherFlags},
     repository::{Flag, ModSeq, SequenceSet, Uid},
     sync::{Error, Task},
 };
@@ -59,6 +59,13 @@ impl RepositoryHandle {
         change: FlagChange,
     ) -> Result<(), Error> {
         self.send(Task::ApplyFlagChanges(uids, change)).await
+    }
+
+    pub async fn update_other_flags(
+        &self,
+        other_flags: Vec<(Uid, OtherFlags)>,
+    ) -> Result<(), Error> {
+        self.send(Task::UpdateOtherFlags(other_flags)).await
     }
 
     pub async fn read_mail(
