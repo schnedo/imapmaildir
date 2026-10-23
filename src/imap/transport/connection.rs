@@ -38,6 +38,9 @@ pub enum CommandPart<'a> {
         file: &'a File,
         len: usize,
     },
+    /// Waits for the server's continuation request before sending the following parts, as
+    /// required after synchronizing literal headers
+    Continuation,
 }
 
 pub struct Connection {
@@ -146,14 +149,31 @@ impl Connection {
     }
 
     /// Like [`Self::send_parts`], but streams file contents in chunks instead of buffering the
-    /// whole command
+    /// whole command. Waits for continuation requests at [`CommandPart::Continuation`]. Returns
+    /// early if the server completes the command instead, e.g. rejecting a literal.
     pub async fn send_streamed<H: ResponseHandler>(
         &mut self,
         parts: &[CommandPart<'_>],
         handler: &mut H,
     ) -> Result<ResponseData, H::Error> {
         let tag = self.tag_generator.next();
-        self.write_streamed(&tag, parts).await?;
+        let prefix = format!("{tag} ");
+        let mut command = Vec::with_capacity(parts.len() + 2);
+        command.push(CommandPart::Bytes(prefix.as_bytes()));
+        command.extend_from_slice(parts);
+        command.push(CommandPart::Bytes(b"\r\n"));
+        let mut segments = command
+            .split(|part| matches!(part, CommandPart::Continuation))
+            .peekable();
+        while let Some(segment) = segments.next() {
+            self.write_streamed(&tag, segment).await?;
+            if segments.peek().is_some()
+                && let Some(completion) = self.receive_continuation(&tag, handler).await?
+            {
+                log::debug!("{tag:?}: completed before sending literal");
+                return completion.map_err(Into::into);
+            }
+        }
         self.receive_completion(&tag, handler).await
     }
 
@@ -163,9 +183,27 @@ impl Connection {
         SinkExt::flush(&mut self.stream)
             .await
             .map_err(Error::Send)?;
-        write_parts(&mut *self.stream, tag, parts, STREAM_CHUNK_SIZE)
+        write_parts(&mut *self.stream, parts, STREAM_CHUNK_SIZE)
             .await
             .map_err(Error::Send)
+    }
+
+    /// Passes untagged responses to `handler` until receiving a continuation request. Returns the
+    /// completion instead, if the server completes the command with `tag` before.
+    async fn receive_continuation<H: ResponseHandler>(
+        &mut self,
+        tag: &str,
+        handler: &mut H,
+    ) -> Result<Option<Result<ResponseData, Error>>, H::Error> {
+        match self.receive_next(handler).await? {
+            Received::Continuation => Ok(None),
+            Received::Done(received, _) if received != tag => Err(Error::UnexpectedTag {
+                expected: tag.to_string(),
+                received,
+            }
+            .into()),
+            Received::Done(_, completion) => Ok(Some(completion)),
+        }
     }
 
     pub async fn write_command(&mut self, command: Vec<u8>) -> Result<String, Error> {
@@ -237,6 +275,22 @@ impl Connection {
         handler: &mut H,
     ) -> Result<(String, Result<ResponseData, Error>), H::Error> {
         loop {
+            match self.receive_next(handler).await? {
+                Received::Continuation => {
+                    log::warn!("ignoring unexpected continuation request");
+                }
+                Received::Done(tag, completion) => return Ok((tag, completion)),
+            }
+        }
+    }
+
+    /// Passes untagged responses to `handler` until receiving a tagged response or continuation
+    /// request
+    async fn receive_next<H: ResponseHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> Result<Received, H::Error> {
+        loop {
             let response = self.next_response().await?;
             let (tag, error) = match response.parsed() {
                 imap_proto::Response::Done {
@@ -260,8 +314,8 @@ impl Connection {
                     (response_tag.0.clone(), error)
                 }
                 imap_proto::Response::Continue(imap_proto::Outcome { code, information }) => {
-                    log::warn!("ignoring unexpected continuation request {code:?} {information:?}");
-                    continue;
+                    log::trace!("continuation request {code:?} {information:?}");
+                    return Ok(Received::Continuation);
                 }
                 _ => {
                     handler.handle_or_log(response).await?;
@@ -269,9 +323,15 @@ impl Connection {
                 }
             };
 
-            return Ok((tag, error.map_or(Ok(response), Err)));
+            return Ok(Received::Done(tag, error.map_or(Ok(response), Err)));
         }
     }
+}
+
+enum Received {
+    Continuation,
+    /// Tag and the response if OK
+    Done(String, Result<ResponseData, Error>),
 }
 
 /// Completions of pipelined commands, which servers may send in any order
@@ -364,22 +424,15 @@ pub enum Error {
     UnexpectedTaggedStatus(String),
 }
 
-/// Writes `tag` and `parts` as command to `writer` in chunks of `chunk_size`. Reads the next
-/// chunk while writing the current one, so that slow storage and network do not wait for each
-/// other.
+/// Writes `parts` to `writer` in chunks of `chunk_size`. Reads the next chunk while writing the
+/// current one, so that slow storage and network do not wait for each other.
 async fn write_parts(
     writer: &mut (impl AsyncWrite + Unpin),
-    tag: &str,
     parts: &[CommandPart<'_>],
     chunk_size: usize,
 ) -> io::Result<()> {
-    let tag = format!("{tag} ");
-    let mut command = Vec::with_capacity(parts.len() + 2);
-    command.push(CommandPart::Bytes(tag.as_bytes()));
-    command.extend_from_slice(parts);
-    command.push(CommandPart::Bytes(b"\r\n"));
     let mut filler = ChunkFiller {
-        parts: &command,
+        parts,
         index: 0,
         offset: 0,
         chunk_size,
@@ -426,11 +479,15 @@ impl ChunkFiller<'_, '_> {
                     chunk = slice.into_inner();
                     read?;
                 }
+                CommandPart::Continuation => {
+                    unreachable!("continuations should be split off before writing")
+                }
             }
             self.offset += chunk.len() - start;
             let part_len = match *part {
                 CommandPart::Bytes(bytes) => bytes.len(),
                 CommandPart::File { len, .. } => len,
+                CommandPart::Continuation => 0,
             };
             if self.offset == part_len {
                 self.index += 1;
@@ -500,7 +557,10 @@ mod tests {
             }
         }
         let mut recorder = Recorder::default();
-        write_parts(&mut recorder, "A1", parts, chunk_size).await?;
+        let mut command = vec![CommandPart::Bytes(b"A1 ")];
+        command.extend_from_slice(parts);
+        command.push(CommandPart::Bytes(b"\r\n"));
+        write_parts(&mut recorder, &command, chunk_size).await?;
 
         Ok((recorder.0, recorder.1))
     }
