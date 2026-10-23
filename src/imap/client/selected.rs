@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,7 @@ pub struct SelectedClient {
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     multiappend: bool,
     literal_mode: LiteralMode,
+    append_limit: Option<NonZeroU64>,
     own_modseqs: OwnModSeqs,
     uid_validity: UidValidity,
 }
@@ -81,6 +83,7 @@ impl SelectedClient {
             idle_stop_tx: Some(idle_stop_tx),
             multiappend: capabilities.contains(Capability::Multiappend),
             literal_mode: capabilities.literal_mode(),
+            append_limit: capabilities.append_limit(),
             own_modseqs: OwnModSeqs::default(),
             uid_validity,
         })
@@ -254,9 +257,23 @@ impl SelectedClient {
     pub async fn store(
         &mut self,
         mailbox: &str,
-        mails: Vec<LocalMail>,
+        mut mails: Vec<LocalMail>,
     ) -> Result<Vec<(Uid, NewLocalMailMetadata)>, Error> {
         let mailbox = encoding::mailbox(mailbox);
+        if let Some(limit) = self.append_limit {
+            mails.retain(|mail| {
+                let fits = u64::try_from(mail.size()).is_ok_and(|size| size <= limit.get());
+                if !fits {
+                    log::warn!(
+                        "mail {} with {} bytes exceeds the server's append limit of {limit} bytes, \
+                        skipping it until next sync",
+                        mail.metadata(),
+                        mail.size()
+                    );
+                }
+                fits
+            });
+        }
         if self.multiappend && mails.len() > 1 {
             match self.append(&mailbox, &mails).await {
                 Ok(uids) => return Ok(uids.into_iter().zip(Self::metadatas(mails)).collect()),
