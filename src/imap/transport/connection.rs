@@ -466,7 +466,7 @@ fn is_transient_io(e: &io::Error) -> bool {
 
 /// Whether a NO response reports a temporary failure (RFC 5530). imap-proto keeps these codes
 /// in the information text.
-fn is_transient_no(information: &str) -> bool {
+pub fn is_transient_no(information: &str) -> bool {
     ["[UNAVAILABLE]", "[INUSE]", "[LIMIT]"]
         .iter()
         .any(|code| information.starts_with(code))
