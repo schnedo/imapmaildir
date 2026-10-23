@@ -210,12 +210,13 @@ impl MaildirRepository {
         }
     }
 
-    pub async fn read_mail(
+    /// Opens a new mail for uploading it. Returns `None` if it vanished meanwhile.
+    pub async fn open_mail(
         &self,
         metadata: NewLocalMailMetadata,
     ) -> Result<Option<LocalMail>, maildir::Error> {
-        match self.maildir.read_content(&metadata).await {
-            Ok(content) => Ok(Some(LocalMail::new(content, metadata))),
+        match self.maildir.open(&metadata).await {
+            Ok((file, size)) => Ok(Some(LocalMail::new(metadata, file, size))),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 log::warn!("new mail {metadata} vanished before syncing it");
                 Ok(None)
@@ -722,6 +723,8 @@ mod tests {
     use rstest::*;
     use tempfile::TempDir;
 
+    use compio::{BufResult, io::AsyncReadAtExt as _};
+
     use crate::imap::RemoteContent;
 
     use super::*;
@@ -738,6 +741,16 @@ mod tests {
             added: BitFlags::empty(),
             removed: flag.into(),
         }
+    }
+
+    async fn read_content(repo: &MaildirRepository, metadata: NewLocalMailMetadata) -> Vec<u8> {
+        let opened = assert_ok!(repo.open_mail(metadata).await);
+        let mail = assert_some!(opened);
+        let BufResult(read, content) = mail.file().read_to_end_at(Vec::new(), 0).await;
+        assert_ok!(read);
+        assert_eq!(content.len(), mail.size());
+
+        content
     }
 
     #[fixture]
@@ -1328,9 +1341,7 @@ mod tests {
 
         assert_len_eq_x!(&result.news, 1);
         let metadata = assert_some!(result.news.pop());
-        let content = assert_some!(assert_ok!(repo.read_mail(metadata.clone()).await))
-            .unpack()
-            .1;
+        let content = read_content(&repo, metadata.clone()).await;
         assert_eq!(content, expected_content.as_bytes());
         assert_eq!(metadata.filename(), expected_filename);
         assert_eq!(metadata.flags(), BitFlags::from_flag(Flag::Seen));
@@ -1355,9 +1366,7 @@ mod tests {
 
         assert_len_eq_x!(&result.news, 1);
         let metadata = assert_some!(result.news.pop());
-        let content = assert_some!(assert_ok!(repo.read_mail(metadata.clone()).await))
-            .unpack()
-            .1;
+        let content = read_content(&repo, metadata.clone()).await;
         assert_eq!(content, expected_content.as_bytes());
         assert_eq!(metadata.filename(), expected_filename);
         assert_eq!(metadata.flags(), BitFlags::from_flag(Flag::Seen));
@@ -1376,9 +1385,7 @@ mod tests {
 
         assert_len_eq_x!(&result.news, 1);
         let metadata = assert_some!(result.news.pop());
-        let content = assert_some!(assert_ok!(repo.repo.read_mail(metadata.clone()).await))
-            .unpack()
-            .1;
+        let content = read_content(&repo.repo, metadata.clone()).await;
         assert_eq!(content, expected_content.as_bytes());
         assert_eq!(metadata.filename(), "f:2,");
         assert!(repo.mail_dir.path().join("cur/f:2,").exists());

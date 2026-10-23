@@ -21,7 +21,7 @@ use crate::{
         client::fetch::FetchAttributes,
         client::message_count::MessageCount,
         client::uid_map::UidMap,
-        transport::{self, Chain, Connection, ResponseData, ResponseHandler},
+        transport::{self, Chain, CommandPart, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
     repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid, UidValidity},
@@ -275,7 +275,7 @@ impl SelectedClient {
         let mut stored = Vec::with_capacity(mails.len());
         for mail in mails {
             match self.append(&mailbox, std::slice::from_ref(&mail)).await {
-                Ok(uids) => stored.extend(uids.into_iter().zip(Some(mail.unpack().0))),
+                Ok(uids) => stored.extend(uids.into_iter().zip(Some(mail.into_metadata()))),
                 Err(Error::Transport(transport::Error::No(reason))) => {
                     log::warn!(
                         "server rejected mail {} ({}), skipping it until next sync",
@@ -291,7 +291,7 @@ impl SelectedClient {
     }
 
     fn metadatas(mails: Vec<LocalMail>) -> impl Iterator<Item = NewLocalMailMetadata> {
-        mails.into_iter().map(|mail| mail.unpack().0)
+        mails.into_iter().map(LocalMail::into_metadata)
     }
 
     async fn append(&mut self, mailbox: &str, mails: &[LocalMail]) -> Result<Vec<Uid>, Error> {
@@ -306,14 +306,17 @@ impl SelectedClient {
         let mut parts = Vec::with_capacity(mails.len() * 2);
         let mut header_start = 0;
         for (mail, header_end) in mails.iter().zip(header_ends) {
-            parts.push(&headers[header_start..header_end]);
-            parts.push(mail.content());
+            parts.push(CommandPart::Bytes(&headers[header_start..header_end]));
+            parts.push(CommandPart::File {
+                file: mail.file(),
+                len: mail.size(),
+            });
             header_start = header_end;
         }
 
         let response = self
             .connection
-            .send_parts(&parts, &mut self.mailbox_handler)
+            .send_streamed(&parts, &mut self.mailbox_handler)
             .await?;
 
         let Some(imap_proto::ResponseCode::AppendUid(uid_validity, uid_set_members)) =
@@ -977,7 +980,7 @@ impl LocalMail {
             write!(command, " ({flags})")
                 .expect("appending formatted flags to APPEND command should succeed");
         }
-        write!(command, " {{{}+}}\r\n", self.content().len())
+        write!(command, " {{{}+}}\r\n", self.size())
             .expect("appending content length to APPEND command should succeed");
     }
 }

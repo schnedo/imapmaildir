@@ -68,11 +68,11 @@ impl RepositoryHandle {
         self.send(Task::UpdateOtherFlags(other_flags)).await
     }
 
-    pub async fn read_mail(
+    pub async fn open_mail(
         &self,
         metadata: NewLocalMailMetadata,
     ) -> Result<Option<LocalMail>, Error> {
-        self.request(|reply| Task::ReadMail(metadata, reply)).await
+        self.request(|reply| Task::OpenMail(metadata, reply)).await
     }
 
     pub async fn flags(&self, uids: Vec<Uid>) -> Result<HashMap<Uid, BitFlags<Flag>>, Error> {
