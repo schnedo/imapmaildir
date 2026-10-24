@@ -17,5 +17,6 @@ pub use remote_changes::Selection;
 pub use remote_mail::RemoteContent;
 pub use remote_mail::RemoteMail;
 pub use remote_mail::RemoteMailMetadata;
+pub use transport::ConnectionConfig;
 pub use transport::Error as TransportError;
 pub use transport::Tls;

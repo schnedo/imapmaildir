@@ -11,16 +11,14 @@ use compio::{
     net::TcpStream,
     tls::{TlsConnector, TlsStream},
 };
+use derive_getters::Getters;
 use futures::{AsyncWrite, AsyncWriteExt as _, SinkExt, StreamExt};
 use thiserror::Error;
 
-use crate::{
-    config,
-    imap::transport::{
-        ResponseHandler,
-        codec::{ImapCodec, ResponseData},
-        tag_generator::TagGenerator,
-    },
+use crate::imap::transport::{
+    ResponseHandler,
+    codec::{ImapCodec, ResponseData},
+    tag_generator::TagGenerator,
 };
 
 const READ_BUFFER_SIZE: usize = 256 * 1024;
@@ -43,6 +41,24 @@ pub enum CommandPart<'a> {
     Continuation,
 }
 
+#[derive(Getters, Debug)]
+pub struct Config {
+    host: String,
+    port: u16,
+    server_certificate_file: Option<PathBuf>,
+}
+
+impl Config {
+    #[must_use]
+    pub fn new(host: String, port: u16, server_certificate_file: Option<PathBuf>) -> Self {
+        Self {
+            host,
+            port,
+            server_certificate_file,
+        }
+    }
+}
+
 pub struct Connection {
     tag_generator: TagGenerator,
     stream: Framed<TlsStream<TcpStream>, ImapCodec>,
@@ -63,7 +79,7 @@ impl Tls {
     /// # Errors
     /// If the configured server certificate cannot be read or parsed, or no native TLS
     /// implementation is available
-    pub fn new(connection_config: &config::Connection) -> Result<Self, Error> {
+    pub fn new(connection_config: &Config) -> Result<Self, Error> {
         log::debug!("Setting up TLS");
         let mut tls = native_tls::TlsConnector::builder();
         if let Some(cert_file) = connection_config.server_certificate_file() {
@@ -82,7 +98,7 @@ impl Tls {
 }
 
 impl Connection {
-    pub async fn start(connection_config: &config::Connection, tls: &Tls) -> Result<Self, Error> {
+    pub async fn start(connection_config: &Config, tls: &Tls) -> Result<Self, Error> {
         log::debug!("Connecting to server");
         let tls = &tls.0;
         let host = connection_config.host().as_str();
@@ -853,7 +869,7 @@ mod tests {
     #[awt]
     #[compio::test]
     async fn test_connecting_to_server_should_succeed(#[future] server: MockServer) {
-        let config = config::Connection::new(
+        let config = Config::new(
             server.hostname(),
             server.port(),
             Some(PathBuf::from(CERTIFICATE_PATH)),

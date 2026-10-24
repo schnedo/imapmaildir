@@ -5,7 +5,7 @@ use derive_getters::Getters;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{config::Auth, sync};
+use crate::{config::Auth, imap::ConnectionConfig, sync};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,30 +25,11 @@ struct AccountConfigFile {
     store_batch_max_bytes: Option<NonZeroUsize>,
 }
 
-// todo: move config to code using it
-#[derive(Getters, Debug)]
-pub struct Connection {
-    host: String,
-    port: u16,
-    server_certificate_file: Option<PathBuf>,
-}
-
-impl Connection {
-    #[must_use]
-    pub fn new(host: String, port: u16, server_certificate_file: Option<PathBuf>) -> Self {
-        Self {
-            host,
-            port,
-            server_certificate_file,
-        }
-    }
-}
-
 // todo: why 2 structs? custom logic should be configurable in serde/derive_getters
 #[derive(Getters, Debug)]
 pub struct Account {
     auth: Auth,
-    connection: Connection,
+    connection: ConnectionConfig,
     mailboxes: Vec<String>,
     maildir_base_path: PathBuf,
     state_dir: PathBuf,
@@ -76,7 +57,7 @@ impl Account {
     ) -> Self {
         Self {
             auth,
-            connection: Connection::new(host, port, server_certificate_file),
+            connection: ConnectionConfig::new(host, port, server_certificate_file),
             mailboxes,
             maildir_base_path,
             state_dir,
@@ -108,7 +89,11 @@ impl Account {
 
         Ok(Self {
             auth: config.auth,
-            connection: Connection::new(config.host, config.port, config.server_certificate_file),
+            connection: ConnectionConfig::new(
+                config.host,
+                config.port,
+                config.server_certificate_file,
+            ),
             mailboxes: config.mailboxes,
             maildir_base_path,
             state_dir,
