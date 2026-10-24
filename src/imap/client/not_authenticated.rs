@@ -1,13 +1,10 @@
-use crate::{
-    config,
-    imap::{
-        client::{
-            AuthenticatedClient, Error,
-            auth::{Auth, Server},
-            capability::{AuthCapabilities, Capabilities, Capability},
-        },
-        transport::{Connection, ResponseData, ResponseHandler, Tls},
+use crate::imap::{
+    client::{
+        AuthenticatedClient, Error,
+        auth::{Auth, Server},
+        capability::{AuthCapabilities, Capabilities, Capability},
     },
+    transport::{Connection, ConnectionConfig, ResponseData, ResponseHandler, Tls},
 };
 
 pub struct Client {
@@ -21,7 +18,7 @@ impl Client {
     /// If connecting to or authenticating with the server fails or the server lacks required
     /// capabilities
     pub async fn login(
-        connection_config: &config::Connection,
+        connection_config: &ConnectionConfig,
         tls: &Tls,
         auth_config: &Auth,
     ) -> Result<AuthenticatedClient, Error> {
@@ -29,7 +26,7 @@ impl Client {
         connected.authenticate(connection_config, auth_config).await
     }
 
-    async fn connect(connection_config: &config::Connection, tls: &Tls) -> Result<Self, Error> {
+    async fn connect(connection_config: &ConnectionConfig, tls: &Tls) -> Result<Self, Error> {
         let mut connection = Connection::start(connection_config, tls).await?;
 
         let mut capabilities = Capabilities::default();
@@ -82,7 +79,7 @@ impl Client {
 
     async fn authenticate(
         mut self,
-        connection_config: &config::Connection,
+        connection_config: &ConnectionConfig,
         auth_config: &Auth,
     ) -> Result<AuthenticatedClient, Error> {
         let server = Server {
