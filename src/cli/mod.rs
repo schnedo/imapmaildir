@@ -1,4 +1,5 @@
 mod nuke;
+mod remote;
 mod sync;
 
 use std::io::{self, stdin};
@@ -32,7 +33,21 @@ pub struct Cli {
 pub enum Command {
     /// `rm -rf` the configured account (WARNING: includes all mails)
     Nuke(NukeArgs),
+    /// Inspect the remote server
+    Remote(RemoteArgs),
     Sync(SyncArgs),
+}
+
+#[derive(clap::Args)]
+pub struct RemoteArgs {
+    #[command(subcommand)]
+    command: RemoteCommand,
+}
+
+#[derive(Subcommand)]
+pub enum RemoteCommand {
+    /// List all selectable mailboxes on the server
+    List,
 }
 
 #[derive(clap::Args)]
@@ -69,6 +84,9 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             }
             nuke(&config).map_err(Error::Nuke)
         }
+        Command::Remote(remote_args) => match remote_args.command {
+            RemoteCommand::List => remote::list(&config),
+        },
         Command::Sync(sync_args) => {
             if sync_args.idle {
                 exit_on_panic();
@@ -86,7 +104,7 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
 impl Transient for Error {
     fn is_transient(&self) -> bool {
         match self {
-            Self::Login(e) => e.is_transient(),
+            Self::Login(e) | Self::List(e) => e.is_transient(),
             Self::Sync { cause, .. } => cause.is_transient(),
             Self::Config(_)
             | Self::Tls(_)
@@ -113,6 +131,8 @@ pub enum Error {
     Runtime(io::Error),
     #[error("Cannot log in: {0}")]
     Login(ClientError),
+    #[error("Cannot list remote mailboxes: {0}")]
+    List(ClientError),
     #[error("Syncing mailbox {mailbox} failed: {cause}")]
     Sync { mailbox: String, cause: SyncError },
     #[error("Cannot spawn sync thread for mailbox {mailbox}: {cause}")]

@@ -406,3 +406,15 @@ async fn test_oauth2_login_with_invalid_token_fails_permanently(#[future] mail_s
     );
     assert!(!error.is_transient());
 }
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_list_remote_mailboxes(#[future] mail_setup: MailSetup) {
+    let mailboxes: HashSet<_> = mail_setup.list_remote().await.into_iter().collect();
+
+    assert_eq!(
+        mailboxes,
+        HashSet::from(["INBOX".to_string(), "DRAFT".to_string()])
+    );
+}

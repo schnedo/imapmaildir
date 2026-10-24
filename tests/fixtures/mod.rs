@@ -453,6 +453,24 @@ impl MailSetup {
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
     }
 
+    /// # Panics
+    /// If logging in or listing fails
+    pub async fn list_remote(&self) -> Vec<String> {
+        let config = self.config();
+        let mut client = Client::login(
+            config.connection(),
+            &assert_ok!(Tls::new(config.connection())),
+            config.auth(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("login failed: {e}"));
+
+        client
+            .list()
+            .await
+            .unwrap_or_else(|e| panic!("listing failed: {e}"))
+    }
+
     /// Configured user
     ///
     /// # Panics
