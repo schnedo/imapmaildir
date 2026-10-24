@@ -1,8 +1,9 @@
 pub mod fixtures;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, ffi::OsString, fs, sync::Arc};
 
 use assertables::*;
+use imapmaildir::{Batching, ChangeRecorder, MailChange, batched_hook};
 use rstest::*;
 
 use crate::fixtures::*;
@@ -417,4 +418,97 @@ async fn test_list_remote_mailboxes(#[future] mail_setup: MailSetup) {
         mailboxes,
         HashSet::from(["INBOX".to_string(), "DRAFT".to_string()])
     );
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_initial_sync_records_single_overflow(#[future] mail_setup: MailSetup) {
+    mail_setup.client_mail().wipe();
+
+    let changes = mail_setup.sync_recording("INBOX").await;
+
+    assert_eq!(changes, [MailChange::Overflow]);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_unchanged_sync_records_nothing(#[future] mail_setup: MailSetup) {
+    let changes = mail_setup.sync_recording("INBOX").await;
+
+    assert_is_empty!(changes);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_remote_changes_get_recorded(#[future] mail_setup: MailSetup) {
+    mail_setup.sync("INBOX").await;
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let content = b"recorded";
+    server_mailbox.add_mail(content);
+    let deleted = assert_some!(server_mailbox.mails().await.into_iter().next());
+    let deleted_uid = deleted.uid();
+    deleted.delete();
+
+    let changes = mail_setup.sync_recording("INBOX").await;
+
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let downloaded = assert_some!(
+        client_mailbox
+            .mails()
+            .await
+            .into_iter()
+            .find(|mail| mail.content() == content)
+    );
+    assert_len_eq_x!(changes.as_slice(), 2);
+    assert_any!(changes.iter(), |change: &MailChange| matches!(
+        change,
+        MailChange::Downloaded { uid, path, flags }
+            if u64::from(u32::from(*uid)) == downloaded.uid() && path.exists() && flags.is_empty()
+    ));
+    assert_any!(changes.iter(), |change: &MailChange| matches!(
+        change,
+        MailChange::Deleted { uid, path }
+            if u64::from(u32::from(*uid)) == deleted_uid && !path.exists()
+    ));
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_batched_hook_gets_lines(#[future] mail_setup: MailSetup) {
+    mail_setup.sync("INBOX").await;
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    server_mailbox.add_mail(b"hooked");
+    let output = mail_setup.config().state_dir().join("hook.tsv");
+    let cmd: Vec<OsString> = ["sh", "-c", &format!("cat >> '{}'", output.display())]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    let (sink, hook_task) = batched_hook(
+        &cmd,
+        "INBOX",
+        Batching::default(),
+        Arc::new(|e| panic!("hook failed: {e}")),
+    );
+
+    mail_setup
+        .sync_with_changes("INBOX", Some(ChangeRecorder::new(vec![sink])))
+        .await;
+    hook_task
+        .await
+        .unwrap_or_else(|_| panic!("hook task panicked"));
+
+    let lines = assert_ok!(fs::read_to_string(&output));
+    let fields: Vec<_> = assert_some!(lines.lines().next()).split('\t').collect();
+    assert_len_eq_x!(lines.lines().collect::<Vec<_>>(), 1);
+    assert_eq!(fields[0], "INBOX");
+    assert_eq!(fields[1], "downloaded");
+    assert_eq!(assert_ok!(fs::read(fields[2])), b"hooked");
+    assert_starts_with!(fields[3], "uid=");
+    assert_ends_with!(fields[3], " flags=");
+    assert_eq!(fields[4], "");
 }

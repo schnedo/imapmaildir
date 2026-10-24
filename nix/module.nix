@@ -58,11 +58,29 @@
             onChange = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
-              description = "Command to execute after remote changes got synced";
+              description = "Command to execute per batch of remote changes applied to a mailbox. Gets the changes as tab-separated lines on stdin";
               example = [
                 "notify-send"
                 "new mail"
               ];
+            };
+            onChangeFailure = lib.mkOption {
+              type = lib.types.enum [
+                "exit"
+                "warn"
+              ];
+              default = "exit";
+              description = "Whether a failing onChange command stops syncing or only logs a warning";
+            };
+            changeHookThrottleMilliseconds = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "Time after the first change of a batch, until onChange runs. Defaults to 100";
+            };
+            changeHookMaxPending = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "Changes queued per hook, beyond which they get dropped for a single overflow line. Defaults to 10000";
             };
             mailboxes = lib.mkOption {
               type = lib.types.listOf lib.types.str;
@@ -165,39 +183,47 @@
         in
         {
           "imapmaildir/accounts/${name}.toml" = {
-            # todo: onChange as soon as idle is implemented
             source =
               let
                 inherit (account.imap) port;
               in
-              toml.generate "${name}.toml" {
-                inherit (account.imap) host;
-                # todo: assert use tls
-                port = if builtins.isNull port then 993 else port;
-                inherit (account.imapmaildir) mailboxes;
-                idle_timeout = "${builtins.toString account.imapmaildir.idle.timeoutSeconds}s";
-                on_local_change = account.imapmaildir.onChange;
-                maildir_base_path = account.maildir.absPath;
-                auth =
-                  if oauth2.enable then
-                    {
-                      type = "OAuth2";
-                      user = account.userName;
-                      token_cmd = toCmd (
-                        if builtins.isNull oauth2.tokenCommand then
-                          account.passwordCommand
-                        else
-                          oauth2.tokenCommand
-                      );
-                    }
-                  else
-                    {
-                      type = "Plain";
-                      user = account.userName;
-                      # todo: assert passwordCommand not null
-                      password_cmd = toCmd account.passwordCommand;
-                    };
-              };
+              toml.generate "${name}.toml" (
+                {
+                  inherit (account.imap) host;
+                  # todo: assert use tls
+                  port = if builtins.isNull port then 993 else port;
+                  inherit (account.imapmaildir) mailboxes;
+                  idle_timeout = "${builtins.toString account.imapmaildir.idle.timeoutSeconds}s";
+                  on_local_change = account.imapmaildir.onChange;
+                  on_local_change_failure = account.imapmaildir.onChangeFailure;
+                  maildir_base_path = account.maildir.absPath;
+                  auth =
+                    if oauth2.enable then
+                      {
+                        type = "OAuth2";
+                        user = account.userName;
+                        token_cmd = toCmd (
+                          if builtins.isNull oauth2.tokenCommand then
+                            account.passwordCommand
+                          else
+                            oauth2.tokenCommand
+                        );
+                      }
+                    else
+                      {
+                        type = "Plain";
+                        user = account.userName;
+                        # todo: assert passwordCommand not null
+                        password_cmd = toCmd account.passwordCommand;
+                      };
+                }
+                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookThrottleMilliseconds) {
+                  change_hook_throttle = "${builtins.toString account.imapmaildir.changeHookThrottleMilliseconds}ms";
+                }
+                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookMaxPending) {
+                  change_hook_max_pending = account.imapmaildir.changeHookMaxPending;
+                }
+              );
           };
         };
 
