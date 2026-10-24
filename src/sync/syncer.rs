@@ -3,8 +3,8 @@ use crate::{
         IdleStopReason, RemoteChanges, RemoteMail, RemoteMailMetadata, SelectedClient, Selection,
     },
     maildir::{
-        FlagChange, LocalChanges, LocalEvent, LocalMail, LocalWatcher, MaildirRepositoryError,
-        NewLocalMailMetadata,
+        ChangeRecorder, FlagChange, LocalChanges, LocalEvent, LocalMail, LocalWatcher, MailChange,
+        MaildirRepositoryError, NewLocalMailMetadata,
     },
     repository::{ModSeq, SequenceSet, Uid, UidValidity},
     sync::{ByteBudget, Config, Error, RepositoryHandle, task::Task},
@@ -48,22 +48,14 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
         config: Config,
-        on_local_change: impl FnMut() + Send + 'static,
+        changes: Option<ChangeRecorder>,
     ) -> Result<(), Error> {
         let Synced {
             client,
             task_handle,
             repository,
             ..
-        } = Self::sync(
-            mailbox,
-            mail_dir,
-            state_dir,
-            client,
-            config,
-            on_local_change,
-        )
-        .await?;
+        } = Self::sync(mailbox, mail_dir, state_dir, client, config, changes).await?;
         drop(repository);
         let (logout_result, task_result) = futures::join!(client.logout(), task_handle);
         task_result.map_err(|_| Error::TaskProcessingPanicked)??;
@@ -81,7 +73,7 @@ impl Syncer {
         client: AuthenticatedClient,
         idle_timeout: Duration,
         config: Config,
-        mut on_local_change: impl FnMut() + Clone + Send + 'static,
+        changes: Option<ChangeRecorder>,
     ) -> Result<Infallible, Error> {
         client.require_idle()?;
         let Synced {
@@ -89,15 +81,7 @@ impl Syncer {
             task_handle,
             repository,
             local_watcher,
-        } = Self::sync(
-            mailbox,
-            mail_dir,
-            state_dir,
-            client,
-            config,
-            on_local_change.clone(),
-        )
-        .await?;
+        } = Self::sync(mailbox, mail_dir, state_dir, client, config, changes).await?;
         let stop_tx = client.take_idle_stop_tx();
 
         log::info!("listening for mail changes...");
@@ -124,13 +108,7 @@ impl Syncer {
         // local changes during the sync, e.g. a long initial one, happened before watching
         let rescanned = async {
             let changes = repository.detect_changes().await?;
-            // uploading new mails renames them to carry their UID
-            let renames_local_mails = !changes.news.is_empty();
-            Self::handle_local(&mut client, &repository, changes, mailbox, config).await?;
-            if renames_local_mails {
-                on_local_change();
-            }
-            Ok(())
+            Self::handle_local(&mut client, &repository, changes, mailbox, config).await
         }
         .await;
         if let Err(e) = rescanned {
@@ -138,15 +116,8 @@ impl Syncer {
         }
 
         let error = loop {
-            if let Err(e) = Self::handle_idle(
-                &mut client,
-                &repository,
-                mailbox,
-                idle_timeout,
-                config,
-                &mut on_local_change,
-            )
-            .await
+            if let Err(e) =
+                Self::handle_idle(&mut client, &repository, mailbox, idle_timeout, config).await
             {
                 break e;
             }
@@ -180,7 +151,6 @@ impl Syncer {
         mailbox: &str,
         idle_timeout: Duration,
         config: Config,
-        on_local_change: &mut impl FnMut(),
     ) -> Result<(), Error> {
         match client.idle(idle_timeout).await? {
             IdleStopReason::Remote => {
@@ -208,7 +178,6 @@ impl Syncer {
                     repository.detect_changes().await?
                 };
                 Self::handle_local(client, repository, changes, mailbox, config).await?;
-                on_local_change();
             }
             IdleStopReason::LocalError(e) => return Err(e.into()),
             IdleStopReason::Timeout => {
@@ -240,7 +209,7 @@ impl Syncer {
         state_dir: &Path,
         client: AuthenticatedClient,
         config: Config,
-        on_local_change: impl FnMut() + Send + 'static,
+        changes: Option<ChangeRecorder>,
     ) -> Result<Synced, Error> {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
@@ -256,8 +225,7 @@ impl Syncer {
 
         match loaded {
             Some((maildir_repository, true)) => {
-                Self::sync_existing(maildir_repository, client, mailbox, config, on_local_change)
-                    .await
+                Self::sync_existing(maildir_repository, client, mailbox, config, changes).await
             }
             Some((maildir_repository, false)) => {
                 log::info!("resuming interrupted initial sync");
@@ -268,7 +236,7 @@ impl Syncer {
                     &mailbox_statedir,
                     mailbox,
                     config,
-                    on_local_change,
+                    changes,
                 )
                 .await
             }
@@ -281,7 +249,7 @@ impl Syncer {
                     &mailbox_statedir,
                     mailbox,
                     config,
-                    on_local_change,
+                    changes,
                 )
                 .await
             }
@@ -308,12 +276,14 @@ impl Syncer {
     }
 
     async fn sync_existing(
-        maildir_repository: MaildirRepository,
+        mut maildir_repository: MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
         config: Config,
-        on_local_change: impl FnMut() + Send + 'static,
+        changes: Option<ChangeRecorder>,
     ) -> Result<Synced, Error> {
+        // detecting local changes may already recover interrupted downloads
+        maildir_repository.record_changes(changes);
         let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
         let budget = Self::store_budget(config);
         let repository = RepositoryHandle::new(task_tx.clone());
@@ -345,13 +315,8 @@ impl Syncer {
         } = selection;
         Self::check_uid_validity(uid_validity, mailbox_data.uid_validity())?;
         let local_watcher = maildir_repository.local_watcher();
-        let task_handle = Self::setup_task_processing(
-            maildir_repository,
-            task_rx,
-            budget,
-            config,
-            on_local_change,
-        );
+        let task_handle =
+            Self::setup_task_processing(maildir_repository, task_rx, budget, config, None);
 
         let synced = async {
             let mut synced_modseq = mailbox_data.highest_modseq();
@@ -614,7 +579,7 @@ impl Syncer {
         state_dir: &Path,
         mailbox: &str,
         config: Config,
-        on_local_change: impl FnMut() + Send + 'static,
+        changes: Option<ChangeRecorder>,
     ) -> Result<Synced, Error> {
         let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
         let budget = Self::store_budget(config);
@@ -631,7 +596,8 @@ impl Syncer {
             ..
         } = selection?;
 
-        let (maildir_repository, local_uids) = if let Some(maildir_repository) = maildir_repository
+        let (mut maildir_repository, local_uids) = if let Some(maildir_repository) =
+            maildir_repository
             && let Some((uid_validity, local_uids)) = local_state
         {
             Self::check_uid_validity(uid_validity?, mailbox_data.uid_validity())?;
@@ -644,12 +610,19 @@ impl Syncer {
             )
         };
         let local_watcher = maildir_repository.local_watcher();
+        // reporting every mail of a first download would flood the hooks
+        let deferred_changes = if local_uids.is_empty() {
+            changes
+        } else {
+            maildir_repository.record_changes(changes);
+            None
+        };
         let task_handle = Self::setup_task_processing(
             maildir_repository,
             task_rx,
             budget,
             config,
-            on_local_change,
+            deferred_changes,
         );
 
         let synced = async {
@@ -725,16 +698,11 @@ impl Syncer {
         (batch, None)
     }
 
-    async fn process_task(
-        maildir_repository: &MaildirRepository,
-        task: Task,
-        on_local_change: &mut impl FnMut(),
-    ) -> Result<(), Error> {
+    async fn process_task(maildir_repository: &MaildirRepository, task: Task) -> Result<(), Error> {
         match task {
             Task::NewMail(_) => unreachable!("new mail should be handled in batches"),
             Task::Delete(sequence_set) => {
                 maildir_repository.delete_all(sequence_set.iter()).await?;
-                on_local_change();
             }
             Task::SetHighestModseq(modseq) => {
                 log::debug!("Setting highest modseq to {modseq}");
@@ -746,10 +714,7 @@ impl Syncer {
                 done_tx.send(());
             }
             Task::ApplyRemoteUpdates(updates, reply) => {
-                let (missing, changed) = maildir_repository.apply_remote_updates(&updates).await?;
-                if changed {
-                    on_local_change();
-                }
+                let missing = maildir_repository.apply_remote_updates(&updates).await?;
                 reply.send(missing);
             }
             Task::AddSynced(synced) => {
@@ -785,7 +750,7 @@ impl Syncer {
                     remote_mail_metadata.flags()
                 );
                 match maildir_repository.update_flags(&remote_mail_metadata).await {
-                    Ok(()) => on_local_change(),
+                    Ok(()) => {}
                     Err(MaildirRepositoryError::NoExists { uid }) => {
                         log::warn!("ignoring flag update of locally missing mail {uid}");
                     }
@@ -797,28 +762,35 @@ impl Syncer {
         Ok(())
     }
 
+    /// Reports mails stored by an initial sync, that ended before completing, as overflow
+    fn report_unrecorded(deferred_changes: Option<ChangeRecorder>, stored_unrecorded: bool) {
+        if stored_unrecorded && let Some(changes) = deferred_changes {
+            changes.record(MailChange::Overflow);
+        }
+    }
+
     /// Allows downloading one batch while storing another, so that neither waits for the other
     fn store_budget(config: Config) -> ByteBudget {
         ByteBudget::new(config.store_batch_max_bytes().saturating_mul(2))
     }
 
     fn setup_task_processing(
-        maildir_repository: MaildirRepository,
+        mut maildir_repository: MaildirRepository,
         task_rx: AsyncRx<Array<Task>>,
         budget: ByteBudget,
         config: Config,
-        mut on_local_change: impl FnMut() + Send + 'static,
+        deferred_changes: Option<ChangeRecorder>,
     ) -> TaskHandle {
         compio::runtime::spawn(async move {
             // downloads must not wait for budget nobody releases anymore, even on panics
             let _close_budget = CloseOnDrop(budget.clone());
             log::debug!("Listening to incoming mail...");
             let result = Self::process_tasks(
-                &maildir_repository,
+                &mut maildir_repository,
                 &task_rx,
                 &budget,
                 config,
-                &mut on_local_change,
+                deferred_changes,
             )
             .await;
             if let Err(e) = maildir_repository.close().await {
@@ -829,13 +801,16 @@ impl Syncer {
         })
     }
 
+    /// Starts recording changes with `deferred_changes` after completing the initial sync. Then
+    /// reports an overflow instead of every mail stored until then.
     async fn process_tasks(
-        maildir_repository: &MaildirRepository,
+        maildir_repository: &mut MaildirRepository,
         task_rx: &AsyncRx<Array<Task>>,
         budget: &ByteBudget,
         config: Config,
-        on_local_change: &mut impl FnMut(),
+        mut deferred_changes: Option<ChangeRecorder>,
     ) -> Result<(), Error> {
+        let mut stored_unrecorded = false;
         let mut next_task = None;
         loop {
             let task = if let Some(task) = next_task.take() {
@@ -856,8 +831,8 @@ impl Syncer {
                             .map(|mail| budget.cost(mail.content().len()))
                             .sum(),
                     );
-                    if result.is_ok() {
-                        on_local_change();
+                    if result.is_ok() && deferred_changes.is_some() {
+                        stored_unrecorded = true;
                     }
                     result.map_err(Error::from)
                 }
@@ -865,20 +840,33 @@ impl Syncer {
                     let (batch, task) = Self::collect_delete_batch(&sequence_set, task_rx, config);
                     next_task = task;
                     log::debug!("deleting {} mails", batch.len());
-                    let result = maildir_repository.delete_all(batch.into_iter()).await;
-                    if result.is_ok() {
-                        on_local_change();
-                    }
-                    result.map_err(Error::from)
+                    maildir_repository
+                        .delete_all(batch.into_iter())
+                        .await
+                        .map_err(Error::from)
                 }
-                task => Self::process_task(maildir_repository, task, on_local_change).await,
+                task @ Task::CompleteInitialSync(..) => {
+                    let result = Self::process_task(maildir_repository, task).await;
+                    if result.is_ok()
+                        && let Some(changes) = deferred_changes.take()
+                    {
+                        if stored_unrecorded {
+                            changes.record(MailChange::Overflow);
+                        }
+                        maildir_repository.record_changes(Some(changes));
+                    }
+                    result
+                }
+                task => Self::process_task(maildir_repository, task).await,
             };
             if let Err(e) = result {
                 log::error!("task processing failed: {e}");
+                Self::report_unrecorded(deferred_changes, stored_unrecorded);
                 return Err(e);
             }
         }
         log::debug!("Task channel closed. Stopping task processing");
+        Self::report_unrecorded(deferred_changes, stored_unrecorded);
 
         Ok(())
     }
@@ -894,15 +882,73 @@ impl Drop for CloseOnDrop {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use assertables::*;
     use crossfire::MAsyncTx;
+    use tempfile::TempDir;
 
     use crate::{
         imap::{RemoteContent, RemoteMailMetadata},
+        maildir::ChangeSink,
         repository::{Flag, ModSeq, Uid},
     };
 
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<MailChange>>);
+
+    impl ChangeSink for RecordingSink {
+        fn record(&self, change: MailChange) {
+            assert_ok!(self.0.lock()).push(change);
+        }
+    }
+
+    /// Processes `tasks` of an initial sync into an empty maildir, whose changes get recorded
+    /// only after completing it
+    async fn process_initial_tasks(tasks: impl IntoIterator<Item = Task>) -> Vec<MailChange> {
+        let (mail_dir, state_dir) = (assert_ok!(TempDir::new()), assert_ok!(TempDir::new()));
+        let mut repository = assert_ok!(
+            MaildirRepository::try_init(
+                assert_ok!(UidValidity::try_from(1)),
+                mail_dir.path(),
+                state_dir.path()
+            )
+            .await
+        );
+        let sink = Arc::new(RecordingSink::default());
+        let (task_tx, task_rx) = queue(tasks).await;
+        drop(task_tx);
+
+        assert_ok!(
+            Syncer::process_tasks(
+                &mut repository,
+                &task_rx,
+                &ByteBudget::new(1024),
+                Config::default(),
+                Some(ChangeRecorder::new(vec![sink.clone()])),
+            )
+            .await
+        );
+        assert_ok!(repository.close().await);
+
+        std::mem::take(&mut *assert_ok!(sink.0.lock()))
+    }
+
+    #[compio::test]
+    async fn test_initial_sync_ending_before_completion_reports_overflow() {
+        let changes = process_initial_tasks([Task::NewMail(mail(1, 1))]).await;
+
+        assert_eq!(changes, [MailChange::Overflow]);
+    }
+
+    #[compio::test]
+    async fn test_initial_sync_without_mails_reports_nothing() {
+        let changes = process_initial_tasks([]).await;
+
+        assert_is_empty!(changes);
+    }
 
     fn mail(uid: u32, size: usize) -> RemoteMail {
         RemoteMail::new(

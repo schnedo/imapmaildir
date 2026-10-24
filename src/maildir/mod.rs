@@ -1,3 +1,4 @@
+mod change;
 mod local_changes;
 mod local_mail;
 mod maildir;
@@ -5,6 +6,9 @@ mod maildir_repository;
 mod state;
 mod watcher;
 
+pub use change::ChangeRecorder;
+pub use change::ChangeSink;
+pub use change::MailChange;
 pub use local_changes::FlagChange;
 pub use local_changes::LocalChanges;
 pub use local_changes::LocalFlagChangesBuilder;

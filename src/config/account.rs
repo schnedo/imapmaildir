@@ -5,7 +5,11 @@ use derive_getters::Getters;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{config::Auth, imap::ConnectionConfig, sync};
+use crate::{
+    config::{Auth, Batching, HookFailure, Hooks},
+    imap::ConnectionConfig,
+    sync,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +25,11 @@ struct AccountConfigFile {
     maildir_base_path: Option<PathBuf>,
     #[serde(default)]
     on_local_change: Vec<String>,
+    #[serde(default)]
+    on_local_change_failure: HookFailure,
+    #[serde(default, with = "humantime_serde")]
+    change_hook_throttle: Option<Duration>,
+    change_hook_max_pending: Option<NonZeroUsize>,
     store_batch_size: Option<NonZeroUsize>,
     store_batch_max_bytes: Option<NonZeroUsize>,
 }
@@ -35,7 +44,7 @@ pub struct Account {
     state_dir: PathBuf,
     #[getter(copy)]
     idle_timout: Duration,
-    on_local_change: Vec<String>,
+    hooks: Hooks,
     #[getter(copy)]
     sync: sync::Config,
 }
@@ -52,7 +61,7 @@ impl Account {
         maildir_base_path: PathBuf,
         state_dir: PathBuf,
         idle_timout: Duration,
-        on_local_change: Vec<String>,
+        hooks: Hooks,
         sync: sync::Config,
     ) -> Self {
         Self {
@@ -62,7 +71,7 @@ impl Account {
             maildir_base_path,
             state_dir,
             idle_timout,
-            on_local_change,
+            hooks,
             sync,
         }
     }
@@ -98,7 +107,15 @@ impl Account {
             maildir_base_path,
             state_dir,
             idle_timout: config.idle_timeout.unwrap_or(Duration::from_mins(29)),
-            on_local_change: config.on_local_change,
+            hooks: Hooks::new(config.on_local_change, config.on_local_change_failure, {
+                let default = Batching::default();
+                Batching::new(
+                    config.change_hook_throttle.unwrap_or(default.throttle()),
+                    config
+                        .change_hook_max_pending
+                        .map_or(default.max_pending(), NonZeroUsize::get),
+                )
+            }),
             sync: {
                 let default = sync::Config::default();
                 sync::Config::new(

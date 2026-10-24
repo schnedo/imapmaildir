@@ -17,13 +17,13 @@ use std::{
 use assertables::*;
 use compio::runtime::JoinHandle;
 use crossfire::{
-    AsyncRx,
+    AsyncRx, MTx,
     mpsc::{self, Array},
 };
 use derivative::Derivative;
 use imapmaildir::{
-    Client, ClientError, SyncError, Syncer, Tls, Transient, config as config_m, logging,
-    reconnecting,
+    ChangeRecorder, ChangeSink, Client, ClientError, MailChange, SyncError, Syncer, Tls, Transient,
+    config as config_m, logging, reconnecting,
 };
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
@@ -432,6 +432,24 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync(&self, mailbox: &str) -> () {
+        self.sync_with_changes(mailbox, None).await;
+    }
+
+    /// Syncs `mailbox` once and returns the recorded changes
+    ///
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_recording(&self, mailbox: &str) -> Vec<MailChange> {
+        let sink = Arc::new(RecordingSink::default());
+        self.sync_with_changes(mailbox, Some(ChangeRecorder::new(vec![sink.clone()])))
+            .await;
+
+        std::mem::take(&mut *assert_ok!(sink.0.lock()))
+    }
+
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_with_changes(&self, mailbox: &str, changes: Option<ChangeRecorder>) {
         let config = self.config();
         let client = Client::login(
             config.connection(),
@@ -447,7 +465,7 @@ impl MailSetup {
             config.state_dir(),
             client,
             config.sync(),
-            || {},
+            changes,
         )
         .await
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
@@ -518,7 +536,7 @@ impl MailSetup {
             config.state_dir(),
             client,
             config.sync(),
-            || {},
+            None,
         )
         .await
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
@@ -529,7 +547,7 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
-        let (call_tx, call_rx) = mpsc::bounded_async(1);
+        let (call_tx, call_rx) = mpsc::bounded_blocking_async(1);
         let config = self.config();
         let maildir_base_path = config.maildir_base_path().clone();
         let state_dir = config.state_dir().clone();
@@ -551,20 +569,32 @@ impl MailSetup {
                 client,
                 idle_timout,
                 sync_config,
-                move || {
-                    eprintln!("calling onchange");
-                    let call = call_tx.clone();
-                    compio::runtime::spawn(async move {
-                        assert_ok!(call.send(()).await);
-                    })
-                    .detach();
-                },
+                Some(ChangeRecorder::new(vec![Arc::new(NotifyingSink(call_tx))])),
             )
             .await;
             panic!("continuous sync failed: {e}");
         });
 
         (handle, call_rx)
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink(std::sync::Mutex<Vec<MailChange>>);
+
+impl ChangeSink for RecordingSink {
+    fn record(&self, change: MailChange) {
+        assert_ok!(self.0.lock()).push(change);
+    }
+}
+
+/// Notifies about recorded changes, skipping ones while a notification is pending
+struct NotifyingSink(MTx<Array<()>>);
+
+impl ChangeSink for NotifyingSink {
+    fn record(&self, change: MailChange) {
+        eprintln!("recorded {change:?}");
+        let _ = self.0.try_send(());
     }
 }
 
@@ -638,7 +668,7 @@ impl MailSetup {
                             client,
                             config.idle_timout(),
                             config.sync(),
-                            || {},
+                            None,
                         )
                         .await
                         .map_err(SessionError::Sync)
@@ -788,7 +818,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             client_base_path.clone(),
             client_base_path,
             Duration::from_secs(30),
-            Vec::new(),
+            config_m::Hooks::default(),
             config_m::SyncConfig::default(),
         )),
         tmp_dir,

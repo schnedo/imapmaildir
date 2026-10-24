@@ -7,7 +7,7 @@ use futures::{StreamExt as _, TryStreamExt as _, stream};
 use std::{
     collections::{HashMap, HashSet},
     io,
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use thiserror::Error;
@@ -15,8 +15,8 @@ use thiserror::Error;
 use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
-        FlagChange, LocalChanges, LocalFlagChangesBuilder, LocalMail, LocalMailMetadata,
-        NewLocalMailMetadata, OtherFlags,
+        ChangeRecorder, FlagChange, LocalChanges, LocalFlagChangesBuilder, LocalMail,
+        LocalMailMetadata, MailChange, NewLocalMailMetadata, OtherFlags,
         maildir::{self, Change, MaildirFile},
         state::{self, State},
     },
@@ -27,15 +27,34 @@ use super::Maildir;
 
 const MAX_CONCURRENT_FILE_OPS: usize = 64;
 
+/// Mail with updated flags, the path it got renamed from and its former flags, if recorded
+type FlagUpdate = (LocalMailMetadata, Option<PathBuf>, Option<String>);
+
 #[derive(Debug)]
 pub struct MaildirRepository {
     maildir: Maildir,
     state: State,
+    changes: Option<ChangeRecorder>,
 }
 
 impl MaildirRepository {
     fn new(maildir: Maildir, state: State) -> Self {
-        Self { maildir, state }
+        Self {
+            maildir,
+            state,
+            changes: None,
+        }
+    }
+
+    /// Reports changes of the remote state, that got applied locally, from now on
+    pub fn record_changes(&mut self, changes: Option<ChangeRecorder>) {
+        self.changes = changes;
+    }
+
+    fn record(&self, change: impl FnOnce() -> MailChange) {
+        if let Some(changes) = &self.changes {
+            changes.record(change());
+        }
     }
 
     pub async fn try_init(
@@ -181,6 +200,9 @@ impl MaildirRepository {
             .try_collect::<Vec<()>>()
             .await?;
         self.maildir.sync_cur().await?;
+        for mail in &stored {
+            self.record_downloaded(mail);
+        }
 
         for conflict in conflicts {
             if let Some(existing_mail) = self.state.get_by_id(conflict.uid()).await? {
@@ -193,6 +215,14 @@ impl MaildirRepository {
         }
 
         Ok(())
+    }
+
+    fn record_downloaded(&self, mail: &LocalMailMetadata) {
+        self.record(|| MailChange::Downloaded {
+            uid: mail.uid(),
+            path: self.maildir.get_path_of(mail),
+            flags: mail.info(),
+        });
     }
 
     pub async fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
@@ -254,21 +284,26 @@ impl MaildirRepository {
                 })
             })
             .collect();
-        for uid in self.set_flags_all(changes).await? {
+        // the local change is already part of the local files
+        for uid in self.set_flags_all(changes, false).await? {
             log::warn!("ignoring flag change of locally missing mail {uid}");
         }
 
         Ok(())
     }
 
+    /// Records the flag changes as remote changes if `remote`
     async fn set_flags_all(
         &self,
         changes: Vec<(LocalMailMetadata, BitFlags<Flag>)>,
+        remote: bool,
     ) -> Result<Vec<Uid>, Error> {
-        let results: Vec<Result<LocalMailMetadata, Uid>> = stream::iter(changes)
+        let record = remote && self.changes.is_some();
+        let results: Vec<Result<FlagUpdate, Uid>> = stream::iter(changes)
             .map(|(mut entry, new_flags)| async move {
+                let old_flags = record.then(|| entry.info());
                 match self.maildir.update_flags(&mut entry, new_flags).await {
-                    Ok(()) => Ok(Ok(entry)),
+                    Ok(from) => Ok(Ok((entry, from, old_flags))),
                     Err(maildir::Error::Missing(_)) => Ok(Err(entry.uid())),
                     Err(e) => Err(e),
                 }
@@ -277,15 +312,26 @@ impl MaildirRepository {
             .try_collect()
             .await?;
         let mut updated = Vec::with_capacity(results.len());
+        let mut renames = Vec::new();
         let mut missing = Vec::new();
         for result in results {
             match result {
-                Ok(entry) => updated.push(entry),
+                Ok((entry, from, old_flags)) => {
+                    if let Some(from) = from
+                        && let Some(old_flags) = old_flags
+                    {
+                        renames.push((entry.clone(), from, old_flags));
+                    }
+                    updated.push(entry);
+                }
                 Err(uid) => missing.push(uid),
             }
         }
         if !updated.is_empty() {
             self.state.update_all(updated).await?;
+        }
+        for (entry, from, old) in renames {
+            self.record_flags_changed(&entry, from, old);
         }
         if !missing.is_empty() {
             self.state.delete_all_by_id(missing.clone()).await?;
@@ -294,14 +340,29 @@ impl MaildirRepository {
         Ok(missing)
     }
 
+    fn record_flags_changed(&self, entry: &LocalMailMetadata, from: PathBuf, old: String) {
+        self.record(|| MailChange::FlagsChanged {
+            uid: entry.uid(),
+            from,
+            to: self.maildir.get_path_of(entry),
+            old,
+            new: entry.info(),
+        });
+    }
+
     async fn handle_flags(
         &self,
         entry: &mut LocalMailMetadata,
         new_flags: BitFlags<Flag>,
     ) -> Result<(), Error> {
+        let old_flags = entry.info();
         match self.maildir.update_flags(entry, new_flags).await {
-            Ok(()) => {
+            Ok(from) => {
                 self.state.update(entry).await?;
+                // `None` if e.g. other clients already applied the same flags locally
+                if let Some(from) = from {
+                    self.record_flags_changed(entry, from, old_flags);
+                }
 
                 Ok(())
             }
@@ -330,7 +391,7 @@ impl MaildirRepository {
                 let mut synced = mail_metadata.clone().set_uid(uid);
                 let result = self.maildir.update_uid(mail_metadata, uid).await;
                 // keeps the uploaded flags, but other clients may have changed other flags
-                if let Ok(renamed) = &result {
+                if let Ok((renamed, _)) = &result {
                     synced.set_other_flags(renamed.other_flags().clone());
                 }
 
@@ -341,9 +402,10 @@ impl MaildirRepository {
             .await;
         let mut error = None;
         let mut stored = Vec::with_capacity(results.len());
+        let mut uploaded = Vec::with_capacity(results.len());
         for (synced, result) in results {
             match result {
-                Ok(_) => {}
+                Ok((renamed, from)) => uploaded.push((renamed, from)),
                 Err(maildir::Error::Missing(path)) => {
                     log::warn!("newly synced mail {} vanished", path.display());
                 }
@@ -355,6 +417,14 @@ impl MaildirRepository {
             stored.push(synced);
         }
         self.state.insert_all(stored).await?;
+        for (renamed, from) in uploaded {
+            self.record(|| MailChange::Uploaded {
+                uid: renamed.uid(),
+                from,
+                to: self.maildir.get_path_of(&renamed),
+                flags: renamed.info(),
+            });
+        }
 
         error.map_or(Ok(()), |e| Err(e.into()))
     }
@@ -364,13 +434,23 @@ impl MaildirRepository {
         let deleted = stream::iter(entries)
             .map(|entry| async move {
                 log::info!("deleting mail {}", entry.uid());
-                self.maildir.delete(&entry).await.map(|()| entry.uid())
+                self.maildir
+                    .delete(&entry)
+                    .await
+                    .map(|path| (entry.uid(), path))
             })
             .buffered(MAX_CONCURRENT_FILE_OPS)
             .try_collect::<Vec<_>>()
             .await?;
         if !deleted.is_empty() {
-            self.state.delete_all_by_id(deleted).await?;
+            self.state
+                .delete_all_by_id(deleted.iter().map(|(uid, _)| *uid).collect())
+                .await?;
+        }
+        for (uid, path) in deleted {
+            if let Some(path) = path {
+                self.record(|| MailChange::Deleted { uid, path });
+            }
         }
 
         Ok(())
@@ -379,7 +459,7 @@ impl MaildirRepository {
     pub async fn apply_remote_updates(
         &self,
         updates: &[RemoteMailMetadata],
-    ) -> Result<(Vec<Uid>, bool), Error> {
+    ) -> Result<Vec<Uid>, Error> {
         let mut remote_flags: HashMap<Uid, BitFlags<Flag>> = updates
             .iter()
             .map(|update| (update.uid(), update.flags()))
@@ -402,13 +482,11 @@ impl MaildirRepository {
                 })
             })
             .collect();
-        let change_count = changes.len();
         let mut missing: Vec<Uid> = remote_flags.into_keys().collect();
-        let gone = self.set_flags_all(changes).await?;
-        let has_changes = change_count > gone.len();
+        let gone = self.set_flags_all(changes, true).await?;
         missing.extend(gone);
 
-        Ok((missing, has_changes))
+        Ok(missing)
     }
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
@@ -476,6 +554,7 @@ impl MaildirRepository {
         for entry in missing {
             if self.maildir.recover_from_tmp(&entry).await? {
                 log::warn!("recovered mail {} from tmp", entry.uid());
+                self.record_downloaded(&entry);
             } else {
                 deletions.push(entry.uid());
             }
@@ -722,7 +801,7 @@ impl From<state::Error> for Error {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, str::FromStr};
+    use std::{fs, os::unix::fs::PermissionsExt, str::FromStr, sync::Arc};
 
     use assertables::*;
     use rstest::*;
@@ -730,7 +809,7 @@ mod tests {
 
     use compio::{BufResult, io::AsyncReadAtExt as _};
 
-    use crate::imap::RemoteContent;
+    use crate::{imap::RemoteContent, maildir::ChangeSink};
 
     use super::*;
 
@@ -756,6 +835,28 @@ mod tests {
         assert_eq!(content.len(), mail.size());
 
         content
+    }
+
+    #[derive(Default)]
+    struct RecordingSink(std::sync::Mutex<Vec<MailChange>>);
+
+    impl RecordingSink {
+        fn take(&self) -> Vec<MailChange> {
+            std::mem::take(&mut *assert_ok!(self.0.lock()))
+        }
+    }
+
+    impl ChangeSink for RecordingSink {
+        fn record(&self, change: MailChange) {
+            assert_ok!(self.0.lock()).push(change);
+        }
+    }
+
+    fn record_changes(repo: &mut MaildirRepository) -> Arc<RecordingSink> {
+        let sink = Arc::new(RecordingSink::default());
+        repo.record_changes(Some(ChangeRecorder::new(vec![sink.clone()])));
+
+        sink
     }
 
     #[fixture]
@@ -1584,19 +1685,42 @@ mod tests {
     #[rstest]
     #[compio::test]
     #[awt]
-    async fn test_apply_remote_updates_reports_changes(#[future] repo_with_mail: RepoWithMail) {
-        let RepoWithMail { repo, mail } = repo_with_mail;
+    async fn test_apply_remote_updates_records_changes(#[future] repo_with_mail: RepoWithMail) {
+        let RepoWithMail { mut repo, mail } = repo_with_mail;
+        let changes = record_changes(&mut repo.repo);
         let unchanged = mail.metadata().clone();
         let changed =
             RemoteMailMetadata::new(unchanged.uid(), Flag::Flagged.into(), unchanged.modseq());
 
-        let (missing, has_changes) = assert_ok!(repo.repo.apply_remote_updates(&[unchanged]).await);
+        let missing = assert_ok!(
+            repo.repo
+                .apply_remote_updates(std::slice::from_ref(&unchanged))
+                .await
+        );
         assert_is_empty!(missing);
-        assert!(!has_changes);
+        assert_is_empty!(changes.take());
 
-        let (missing, has_changes) = assert_ok!(repo.repo.apply_remote_updates(&[changed]).await);
+        let missing = assert_ok!(repo.repo.apply_remote_updates(&[changed]).await);
         assert_is_empty!(missing);
-        assert!(has_changes);
+        let recorded = changes.take();
+        let [
+            MailChange::FlagsChanged {
+                uid,
+                from,
+                to,
+                old,
+                new,
+            },
+        ] = recorded.as_slice()
+        else {
+            panic!("expected single flag change, got {recorded:?}");
+        };
+        assert_eq!(*uid, unchanged.uid());
+        assert_eq!(old, "S");
+        assert_eq!(new, "F");
+        assert!(!from.exists());
+        assert!(to.exists());
+        assert!(to.is_absolute());
     }
 
     #[rstest]
@@ -1627,5 +1751,161 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 3);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_store_batch_records_downloads(
+        #[future] mut repo: TestMaildirRepository,
+        mail: RemoteMail,
+    ) {
+        let changes = record_changes(&mut repo.repo);
+
+        assert_ok!(repo.repo.store_batch(std::slice::from_ref(&mail)).await);
+
+        let recorded = changes.take();
+        let [MailChange::Downloaded { uid, path, flags }] = recorded.as_slice() else {
+            panic!("expected single download, got {recorded:?}");
+        };
+        assert_eq!(*uid, mail.metadata().uid());
+        assert_eq!(flags, "S");
+        assert!(path.exists());
+        assert!(path.starts_with(repo.mail_dir.path().join("cur")));
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_update_flags_records_flag_change(#[future] repo_with_mail: RepoWithMail) {
+        let RepoWithMail { mut repo, mail } = repo_with_mail;
+        let changes = record_changes(&mut repo.repo);
+        let metadata = mail.metadata();
+        let metadata = RemoteMailMetadata::new(
+            metadata.uid(),
+            Flag::Seen | Flag::Answered,
+            metadata.modseq(),
+        );
+
+        assert_ok!(repo.repo.update_flags(&metadata).await);
+
+        let recorded = changes.take();
+        let [MailChange::FlagsChanged { old, new, to, .. }] = recorded.as_slice() else {
+            panic!("expected single flag change, got {recorded:?}");
+        };
+        assert_eq!(old, "S");
+        assert_eq!(new, "RS");
+        assert!(to.exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_update_flags_onto_identically_renamed_mail_records_nothing(
+        #[future] repo_with_mail: RepoWithMail,
+    ) {
+        let RepoWithMail { mut repo, mail } = repo_with_mail;
+        let changes = record_changes(&mut repo.repo);
+        let metadata = mail.metadata();
+        let entry = assert_some!(assert_ok!(repo.repo.state.get_by_id(metadata.uid()).await));
+        let mut renamed = entry.clone();
+        renamed.set_flags(Flag::Seen | Flag::Flagged);
+        // another client already applied the remote change
+        assert_ok!(fs::rename(
+            repo.repo.maildir.get_path_of(&entry),
+            repo.repo.maildir.get_path_of(&renamed)
+        ));
+        let metadata = RemoteMailMetadata::new(metadata.uid(), renamed.flags(), metadata.modseq());
+
+        assert_ok!(repo.repo.update_flags(&metadata).await);
+
+        assert_is_empty!(changes.take());
+        assert!(repo.repo.maildir.get_path_of(&renamed).exists());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_apply_flag_changes_records_nothing(#[future] repo_with_mail: RepoWithMail) {
+        let RepoWithMail { mut repo, mail } = repo_with_mail;
+        let changes = record_changes(&mut repo.repo);
+
+        assert_ok!(
+            repo.repo
+                .apply_flag_changes(&[mail.metadata().uid()], added(Flag::Flagged))
+                .await
+        );
+
+        assert_is_empty!(changes.take());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_delete_records_deletion(#[future] repo_with_mail: RepoWithMail) {
+        let RepoWithMail { mut repo, mail } = repo_with_mail;
+        let changes = record_changes(&mut repo.repo);
+        let uid = mail.metadata().uid();
+
+        assert_ok!(repo.repo.delete_all(std::iter::once(uid)).await);
+
+        let recorded = changes.take();
+        let [MailChange::Deleted { uid: deleted, path }] = recorded.as_slice() else {
+            panic!("expected single deletion, got {recorded:?}");
+        };
+        assert_eq!(*deleted, uid);
+        assert!(!path.exists());
+        assert!(path.starts_with(repo.mail_dir.path().join("cur")));
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_delete_of_vanished_mail_records_nothing(#[future] repo_with_mail: RepoWithMail) {
+        let RepoWithMail { mut repo, mail } = repo_with_mail;
+        let changes = record_changes(&mut repo.repo);
+        let cur = repo.mail_dir.path().join("cur");
+        for entry in assert_ok!(fs::read_dir(&cur)) {
+            assert_ok!(fs::remove_file(assert_ok!(entry).path()));
+        }
+
+        assert_ok!(
+            repo.repo
+                .delete_all(std::iter::once(mail.metadata().uid()))
+                .await
+        );
+
+        assert_is_empty!(changes.take());
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_add_synced_records_upload(#[future] mut repo: TestMaildirRepository) {
+        let changes = record_changes(&mut repo.repo);
+        let filename = "foo:2,FS";
+        let metadata = assert_ok!(NewLocalMailMetadata::from_str(filename));
+        let local = repo.mail_dir.path().join("cur").join(filename);
+        assert_ok!(fs::write(&local, "1"));
+        let uid = Uid::MAX;
+
+        assert_ok!(repo.repo.add_synced_all(vec![(metadata, uid)]).await);
+
+        let recorded = changes.take();
+        let [
+            MailChange::Uploaded {
+                uid: uploaded,
+                from,
+                to,
+                flags,
+            },
+        ] = recorded.as_slice()
+        else {
+            panic!("expected single upload, got {recorded:?}");
+        };
+        assert_eq!(*uploaded, uid);
+        assert_eq!(from, &local);
+        assert!(to.exists());
+        assert_eq!(flags, "FS");
     }
 }

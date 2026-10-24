@@ -48,6 +48,14 @@ pub trait MaildirFile {
 
         filename
     }
+    /// All flags as written in the file name, e.g. `FS`
+    fn info(&self) -> String {
+        let filename = self.filename();
+        filename
+            .rsplit_once(":2,")
+            .map(|(_, info)| info.to_string())
+            .unwrap_or_default()
+    }
     fn additional_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
         let mut additional_flags = self.flags();
         additional_flags.remove(other.flags());
@@ -117,6 +125,8 @@ impl Maildir {
     }
 
     fn unchecked(mail_dir: &Path) -> Self {
+        // reported paths of changed mails must not depend on the working directory
+        let mail_dir = std::path::absolute(mail_dir).unwrap_or_else(|_| mail_dir.to_path_buf());
         let new = mail_dir.join("new");
         let cur = mail_dir.join("cur");
         let tmp = mail_dir.join("tmp");
@@ -431,7 +441,7 @@ impl Maildir {
     ) -> Result<M, Error> {
         loop {
             match Self::rename(watch, current, cur.join(new.filename())).await {
-                Ok(()) => return Ok(new),
+                Ok(_) => return Ok(new),
                 Err(Error::Existing { from, .. }) => {
                     current = from;
                     new.prepend_to_fileprefix("1");
@@ -451,7 +461,7 @@ impl Maildir {
         Ok((file, size))
     }
 
-    fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
+    pub fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
         self.cur.join(mail.filename())
     }
 
@@ -512,14 +522,15 @@ impl Maildir {
         result
     }
 
-    async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<(), Error> {
+    /// Returns `false`, if `current` was already renamed to `new`, e.g. before a crash
+    async fn rename(watch: Option<&Watch>, current: PathBuf, new: PathBuf) -> Result<bool, Error> {
         log::trace!("renaming {:} to {:}", current.display(), new.display());
         let rename = async {
             rustix::fs::renameat_with(CWD, &current, CWD, &new, RenameFlags::NOREPLACE)
                 .map_err(io::Error::from)
         };
         match Self::ignoring(watch, &new, rename).await {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 if Self::is_content_identical(current.as_path(), new.as_path()).await? {
                     log::warn!(
@@ -529,6 +540,7 @@ impl Maildir {
                     );
                     Self::ignoring(watch, &current, compio::fs::remove_file(&current))
                         .await
+                        .map(|()| true)
                         .map_err(Error::from)
                 } else {
                     Err(Error::Existing {
@@ -545,7 +557,7 @@ impl Maildir {
                         new.to_string_lossy()
                     );
 
-                    Ok(())
+                    Ok(false)
                 } else {
                     Err(Error::Missing(current))
                 }
@@ -566,18 +578,19 @@ impl Maildir {
         Ok(current_content == new_content)
     }
 
+    /// Returns the renamed mail together with the path it got renamed from
     pub async fn update_uid(
         &self,
         entry: impl MaildirFile,
         new_uid: Uid,
-    ) -> Result<LocalMailMetadata, Error> {
+    ) -> Result<(LocalMailMetadata, PathBuf), Error> {
         let current_mail = self.get_path_of(&entry);
         let stem = entry.stem();
         let entry = entry.set_uid(new_uid);
         let new_mail = self.get_path_of(&entry);
         let watch = self.watch.lock().await.clone();
-        match Self::rename(watch.as_ref(), current_mail, new_mail).await {
-            Ok(()) => Ok(entry),
+        match Self::rename(watch.as_ref(), current_mail.clone(), new_mail).await {
+            Ok(_) => Ok((entry, current_mail)),
             Err(Error::Missing(missing)) => {
                 // other clients may have changed the flags meanwhile, which are kept
                 let Some(current_mail) = self.locate(stem).await? else {
@@ -592,9 +605,9 @@ impl Maildir {
                 };
                 let entry = renamed.set_uid(new_uid);
                 let new_mail = self.get_path_of(&entry);
-                Self::rename(watch.as_ref(), current_mail, new_mail).await?;
+                Self::rename(watch.as_ref(), current_mail.clone(), new_mail).await?;
 
-                Ok(entry)
+                Ok((entry, current_mail))
             }
             Err(e) => Err(e),
         }
@@ -612,11 +625,12 @@ impl Maildir {
         Ok(new_metadata)
     }
 
+    /// Returns the path the mail got renamed from or `None`, if it already had the new name
     pub async fn update_flags(
         &self,
         entry: &mut impl MaildirFile,
         new_flags: BitFlags<Flag>,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<PathBuf>, Error> {
         log::debug!("updating mail {} flags: {}", entry.filename(), new_flags);
         let current_mail = self.get_path_of(entry);
         let stem = entry.stem();
@@ -624,7 +638,8 @@ impl Maildir {
         let new_mail = self.get_path_of(entry);
 
         let watch = self.watch.lock().await.clone();
-        match Self::rename(watch.as_ref(), current_mail, new_mail.clone()).await {
+        match Self::rename(watch.as_ref(), current_mail.clone(), new_mail.clone()).await {
+            Ok(renamed) => Ok(renamed.then_some(current_mail)),
             Err(Error::Missing(missing)) => {
                 let Some(current_mail) = self.locate(stem).await? else {
                     return Err(Error::Missing(missing));
@@ -638,13 +653,16 @@ impl Maildir {
                     entry.set_other_flags(located.other_flags().clone());
                 }
                 let new_mail = self.get_path_of(entry);
-                Self::rename(watch.as_ref(), current_mail, new_mail).await
+                let renamed = Self::rename(watch.as_ref(), current_mail.clone(), new_mail).await?;
+
+                Ok(renamed.then_some(current_mail))
             }
-            result => result,
+            Err(e) => Err(e),
         }
     }
 
-    pub async fn delete(&self, entry: &impl MaildirFile) -> io::Result<()> {
+    /// Returns the path of the deleted file or `None`, if it was already gone
+    pub async fn delete(&self, entry: &impl MaildirFile) -> io::Result<Option<PathBuf>> {
         let watch = self.watch.lock().await.clone();
         let mut file_path = self.get_path_of(entry);
         loop {
@@ -661,11 +679,11 @@ impl Maildir {
                         Some(current) if current != file_path => file_path = current,
                         _ => {
                             log::trace!("{} already gone", file_path.display());
-                            return Ok(());
+                            return Ok(None);
                         }
                     }
                 }
-                result => return result,
+                result => return result.map(|()| Some(file_path)),
             }
         }
     }
@@ -1458,7 +1476,7 @@ mod tests {
         assert_ok!(fs::write(maildir.cur.join(entry.filename()), &content));
 
         let expected_uid = assert_ok!(Uid::try_from(&3));
-        let entry = assert_ok!(maildir.update_uid(entry, expected_uid).await);
+        let (entry, _) = assert_ok!(maildir.update_uid(entry, expected_uid).await);
 
         let result_uid = entry.uid();
         assert_eq!(result_uid, expected_uid);
@@ -1479,7 +1497,7 @@ mod tests {
         assert_ok!(fs::write(maildir.get_path_of(&renamed), &content));
 
         let uid = assert_ok!(Uid::try_from(&3));
-        let result = assert_ok!(maildir.update_uid(entry, uid).await);
+        let (result, _) = assert_ok!(maildir.update_uid(entry, uid).await);
 
         assert_eq!(result, renamed.set_uid(uid));
         assert!(maildir.get_path_of(&result).exists());

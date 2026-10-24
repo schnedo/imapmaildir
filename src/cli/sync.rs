@@ -1,12 +1,14 @@
 use std::{
     convert::Infallible,
+    ffi::OsString,
     panic, process,
     sync::Arc,
     thread::{self, JoinHandle},
 };
 
 use imapmaildir::{
-    Client, IdleTimeout, Syncer, Tls, config::Account, on_local_change, reconnecting,
+    ChangeRecorder, Client, IdleTimeout, Syncer, Tls, batched_hook, config::Account,
+    failure_handler, reconnecting,
 };
 
 use crate::cli::Error;
@@ -17,6 +19,27 @@ pub fn exit_on_panic() {
         default_hook(info);
         process::exit(18);
     }));
+}
+
+/// Sets up the configured hook for a sync session of `mailbox`, if any. Returns the task of the
+/// `on_local_change` hook, which finishes after the recorder got dropped.
+fn change_recorder(
+    config: &Account,
+    mailbox: &str,
+) -> Option<(ChangeRecorder, compio::runtime::JoinHandle<()>)> {
+    let hooks = config.hooks();
+    if hooks.on_local_change().is_empty() {
+        return None;
+    }
+    let cmd: Vec<OsString> = hooks.on_local_change().iter().map(OsString::from).collect();
+    let (sink, task) = batched_hook(
+        &cmd,
+        mailbox,
+        hooks.batching(),
+        failure_handler("on_local_change", hooks.on_local_change_failure()),
+    );
+
+    Some((ChangeRecorder::new(vec![sink]), task))
 }
 
 pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) -> Result<(), Error> {
@@ -43,23 +66,28 @@ fn sync_continuously(
         let client = Client::login(config.connection(), tls, config.auth())
             .await
             .map_err(Error::Login)?;
-        let (on_change, _hook_task) = on_local_change(config.on_local_change());
-        Syncer::sync_continuously(
+        let (changes, hook_task) = change_recorder(config, mailbox).unzip();
+        let Err(cause) = Syncer::sync_continuously(
             mailbox,
             config.maildir_base_path(),
             config.state_dir(),
             client,
             idle_timeout.get(),
             config.sync(),
-            on_change,
+            changes,
         )
-        .await
-        .inspect_err(|cause| {
-            if let Some(idled) = cause.idle_terminated() {
-                idle_timeout.on_terminated(idled);
-            }
-        })
-        .map_err(|cause| Error::Sync {
+        .await;
+        if let Some(idled) = cause.idle_terminated() {
+            idle_timeout.on_terminated(idled);
+        }
+        // the session's changes must not get lost with its runtime
+        if let Some(hook_task) = hook_task
+            && let Err(e) = hook_task.await
+        {
+            log::warn!("on_local_change hook task failed: {e:?}");
+        }
+
+        Err(Error::Sync {
             mailbox: mailbox.to_string(),
             cause,
         })
@@ -73,18 +101,20 @@ fn sync_once(config: &Account, tls: &Tls, mailbox: &str) -> Result<(), Error> {
         let client = Client::login(config.connection(), tls, config.auth())
             .await
             .map_err(Error::Login)?;
-        let (on_change, hook_task) = on_local_change(config.on_local_change());
+        let (changes, hook_task) = change_recorder(config, mailbox).unzip();
         let result = Syncer::sync_once(
             mailbox,
             config.maildir_base_path(),
             config.state_dir(),
             client,
             config.sync(),
-            on_change,
+            changes,
         )
         .await;
-        if let Err(e) = hook_task.await {
-            log::warn!("on_change hook task failed: {e:?}");
+        if let Some(hook_task) = hook_task
+            && let Err(e) = hook_task.await
+        {
+            log::warn!("on_local_change hook task failed: {e:?}");
         }
 
         result.map_err(|cause| Error::Sync {

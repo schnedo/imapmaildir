@@ -9,7 +9,9 @@ mod syncer;
 mod task;
 
 pub use byte_budget::ByteBudget;
-pub use change_hook::on_local_change;
+pub use change_hook::{
+    Batching, FailureHandler, HookError, HookFailure, batched_hook, failure_handler,
+};
 pub use config::Config;
 pub use error::Error;
 pub use idle_timeout::IdleTimeout;
