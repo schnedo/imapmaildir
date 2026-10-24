@@ -10,6 +10,7 @@ pub use crate::imap::ClientError;
 pub use crate::imap::Tls;
 pub use crate::imap::TransportError;
 pub use crate::sync::Error as SyncError;
+pub use crate::sync::IdleTimeout;
 pub use crate::sync::Syncer;
 pub use crate::sync::Transient;
 pub use crate::sync::reconnecting;

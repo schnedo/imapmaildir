@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::{
@@ -47,6 +49,15 @@ impl Error {
         match self {
             Self::Imap(e) => e.is_transient(),
             _ => false,
+        }
+    }
+
+    /// How long IDLE lasted before the server ended it
+    #[must_use]
+    pub fn idle_terminated(&self) -> Option<Duration> {
+        match self {
+            Self::Imap(ClientError::IdleTerminated(idled)) => Some(*idled),
+            _ => None,
         }
     }
 }

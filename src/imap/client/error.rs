@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 use crate::{
@@ -58,6 +60,8 @@ pub enum Error {
     ImplausibleUidList(u32),
     #[error("Server rejected IDLE")]
     IdleRejected,
+    #[error("Server ended IDLE after {} seconds", .0.as_secs())]
+    IdleTerminated(Duration),
     #[error("Idle stop channel closed")]
     IdleStopClosed,
     #[error("Task processing stopped")]
@@ -72,7 +76,7 @@ impl Error {
         match self {
             Self::Transport(e) => e.is_transient(),
             Self::Auth(e) => e.is_transient(),
-            Self::ConnectionRejected(_) => true,
+            Self::ConnectionRejected(_) | Self::IdleTerminated(_) => true,
             // retrying wrong credentials could lock the account, and servers do not always
             // mark them with a response code
             Self::LoginRejected(information) => information.as_deref().is_some_and(|info| {
@@ -165,5 +169,24 @@ mod tests {
     fn test_protocol_errors_are_permanent() {
         assert!(!Error::MissingCapability(Capability::Condstore).is_transient());
         assert!(!Error::ImplausibleUidList(3).is_transient());
+    }
+
+    #[test]
+    fn test_idle_terminated_by_server_is_transient() {
+        assert!(Error::IdleTerminated(Duration::from_mins(10)).is_transient());
+    }
+
+    #[test]
+    fn test_imap_proto_parses_untagged_bye_as_data() {
+        let (_, response) = imap_proto::Response::parse(b"* BYE Autologout; idle for too long\r\n")
+            .expect("response should parse");
+
+        assert!(matches!(
+            response,
+            imap_proto::Response::Data {
+                status: imap_proto::Status::Bye,
+                ..
+            }
+        ));
     }
 }
