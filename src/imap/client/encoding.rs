@@ -138,6 +138,60 @@ pub fn mailbox(name: &str) -> String {
         .expect("modified utf-7 encoded mailbox names should be quotable")
 }
 
+/// Decodes a modified UTF-7 mailbox name, falling back to the raw name if it is invalid
+pub fn decode_mailbox(name: &str) -> String {
+    decode_modified_utf7(name).unwrap_or_else(|| {
+        log::warn!("cannot decode mailbox name {name} as modified utf-7");
+        name.to_string()
+    })
+}
+
+fn decode_modified_utf7(encoded: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(encoded.len());
+    let mut rest = encoded;
+    while let Some(start) = rest.find('&') {
+        decoded.push_str(&rest[..start]);
+        let shifted = &rest[start + 1..];
+        let end = shifted.find('-')?;
+        if end == 0 {
+            decoded.push('&');
+        } else {
+            decoded.push_str(&decode_modified_base64(&shifted[..end])?);
+        }
+        rest = &shifted[end + 1..];
+    }
+    decoded.push_str(rest);
+
+    Some(decoded)
+}
+
+fn decode_modified_base64(encoded: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(encoded.len() * 3 / 4);
+    let mut bits = 0u32;
+    let mut bit_count = 0;
+    for byte in encoded.bytes() {
+        let (_, index) = MODIFIED_BASE64
+            .iter()
+            .zip(0u32..)
+            .find(|(c, _)| **c == byte)?;
+        bits = ((bits << 6) | index) & 0x3fff;
+        bit_count += 6;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            bytes.push((bits >> bit_count).to_le_bytes()[0]);
+        }
+    }
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
+        .chunks(2)
+        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        .collect();
+
+    String::from_utf16(&units).ok()
+}
+
 fn encode_modified_utf7(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     let mut pending = Vec::new();
@@ -274,5 +328,28 @@ mod tests {
     #[case("~peter/mail/台北/日本語", "~peter/mail/&U,BTFw-/&ZeVnLIqe-")]
     fn test_encode_modified_utf7(#[case] name: &str, #[case] expected: &str) {
         assert_eq!(encode_modified_utf7(name), expected);
+    }
+
+    #[rstest]
+    #[case("INBOX", "INBOX")]
+    #[case("A&-B", "A&B")]
+    #[case("Entw&APw-rfe", "Entwürfe")]
+    #[case("&ZeVnLIqe-", "日本語")]
+    #[case("~peter/mail/&U,BTFw-/&ZeVnLIqe-", "~peter/mail/台北/日本語")]
+    fn test_decode_modified_utf7(#[case] encoded: &str, #[case] expected: &str) {
+        assert_eq!(decode_modified_utf7(encoded).as_deref(), Some(expected));
+    }
+
+    #[rstest]
+    #[case("&ZeVnLIqe")]
+    #[case("&!-")]
+    #[case("&AP-")]
+    fn test_decode_modified_utf7_rejects_invalid(#[case] encoded: &str) {
+        assert_eq!(decode_modified_utf7(encoded), None);
+    }
+
+    #[test]
+    fn test_decode_mailbox_falls_back_to_raw_name() {
+        assert_eq!(decode_mailbox("&ZeVnLIqe"), "&ZeVnLIqe");
     }
 }

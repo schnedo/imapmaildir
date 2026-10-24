@@ -105,6 +105,16 @@ impl AuthenticatedClient {
         Ok(())
     }
 
+    /// Lists the names of all selectable mailboxes
+    pub async fn list(&mut self) -> Result<Vec<String>, Error> {
+        let command = "LIST \"\" \"*\"";
+        log::debug!("{command}");
+        let mut handler = ListHandler::default();
+        self.connection.send(command.into(), &mut handler).await?;
+
+        Ok(handler.mailboxes)
+    }
+
     async fn do_select(
         mut self,
         task_tx: MAsyncTx<Array<Task>>,
@@ -179,6 +189,50 @@ impl EnabledHandler {
                     imap_proto::Capability::Atom(_) => self.enabled.insert(capability),
                     _ => log::warn!("unexpected enabled capability {capability:?}"),
                 }
+            }
+            None
+        } else {
+            Some(response)
+        }
+    }
+}
+
+/// Collects names of selectable mailboxes of LIST responses
+#[derive(Default)]
+struct ListHandler {
+    mailboxes: Vec<String>,
+}
+
+impl ResponseHandler for ListHandler {
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(Ok(self.collect(response)))
+    }
+}
+
+impl ListHandler {
+    fn collect(&mut self, response: ResponseData) -> Option<ResponseData> {
+        if let imap_proto::Response::MailboxData(imap_proto::MailboxDatum::List(list)) =
+            response.parsed()
+        {
+            let selectable = !list
+                .name_attributes
+                .iter()
+                .any(|attribute| match attribute {
+                    imap_proto::NameAttribute::NoSelect => true,
+                    imap_proto::NameAttribute::Extension(extension) => {
+                        extension.eq_ignore_ascii_case("\\NonExistent")
+                    }
+                    _ => false,
+                });
+            if selectable {
+                self.mailboxes.push(encoding::decode_mailbox(&list.name));
+            } else {
+                log::trace!("skipping unselectable mailbox {}", list.name);
             }
             None
         } else {
@@ -356,6 +410,33 @@ mod tests {
         assert_none!(handler.collect(ResponseData::from_raw(b"* ENABLED QRESYNC\r\n")));
 
         assert!(handler.enabled.contains(Capability::QResync));
+    }
+
+    #[test]
+    fn test_list_handler_collects_selectable_mailboxes() {
+        let mut handler = ListHandler::default();
+
+        assert_none!(handler.collect(ResponseData::from_raw(
+            b"* LIST (\\HasNoChildren) \"/\" INBOX\r\n"
+        )));
+        assert_none!(handler.collect(ResponseData::from_raw(
+            b"* LIST (\\Noselect \\HasChildren) \"/\" Archive\r\n"
+        )));
+        assert_none!(handler.collect(ResponseData::from_raw(
+            b"* LIST (\\NonExistent) \"/\" Gone\r\n"
+        )));
+        assert_none!(handler.collect(ResponseData::from_raw(
+            b"* LIST (\\HasNoChildren) \"/\" Archive/Entw&APw-rfe\r\n"
+        )));
+
+        assert_eq!(handler.mailboxes, vec!["INBOX", "Archive/Entwürfe"]);
+    }
+
+    #[test]
+    fn test_list_handler_passes_other_responses() {
+        let mut handler = ListHandler::default();
+
+        assert_some!(handler.collect(ResponseData::from_raw(b"* ENABLED QRESYNC\r\n")));
     }
 
     #[test]
