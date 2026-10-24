@@ -551,17 +551,17 @@ impl SelectedClient {
         let handler = &mut self.mailbox_handler;
 
         let tag = connection.write_command(command.into()).await?;
-        loop {
+        let started = loop {
             let response = connection.next_response().await?;
             match response.parsed() {
                 imap_proto::Response::Continue(_) => {
                     log::trace!("idling for up to {} seconds", timeout.as_secs());
-                    break;
+                    break Instant::now();
                 }
                 imap_proto::Response::Done { .. } => return Err(Error::IdleRejected),
                 _ => handler.handle_or_log(response).await?,
             }
-        }
+        };
 
         let stop_reason = loop {
             if handler.needs_remote_sync() {
@@ -579,7 +579,17 @@ impl SelectedClient {
                 Ok(IdleEvent::Stop(Some(reason))) => break reason,
                 Ok(IdleEvent::Stop(None)) => return Err(Error::IdleStopClosed),
                 Ok(IdleEvent::Response(response)) => {
-                    handler.handle_or_log(response?).await?;
+                    let response = response?;
+                    if let imap_proto::Response::Data {
+                        status: imap_proto::Status::Bye,
+                        outcome,
+                        ..
+                    } = response.parsed()
+                    {
+                        log::debug!("BYE during IDLE: {outcome:?}");
+                        return Err(Error::IdleTerminated(started.elapsed()));
+                    }
+                    handler.handle_or_log(response).await?;
                 }
                 Err(_) => {
                     log::debug!("idle timed out");

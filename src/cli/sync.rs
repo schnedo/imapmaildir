@@ -5,7 +5,9 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use imapmaildir::{Client, Syncer, Tls, config::Account, on_local_change, reconnecting};
+use imapmaildir::{
+    Client, IdleTimeout, Syncer, Tls, config::Account, on_local_change, reconnecting,
+};
 
 use crate::cli::Error;
 
@@ -19,8 +21,9 @@ pub fn exit_on_panic() {
 
 pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) -> Result<(), Error> {
     if idle {
+        let idle_timeout = IdleTimeout::new(config.idle_timout());
         Err(reconnecting(mailbox, || {
-            sync_continuously(config, tls, mailbox)
+            sync_continuously(config, tls, mailbox, &idle_timeout)
         }))
     } else {
         sync_once(config, tls, mailbox)
@@ -28,7 +31,12 @@ pub fn sync_mailbox(config: &Account, tls: &Tls, mailbox: &str, idle: bool) -> R
 }
 
 /// Runs a single session on a new runtime, which cancels all its tasks when dropped
-fn sync_continuously(config: &Account, tls: &Tls, mailbox: &str) -> Result<Infallible, Error> {
+fn sync_continuously(
+    config: &Account,
+    tls: &Tls,
+    mailbox: &str,
+    idle_timeout: &IdleTimeout,
+) -> Result<Infallible, Error> {
     let rt = compio::runtime::Runtime::new().map_err(Error::Runtime)?;
 
     rt.block_on(async {
@@ -41,11 +49,16 @@ fn sync_continuously(config: &Account, tls: &Tls, mailbox: &str) -> Result<Infal
             config.maildir_base_path(),
             config.state_dir(),
             client,
-            config.idle_timout(),
+            idle_timeout.get(),
             config.sync(),
             on_change,
         )
         .await
+        .inspect_err(|cause| {
+            if let Some(idled) = cause.idle_terminated() {
+                idle_timeout.on_terminated(idled);
+            }
+        })
         .map_err(|cause| Error::Sync {
             mailbox: mailbox.to_string(),
             cause,
