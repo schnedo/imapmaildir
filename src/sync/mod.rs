@@ -5,6 +5,7 @@ mod error;
 mod idle_timeout;
 mod reconnect;
 mod repository_handle;
+mod shutdown;
 mod syncer;
 mod task;
 
@@ -17,5 +18,6 @@ pub use error::Error;
 pub use idle_timeout::IdleTimeout;
 pub use reconnect::{Transient, reconnecting};
 pub use repository_handle::RepositoryHandle;
+pub use shutdown::Shutdown;
 pub use syncer::Syncer;
 pub use task::Task;

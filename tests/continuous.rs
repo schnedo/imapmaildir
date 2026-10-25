@@ -432,3 +432,41 @@ async fn test_sync_continues_after_server_disconnect(#[future] mail_setup: MailS
     );
     drop(sync);
 }
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_shutdown_finishes_syncing_detected_local_changes(#[future] mail_setup: MailSetup) {
+    let client_mail = mail_setup.client_mail();
+    let client_mailbox = client_mail.mailbox("INBOX");
+    let server_mailbox = mail_setup.server_mail().mailbox("INBOX");
+    let sync = mail_setup.sync_reconnecting("INBOX");
+    compio::time::sleep(Duration::from_secs(1)).await;
+
+    let maildir = mail_setup.config().maildir_base_path().join("INBOX");
+    let content = b"before shutdown".as_slice();
+    assert_ok!(fs::write(maildir.join("tmp/shutdown"), content));
+    assert_ok!(fs::rename(
+        maildir.join("tmp/shutdown"),
+        maildir.join("cur/shutdown:2,S")
+    ));
+    // lets the watcher report the new mail
+    compio::time::sleep(Duration::from_secs(1)).await;
+    sync.shut_down();
+
+    assert!(
+        server_mailbox
+            .mails()
+            .await
+            .iter()
+            .any(|mail| mail.content() == content)
+    );
+    // client mails can only be listed once the new local mail got its uid
+    assert!(
+        client_mailbox
+            .mails()
+            .await
+            .iter()
+            .any(|mail| mail.content() == content)
+    );
+}

@@ -32,6 +32,8 @@ struct AccountConfigFile {
     change_hook_max_pending: Option<NonZeroUsize>,
     store_batch_size: Option<NonZeroUsize>,
     store_batch_max_bytes: Option<NonZeroUsize>,
+    #[serde(default, with = "humantime_serde")]
+    shutdown_timeout: Option<Duration>,
 }
 
 // todo: why 2 structs? custom logic should be configurable in serde/derive_getters
@@ -125,6 +127,9 @@ impl Account {
                     config
                         .store_batch_max_bytes
                         .map_or(default.store_batch_max_bytes(), NonZeroUsize::get),
+                    config
+                        .shutdown_timeout
+                        .unwrap_or(default.shutdown_timeout()),
                 )
             },
         })

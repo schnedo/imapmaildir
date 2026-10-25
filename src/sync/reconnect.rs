@@ -1,11 +1,12 @@
 use std::{
-    convert::Infallible,
     fmt::Display,
-    thread,
     time::{Duration, Instant},
 };
 
-use crate::{imap::ClientError, sync::Error};
+use crate::{
+    imap::ClientError,
+    sync::{Error, Shutdown},
+};
 
 const MIN_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_mins(5);
@@ -27,26 +28,39 @@ impl Transient for ClientError {
     }
 }
 
-/// Runs `session` again after transient errors with exponential backoff. Returns the first
-/// permanent error.
+/// Runs `session` again after transient errors with exponential backoff, until it stops after
+/// `shutdown` got triggered. Returns the first permanent error.
 ///
 /// `session` should set up its own runtime, so that tasks of failed sessions do not linger.
+///
+/// # Errors
+/// The first permanent error of `session`
 pub fn reconnecting<E: Transient>(
     name: &str,
-    mut session: impl FnMut() -> Result<Infallible, E>,
-) -> E {
+    shutdown: &Shutdown,
+    mut session: impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
     let mut delay = None;
-    loop {
+    while !shutdown.is_triggered() {
         let started = Instant::now();
-        let Err(e) = session();
-        if !e.is_transient() {
-            return e;
+        let e = match session() {
+            Ok(()) => break,
+            Err(e) if !e.is_transient() => return Err(e),
+            Err(e) => e,
+        };
+        if shutdown.is_triggered() {
+            log::warn!("{name}: {e}. Not reconnecting while shutting down");
+            break;
         }
         let next = next_delay(delay, started.elapsed());
         log::warn!("{name}: {e}. Reconnecting in {next:?}");
-        thread::sleep(next);
+        if shutdown.sleep(next) {
+            break;
+        }
         delay = Some(next);
     }
+
+    Ok(())
 }
 
 /// Doubles the previous delay up to [`MAX_DELAY`]. Sessions that lasted longer than
@@ -105,12 +119,12 @@ mod tests {
     fn test_reconnecting_returns_permanent_error() {
         let calls = Cell::new(0);
 
-        let error = reconnecting("test", || {
+        let error = reconnecting("test", &Shutdown::new(), || {
             calls.set(calls.get() + 1);
             Err(TestError(false))
         });
 
-        assert!(!error.0);
+        assert!(matches!(error, Err(TestError(false))));
         assert_eq!(calls.get(), 1);
     }
 
@@ -118,12 +132,40 @@ mod tests {
     fn test_reconnecting_retries_transient_error() {
         let calls = Cell::new(0);
 
-        let error = reconnecting("test", || {
+        let error = reconnecting("test", &Shutdown::new(), || {
             calls.set(calls.get() + 1);
             Err(TestError(calls.get() < 2))
         });
 
-        assert!(!error.0);
+        assert!(matches!(error, Err(TestError(false))));
         assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn test_reconnecting_stops_after_session_stopped() {
+        let calls = Cell::new(0);
+
+        let result = reconnecting("test", &Shutdown::new(), || {
+            calls.set(calls.get() + 1);
+            Ok::<_, TestError>(())
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn test_reconnecting_does_not_reconnect_after_shutdown() {
+        let shutdown = Shutdown::new();
+        let calls = Cell::new(0);
+
+        let result = reconnecting("test", &shutdown, || {
+            calls.set(calls.get() + 1);
+            shutdown.trigger();
+            Err(TestError(true))
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(calls.get(), 1);
     }
 }

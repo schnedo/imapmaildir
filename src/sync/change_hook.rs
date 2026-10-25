@@ -1,21 +1,31 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    io, mem,
-    process::{self, ExitStatus, Stdio},
+    fs::File,
+    io::{self, BufRead as _, BufReader, Read as _},
+    mem,
+    os::fd::AsFd,
+    pin::pin,
+    process::{ExitStatus, Stdio},
     sync::{Arc, Mutex, PoisonError},
+    thread,
     time::{Duration, Instant},
 };
 
 use compio::{io::AsyncWriteExt as _, runtime::JoinHandle};
 use crossfire::{MTx, mpsc};
 use derive_getters::Getters;
+use futures::{
+    channel::oneshot,
+    future::{self, Either},
+};
 use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
     maildir::{ChangeSink, MailChange},
     repository::Uid,
+    sync::Shutdown,
 };
 
 /// When batched changes get passed to a hook
@@ -49,7 +59,7 @@ impl Default for Batching {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookFailure {
-    /// Stop syncing
+    /// Stop syncing after finishing pending work and exit with an error
     #[default]
     Exit,
     /// Log a warning and continue syncing
@@ -71,13 +81,17 @@ pub enum HookError {
 /// Called with the failure of a hook. The hook keeps running, if it returns.
 pub type FailureHandler = Arc<dyn Fn(HookError) + Send + Sync>;
 
-/// Handles hook failures according to `failure`
+/// Handles hook failures according to `failure`. Fails `shutdown` to stop syncing.
 #[must_use]
-pub fn failure_handler(name: &'static str, failure: HookFailure) -> FailureHandler {
+pub fn failure_handler(
+    name: &'static str,
+    failure: HookFailure,
+    shutdown: Shutdown,
+) -> FailureHandler {
     Arc::new(move |error| match failure {
         HookFailure::Exit => {
-            log::error!("{name} hook failed: {error}");
-            process::exit(18);
+            log::error!("{name} hook failed: {error}. Stopping");
+            shutdown.fail();
         }
         HookFailure::Warn => log::warn!("{name} hook failed: {error}"),
     })
@@ -353,42 +367,144 @@ async fn run_batch(
         return;
     };
     log::info!("calling on_local_change hook for {mailbox}");
-    if let Err(e) = call_with_input(executable, args, batch.into_lines(mailbox)).await {
+    if let Err(e) = call_with_input(executable, args, batch.into_lines(mailbox), mailbox).await {
         on_failure(e);
     }
 }
+
+/// Lines of hook output get logged in parts of at most this many bytes
+const MAX_OUTPUT_LINE: u64 = 64 * 1024;
+
+/// Time to log output, that a hook wrote right before exiting
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 async fn call_with_input(
     executable: &OsString,
     args: &[OsString],
     input: String,
+    mailbox: &str,
 ) -> Result<(), HookError> {
     let mut command = compio::process::Command::new(executable);
     command.args(args);
-    command
-        .stdin(Stdio::piped())
-        .map_err(|e| HookError::Spawn(io::Error::other(e.to_string())))?;
+    // signals of a terminal meant for imapmaildir must not reach hooks, which finish their batch
+    // while shutting down. Without the terminal's process group, they must not use the terminal
+    // either, so their output gets logged.
+    command.process_group(0);
+    let piped = |command: &mut compio::process::Command| {
+        command.stdin(Stdio::piped())?;
+        command.stdout(Stdio::piped())?;
+        command.stderr(Stdio::piped())?;
+        Ok::<_, std::convert::Infallible>(())
+    };
+    piped(&mut command).map_err(|e| HookError::Spawn(io::Error::other(e.to_string())))?;
     let mut child = command.spawn().map_err(HookError::Spawn)?;
-    if let Some(mut stdin) = child.stdin.take() {
+    let stdout_logged = log_output(child.stdout.take(), mailbox, log::Level::Info);
+    let stderr_logged = log_output(child.stderr.take(), mailbox, log::Level::Warn);
+    let stdin = child.stdin.take();
+    let writing = async move {
+        let Some(mut stdin) = stdin else {
+            return Ok(());
+        };
         let compio::BufResult(written, _) = stdin.write_all(input).await;
-        drop(stdin);
-        match written {
-            // one-shot hooks may not care about the changes
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
-            Err(e) => {
-                // reaps the hook, which sees the end of its input now
-                let _ = child.wait().await;
-                return Err(HookError::Write(e));
-            }
-            Ok(()) => {}
-        }
+        // closing stdin lets the hook see the end of its input
+        written
+    };
+    // processes started by a hook, that exited without reading its input, may keep stdin open
+    let (written, status) = match future::select(pin!(writing), pin!(child.wait())).await {
+        Either::Left((written, exited)) => (written, exited.await),
+        Either::Right((status, _)) => (Ok(()), status),
+    };
+    // output written right before exiting, e.g. explaining a failure, belongs to this call, but
+    // processes started by the hook may keep the output open
+    let _ = compio::time::timeout(
+        OUTPUT_DRAIN_TIMEOUT,
+        future::join(stdout_logged, stderr_logged),
+    )
+    .await;
+    let status = status.map_err(HookError::Wait)?;
+    match written {
+        // one-shot hooks may not care about the changes
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(e) => return Err(HookError::Write(e)),
+        Ok(()) => {}
     }
-    let status = child.wait().await.map_err(HookError::Wait)?;
     if status.success() {
         Ok(())
     } else {
         Err(HookError::Status(status))
     }
+}
+
+/// Logs the lines of a hook's `output` at `level` on a separate thread, until it got closed.
+/// Processes started by the hook may keep writing to it after the hook exited, which must neither
+/// block the hook nor fail them. The returned receiver completes, once the output got closed.
+fn log_output(
+    output: Option<impl AsFd>,
+    mailbox: &str,
+    level: log::Level,
+) -> oneshot::Receiver<()> {
+    // dropping the sender completes the receiver
+    let (closed_tx, closed_rx) = oneshot::channel::<()>();
+    let Some(output) = output else {
+        return closed_rx;
+    };
+    let output = match output.as_fd().try_clone_to_owned() {
+        Ok(output) => File::from(output),
+        Err(e) => {
+            log::warn!("cannot log on_local_change hook output for {mailbox}: {e}");
+            return closed_rx;
+        }
+    };
+    let mailbox = mailbox.to_string();
+    let logging = thread::Builder::new()
+        .name(format!("{mailbox} hook"))
+        .spawn(move || {
+            let _closed_tx = closed_tx;
+            let mut output = BufReader::new(output);
+            let mut line = Vec::new();
+            let mut split = false;
+            loop {
+                line.clear();
+                match output
+                    .by_ref()
+                    .take(MAX_OUTPUT_LINE)
+                    .read_until(b'\n', &mut line)
+                {
+                    Ok(0) => return,
+                    Ok(_) => {
+                        let complete = line.last() == Some(&b'\n');
+                        if complete {
+                            line.pop();
+                            if line.last() == Some(&b'\r') {
+                                line.pop();
+                            }
+                        }
+                        // the end of a line split at the limit
+                        if !(split && line.is_empty()) {
+                            log_line(&line, &mailbox, level);
+                        }
+                        split = !complete;
+                    }
+                    Err(e) => {
+                        log::warn!("cannot read on_local_change hook output for {mailbox}: {e}");
+                        return;
+                    }
+                }
+            }
+        });
+    if let Err(e) = logging {
+        log::warn!("cannot log on_local_change hook output: {e}");
+    }
+
+    closed_rx
+}
+
+fn log_line(line: &[u8], mailbox: &str, level: log::Level) {
+    log::log!(
+        level,
+        "on_local_change hook for {mailbox}: {}",
+        String::from_utf8_lossy(line)
+    );
 }
 
 #[cfg(test)]
@@ -671,6 +787,60 @@ mod tests {
             .await
             .unwrap_or_else(|_| panic!("hook task panicked"));
 
+        assert_is_empty!(assert_ok!(failures.lock()).as_slice());
+    }
+
+    #[compio::test]
+    async fn test_batched_hook_does_not_wait_for_processes_keeping_its_output_open() {
+        let dir = assert_ok!(TempDir::new());
+        let marker = dir.path().join("written late");
+        let (on_failure, failures) = collecting_handler();
+        let (sink, handle) = batched_hook(
+            &command(&format!(
+                "cat > /dev/null; echo done; printf oops >&2; (sleep 1; echo late; touch '{}') &",
+                marker.display()
+            )),
+            "INBOX",
+            Batching::new(Duration::ZERO, 100),
+            on_failure,
+        );
+        let started = Instant::now();
+
+        sink.record(downloaded(1));
+        drop(sink);
+        handle
+            .await
+            .unwrap_or_else(|_| panic!("hook task panicked"));
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_is_empty!(assert_ok!(failures.lock()).as_slice());
+        // writing after the hook exited must not kill the started process
+        compio::time::sleep(Duration::from_secs(2)).await;
+        assert!(marker.exists());
+    }
+
+    #[compio::test]
+    async fn test_batched_hook_does_not_wait_for_processes_keeping_its_input_open() {
+        let (on_failure, failures) = collecting_handler();
+        let (sink, handle) = batched_hook(
+            // background jobs get /dev/null as stdin without redirecting it explicitly
+            &command("exec 3<&0; sleep 3 <&3 & exit 0"),
+            "INBOX",
+            Batching::new(Duration::ZERO, 100_000),
+            on_failure,
+        );
+        let started = Instant::now();
+
+        // more than fits into the pipe to the hook
+        for id in 1..=10_000 {
+            sink.record(downloaded(id));
+        }
+        drop(sink);
+        handle
+            .await
+            .unwrap_or_else(|_| panic!("hook task panicked"));
+
+        assert!(started.elapsed() < Duration::from_secs(2));
         assert_is_empty!(assert_ok!(failures.lock()).as_slice());
     }
 }

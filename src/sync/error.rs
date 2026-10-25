@@ -40,6 +40,8 @@ pub enum Error {
     TaskProcessingStopped,
     #[error("Task processing panicked")]
     TaskProcessingPanicked,
+    #[error("Shut down")]
+    ShutDown,
 }
 
 impl Error {

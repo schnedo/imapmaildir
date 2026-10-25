@@ -135,8 +135,15 @@ Each line has the format
   mailbox. Beyond that, changes of the mailbox get dropped and a single
   `overflow` line asks for a rescan. Syncing never waits for the hook.
 
+Hooks run without the terminal in their own process group, so pressing Ctrl-C
+does not interrupt them. Their output gets logged, stdout as info and stderr as
+warning. Processes, that a hook leaves running in the background, should
+redirect their output, as it cannot get logged anymore once `imapmaildir`
+exited.
+
 If the hook fails to start or exits with a non-zero status, `imapmaildir`
-stops syncing. Set `onChangeFailure` (`on_local_change_failure`) to `"warn"` to
+stops syncing after finishing pending work, like when shutting down, and exits
+with an error. Set `onChangeFailure` (`on_local_change_failure`) to `"warn"` to
 only log a warning instead.
 
 Example hook script:
@@ -149,3 +156,13 @@ while IFS="$(printf '\t')" read -r mailbox type path details old_path; do
     esac
 done
 ```
+
+### Shutting down
+
+On `SIGTERM`, `SIGINT` or `SIGHUP`, `imapmaildir` stops syncing and finishes
+pending work: changes already detected get synced, the local state gets stored
+and pending change hooks run. An interrupted initial download resumes on the next start.
+Communication with the server, that did not finish `shutdownTimeoutSeconds`
+(`shutdown_timeout` in the account config, default `5s`) after the signal, gets
+abandoned. Mails being uploaded then may get uploaded again on the next start.
+A second signal terminates `imapmaildir` immediately.

@@ -82,6 +82,11 @@
               default = null;
               description = "Changes queued per hook, beyond which they get dropped for a single overflow line. Defaults to 10000";
             };
+            shutdownTimeoutSeconds = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "Time after a shutdown signal, after which unfinished communication with the server gets abandoned. Defaults to 5";
+            };
             mailboxes = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
@@ -144,6 +149,9 @@
               };
               Service = {
                 Type = "exec";
+                # imapmaildir finishes pending changes and hooks on SIGTERM, so they must not get
+                # killed alongside it
+                KillMode = "mixed";
                 ExecStart = "${
                   lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
                 } --account ${name} sync${lib.optionalString idle.enable " --idle"}";
@@ -222,6 +230,9 @@
                 }
                 // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookMaxPending) {
                   change_hook_max_pending = account.imapmaildir.changeHookMaxPending;
+                }
+                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.shutdownTimeoutSeconds) {
+                  shutdown_timeout = "${builtins.toString account.imapmaildir.shutdownTimeoutSeconds}s";
                 }
               );
           };

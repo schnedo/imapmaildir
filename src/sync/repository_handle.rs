@@ -49,8 +49,21 @@ impl RepositoryHandle {
             .await
     }
 
+    /// Records mails stored on the server. Gets queued, even if the returned future gets dropped,
+    /// e.g. when abandoning the connection while shutting down, as storing them again would
+    /// duplicate them on the server. Task processing runs until it got queued.
     pub async fn add_synced(&self, synced: Vec<(NewLocalMailMetadata, Uid)>) -> Result<(), Error> {
-        self.send(Task::AddSynced(synced)).await
+        let task_tx = self.task_tx.clone();
+        let (queued_tx, queued_rx): (_, RxOneshot<bool>) = oneshot();
+        compio::runtime::spawn(async move {
+            queued_tx.send(task_tx.send(Task::AddSynced(synced)).await.is_ok());
+        })
+        .detach();
+
+        match queued_rx.await {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(Error::TaskProcessingStopped),
+        }
     }
 
     pub async fn apply_flag_changes(
@@ -90,5 +103,35 @@ impl RepositoryHandle {
     /// Stored UIDs missing from the ascending `uids` in ascending order
     pub async fn uids_not_in(&self, uids: Vec<Uid>) -> Result<Vec<Uid>, Error> {
         self.request(|reply| Task::UidsNotIn(uids, reply)).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::pin;
+
+    use assertables::*;
+    use crossfire::mpsc;
+
+    use super::*;
+
+    #[compio::test]
+    async fn test_add_synced_gets_queued_after_being_dropped() {
+        let (task_tx, task_rx) = mpsc::bounded_async(1);
+        let repository = RepositoryHandle::new(task_tx);
+        assert_ok!(
+            repository
+                .delete(SequenceSet::from(assert_ok!(Uid::try_from(1))))
+                .await
+        );
+        {
+            let adding = pin!(repository.add_synced(Vec::new()));
+            assert!(futures::poll!(adding).is_pending());
+        }
+        drop(repository);
+
+        assert_matches!(task_rx.recv().await, Ok(Task::Delete(_)));
+        assert_matches!(task_rx.recv().await, Ok(Task::AddSynced(_)));
+        assert!(task_rx.recv().await.is_err());
     }
 }

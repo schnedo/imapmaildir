@@ -12,6 +12,7 @@ pub use crate::imap::TransportError;
 pub use crate::maildir::{ChangeRecorder, ChangeSink, MailChange};
 pub use crate::sync::Error as SyncError;
 pub use crate::sync::IdleTimeout;
+pub use crate::sync::Shutdown;
 pub use crate::sync::Syncer;
 pub use crate::sync::Transient;
 pub use crate::sync::reconnecting;
