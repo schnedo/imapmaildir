@@ -7,12 +7,13 @@ use crate::{
         MaildirRepositoryError, NewLocalMailMetadata,
     },
     repository::{ModSeq, SequenceSet, Uid, UidValidity},
-    sync::{ByteBudget, Config, Error, RepositoryHandle, task::Task},
+    sync::{ByteBudget, Config, Error, RepositoryHandle, Shutdown, task::Task},
 };
 use std::{
     collections::{HashMap, HashSet},
-    convert::Infallible,
+    ops::ControlFlow,
     path::Path,
+    pin::pin,
     time::Duration,
 };
 
@@ -21,7 +22,10 @@ use crossfire::{
     AsyncRx,
     mpsc::{self, Array},
 };
-use futures::future::OptionFuture;
+use futures::{
+    FutureExt as _,
+    future::{self, Either, OptionFuture},
+};
 
 use crate::{
     imap::AuthenticatedClient,
@@ -40,6 +44,8 @@ struct Synced {
 }
 
 impl Syncer {
+    /// Stops early, if `shutdown` gets triggered during an initial sync, which resumes later.
+    ///
     /// # Errors
     /// If syncing with the server or the local maildir fails
     pub async fn sync_once(
@@ -49,23 +55,31 @@ impl Syncer {
         client: AuthenticatedClient,
         config: Config,
         changes: Option<ChangeRecorder>,
+        shutdown: &Shutdown,
     ) -> Result<(), Error> {
+        let synced = Self::sync(
+            mailbox, mail_dir, state_dir, client, config, changes, shutdown,
+        )
+        .await;
         let Synced {
             client,
             task_handle,
             repository,
             ..
-        } = Self::sync(mailbox, mail_dir, state_dir, client, config, changes).await?;
-        drop(repository);
-        let (logout_result, task_result) = futures::join!(client.logout(), task_handle);
-        task_result.map_err(|_| Error::TaskProcessingPanicked)??;
-        logout_result?;
+        } = match synced {
+            Ok(synced) => synced,
+            Err(Error::ShutDown) => return Ok(()),
+            Err(e) => return Err(e),
+        };
 
-        Ok(())
+        Self::finish(client, repository, task_handle, shutdown, config).await
     }
 
+    /// Syncs changes until `shutdown` gets triggered. Then finishes handling the current changes.
+    ///
     /// # Errors
     /// If the server does not support IDLE or syncing with the server or the local maildir fails
+    #[expect(clippy::too_many_arguments)]
     pub async fn sync_continuously(
         mailbox: &str,
         mail_dir: &Path,
@@ -74,14 +88,23 @@ impl Syncer {
         idle_timeout: Duration,
         config: Config,
         changes: Option<ChangeRecorder>,
-    ) -> Result<Infallible, Error> {
+        shutdown: &Shutdown,
+    ) -> Result<(), Error> {
         client.require_idle()?;
+        let synced = Self::sync(
+            mailbox, mail_dir, state_dir, client, config, changes, shutdown,
+        )
+        .await;
         let Synced {
             mut client,
             task_handle,
             repository,
             local_watcher,
-        } = Self::sync(mailbox, mail_dir, state_dir, client, config, changes).await?;
+        } = match synced {
+            Ok(synced) => synced,
+            Err(Error::ShutDown) => return Ok(()),
+            Err(e) => return Err(e),
+        };
         let stop_tx = client.take_idle_stop_tx();
 
         log::info!("listening for mail changes...");
@@ -91,39 +114,108 @@ impl Syncer {
                 return Err(Self::shut_down(e.into(), client, repository, task_handle).await);
             }
         };
+        let forwarder_shutdown = shutdown.clone();
         compio::runtime::spawn(async move {
-            while let Ok(event) = local_change_rx.recv().await {
-                log::trace!("detected local changes {event:?}");
-                let reason = match event {
-                    LocalEvent::Changes(changes) => IdleStopReason::Local { changes },
-                    LocalEvent::Overflow => IdleStopReason::Rescan,
-                    LocalEvent::Error(e) => IdleStopReason::LocalError(e),
+            let mut stopped = pin!(forwarder_shutdown.wait().fuse());
+            loop {
+                // shutting down must not wait for a maildir, that keeps changing
+                let event = futures::select_biased! {
+                    () = stopped => break,
+                    event = local_change_rx.recv().fuse() => event,
                 };
-                if stop_tx.send(reason).await.is_err() {
-                    break;
+                let Ok(event) = event else {
+                    return;
+                };
+                if stop_tx.send(Self::idle_stop_reason(event)).await.is_err() {
+                    return;
                 }
             }
+            // changes detected before shutting down still get synced
+            if let Ok(event) = local_change_rx.try_recv()
+                && stop_tx.send(Self::idle_stop_reason(event)).await.is_err()
+            {
+                return;
+            }
+            let _ = stop_tx.send(IdleStopReason::Shutdown).await;
         })
         .detach();
-        // local changes during the sync, e.g. a long initial one, happened before watching
-        let rescanned = async {
+        let session = async {
+            // local changes during the sync, e.g. a long initial one, happened before watching
             let changes = repository.detect_changes().await?;
-            Self::handle_local(&mut client, &repository, changes, mailbox, config).await
-        }
-        .await;
-        if let Err(e) = rescanned {
-            return Err(Self::shut_down(e, client, repository, task_handle).await);
-        }
+            Self::handle_local(&mut client, &repository, changes, mailbox, config).await?;
+            while Self::handle_idle(&mut client, &repository, mailbox, idle_timeout, config)
+                .await?
+                .is_continue()
+            {}
 
-        let error = loop {
-            if let Err(e) =
-                Self::handle_idle(&mut client, &repository, mailbox, idle_timeout, config).await
-            {
-                break e;
+            Ok(())
+        };
+        let result = Self::unless_abandoned(session, shutdown, config).await;
+
+        match result {
+            Ok(()) => {
+                log::info!("shutting down");
+                Self::finish(client, repository, task_handle, shutdown, config).await
+            }
+            Err(e) => match Self::shut_down(e, client, repository, task_handle).await {
+                Error::ShutDown => Ok(()),
+                e => Err(e),
+            },
+        }
+    }
+
+    fn idle_stop_reason(event: LocalEvent) -> IdleStopReason {
+        log::trace!("detected local changes {event:?}");
+        match event {
+            LocalEvent::Changes(changes) => IdleStopReason::Local { changes },
+            LocalEvent::Overflow => IdleStopReason::Rescan,
+            LocalEvent::Error(e) => IdleStopReason::LocalError(e),
+        }
+    }
+
+    /// Runs `future` to completion, unless the configured shutdown timeout passed after `shutdown`
+    /// got triggered. Then fails with [`Error::ShutDown`]. Mails being uploaded then may get
+    /// uploaded again by the next session.
+    async fn unless_abandoned<T>(
+        future: impl Future<Output = Result<T, Error>>,
+        shutdown: &Shutdown,
+        config: Config,
+    ) -> Result<T, Error> {
+        let abandoned = shutdown.timed_out(config.shutdown_timeout());
+        match future::select(pin!(future), pin!(abandoned)).await {
+            Either::Left((result, _)) => result,
+            Either::Right(_) => {
+                log::warn!("server did not respond while shutting down. Abandoning connection");
+                Err(Error::ShutDown)
+            }
+        }
+    }
+
+    /// Logs out and lets task processing store the remaining changes. Gives up logging out once
+    /// the configured shutdown timeout passed after `shutdown` got triggered, as the changes are
+    /// safe.
+    async fn finish(
+        client: SelectedClient,
+        repository: RepositoryHandle,
+        task_handle: TaskHandle,
+        shutdown: &Shutdown,
+        config: Config,
+    ) -> Result<(), Error> {
+        drop(repository);
+        let logout = async {
+            futures::select_biased! {
+                logged_out = client.logout().fuse() => logged_out,
+                () = shutdown.timed_out(config.shutdown_timeout()).fuse() => {
+                    log::warn!("server did not respond to logout");
+                    Ok(())
+                }
             }
         };
+        let (logout_result, task_result) = futures::join!(logout, task_handle);
+        task_result.map_err(|_| Error::TaskProcessingPanicked)??;
+        logout_result?;
 
-        Err(Self::shut_down(error, client, repository, task_handle).await)
+        Ok(())
     }
 
     /// Lets task processing store the remote changes received before `error` and close the
@@ -151,7 +243,7 @@ impl Syncer {
         mailbox: &str,
         idle_timeout: Duration,
         config: Config,
-    ) -> Result<(), Error> {
+    ) -> Result<ControlFlow<()>, Error> {
         match client.idle(idle_timeout).await? {
             IdleStopReason::Remote => {
                 log::info!("handling new remote changes");
@@ -186,9 +278,10 @@ impl Syncer {
                     idle_timeout.as_secs()
                 );
             }
+            IdleStopReason::Shutdown => return Ok(ControlFlow::Break(())),
         }
 
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     async fn handle_local(
@@ -210,6 +303,7 @@ impl Syncer {
         client: AuthenticatedClient,
         config: Config,
         changes: Option<ChangeRecorder>,
+        shutdown: &Shutdown,
     ) -> Result<Synced, Error> {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
@@ -223,13 +317,22 @@ impl Syncer {
             Err(e) => return Err(e.into()),
         };
 
+        // boxed, as the sync futures are large, but run only once per session
         match loaded {
             Some((maildir_repository, true)) => {
-                Self::sync_existing(maildir_repository, client, mailbox, config, changes).await
+                Box::pin(Self::sync_existing(
+                    maildir_repository,
+                    client,
+                    mailbox,
+                    config,
+                    changes,
+                    shutdown,
+                ))
+                .await
             }
             Some((maildir_repository, false)) => {
                 log::info!("resuming interrupted initial sync");
-                Self::sync_initial(
+                Box::pin(Self::sync_initial(
                     Some(maildir_repository),
                     client,
                     &mailbox_maildir,
@@ -237,12 +340,13 @@ impl Syncer {
                     mailbox,
                     config,
                     changes,
-                )
+                    shutdown,
+                ))
                 .await
             }
             None => {
                 log::info!("no existing maildir found. Running inital sync");
-                Self::sync_initial(
+                Box::pin(Self::sync_initial(
                     None,
                     client,
                     &mailbox_maildir,
@@ -250,7 +354,8 @@ impl Syncer {
                     mailbox,
                     config,
                     changes,
-                )
+                    shutdown,
+                ))
                 .await
             }
         }
@@ -275,36 +380,41 @@ impl Syncer {
         }
     }
 
+    /// Stops with [`Error::ShutDown`], once the server does not respond while shutting down
     async fn sync_existing(
         mut maildir_repository: MaildirRepository,
         client: AuthenticatedClient,
         mailbox: &str,
         config: Config,
         changes: Option<ChangeRecorder>,
+        shutdown: &Shutdown,
     ) -> Result<Synced, Error> {
         // detecting local changes may already recover interrupted downloads
         maildir_repository.record_changes(changes);
         let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
         let budget = Self::store_budget(config);
         let repository = RepositoryHandle::new(task_tx.clone());
-        let (local_changes, selected) =
-            futures::join!(maildir_repository.detect_changes(), async {
-                let (uid_validity, highest_modseq) = futures::join!(
-                    maildir_repository.uid_validity(),
-                    maildir_repository.highest_modseq()
-                );
-                let (uid_validity, highest_modseq) = (uid_validity?, highest_modseq?);
-                let selection = client
-                    .resync_select(
-                        task_tx,
-                        budget.clone(),
-                        mailbox,
-                        uid_validity,
-                        highest_modseq,
-                    )
-                    .await?;
-                Ok::<_, Error>((uid_validity, highest_modseq, selection))
-            });
+        let selecting = async {
+            let (uid_validity, highest_modseq) = futures::join!(
+                maildir_repository.uid_validity(),
+                maildir_repository.highest_modseq()
+            );
+            let (uid_validity, highest_modseq) = (uid_validity?, highest_modseq?);
+            let selection = client
+                .resync_select(
+                    task_tx,
+                    budget.clone(),
+                    mailbox,
+                    uid_validity,
+                    highest_modseq,
+                )
+                .await?;
+            Ok::<_, Error>((uid_validity, highest_modseq, selection))
+        };
+        let (local_changes, selected) = futures::join!(
+            maildir_repository.detect_changes(),
+            Self::unless_abandoned(selecting, shutdown, config)
+        );
         let (uid_validity, highest_modseq, selection) = selected?;
         let mut local_changes = local_changes?;
         let Selection {
@@ -348,8 +458,8 @@ impl Syncer {
                 config,
             )
             .await
-        }
-        .await;
+        };
+        let synced = Self::unless_abandoned(synced, shutdown, config).await;
         if let Err(e) = synced {
             return Err(Self::shut_down(e, client, repository, task_handle).await);
         }
@@ -572,6 +682,9 @@ impl Syncer {
         restored
     }
 
+    /// Stops downloading with [`Error::ShutDown`], once `shutdown` gets triggered. The next
+    /// session resumes it.
+    #[expect(clippy::too_many_arguments)]
     async fn sync_initial(
         maildir_repository: Option<MaildirRepository>,
         client: AuthenticatedClient,
@@ -580,12 +693,17 @@ impl Syncer {
         mailbox: &str,
         config: Config,
         changes: Option<ChangeRecorder>,
+        shutdown: &Shutdown,
     ) -> Result<Synced, Error> {
         let (task_tx, task_rx) = mpsc::bounded_async(config.store_batch_size());
         let budget = Self::store_budget(config);
         let repository = RepositoryHandle::new(task_tx.clone());
         let (selection, local_state) = futures::join!(
-            client.select(task_tx, budget.clone(), mailbox),
+            Self::unless_abandoned(
+                async { Ok(client.select(task_tx, budget.clone(), mailbox).await?) },
+                shutdown,
+                config,
+            ),
             OptionFuture::from(maildir_repository.as_ref().map(|repository| async {
                 futures::join!(repository.uid_validity(), repository.uids())
             }))
@@ -625,7 +743,7 @@ impl Syncer {
             deferred_changes,
         );
 
-        let synced = async {
+        let downloaded = async {
             if local_uids.is_empty() {
                 client.fetch_all().await?;
             } else {
@@ -644,8 +762,14 @@ impl Syncer {
                 .await?;
 
             Ok::<_, Error>(())
-        }
-        .await;
+        };
+        let synced = match future::select(pin!(downloaded), pin!(shutdown.wait())).await {
+            Either::Left((downloaded, _)) => downloaded,
+            Either::Right(_) => {
+                log::info!("interrupting initial sync to shut down");
+                Err(Error::ShutDown)
+            }
+        };
         if let Err(e) = synced {
             return Err(Self::shut_down(e, client, repository, task_handle).await);
         }
@@ -995,7 +1119,8 @@ mod tests {
         let (_task_tx, task_rx) =
             queue([Task::NewMail(mail(2, 1)), Task::NewMail(mail(3, 1))]).await;
 
-        let (batch, next) = Syncer::collect_store_batch(mail(1, 1), &task_rx, Config::new(2, 100));
+        let (batch, next) =
+            Syncer::collect_store_batch(mail(1, 1), &task_rx, Config::new(2, 100, Duration::ZERO));
 
         assert_eq!(uids(&batch), vec![1, 2]);
         assert!(next.is_none());
@@ -1007,7 +1132,8 @@ mod tests {
         let (_task_tx, task_rx) =
             queue([Task::NewMail(mail(2, 6)), Task::NewMail(mail(3, 1))]).await;
 
-        let (batch, _) = Syncer::collect_store_batch(mail(1, 5), &task_rx, Config::new(10, 10));
+        let (batch, _) =
+            Syncer::collect_store_batch(mail(1, 5), &task_rx, Config::new(10, 10, Duration::ZERO));
 
         assert_eq!(uids(&batch), vec![1, 2]);
     }
@@ -1016,7 +1142,8 @@ mod tests {
     async fn test_collect_store_batch_takes_single_oversized_mail() {
         let (_task_tx, task_rx) = queue([Task::NewMail(mail(2, 1))]).await;
 
-        let (batch, _) = Syncer::collect_store_batch(mail(1, 20), &task_rx, Config::new(10, 10));
+        let (batch, _) =
+            Syncer::collect_store_batch(mail(1, 20), &task_rx, Config::new(10, 10, Duration::ZERO));
 
         assert_eq!(uids(&batch), vec![1]);
     }
@@ -1054,7 +1181,7 @@ mod tests {
     async fn test_collect_delete_batch_respects_count_limit() {
         let (_task_tx, task_rx) = queue([delete(&[2]), delete(&[3])]).await;
 
-        let (batch, next) = delete_batch(&[1], &task_rx, Config::new(2, 100));
+        let (batch, next) = delete_batch(&[1], &task_rx, Config::new(2, 100, Duration::ZERO));
 
         assert_eq!(batch, vec![1, 2]);
         assert!(next.is_none());

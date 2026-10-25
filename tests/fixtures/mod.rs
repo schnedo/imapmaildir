@@ -6,10 +6,7 @@ use std::{
     marker::PhantomData,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -22,8 +19,8 @@ use crossfire::{
 };
 use derivative::Derivative;
 use imapmaildir::{
-    ChangeRecorder, ChangeSink, Client, ClientError, MailChange, SyncError, Syncer, Tls, Transient,
-    config as config_m, logging, reconnecting,
+    ChangeRecorder, ChangeSink, Client, ClientError, MailChange, Shutdown, SyncError, Syncer, Tls,
+    Transient, config as config_m, logging, reconnecting,
 };
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
@@ -466,6 +463,7 @@ impl MailSetup {
             client,
             config.sync(),
             changes,
+            &Shutdown::new(),
         )
         .await
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
@@ -537,6 +535,7 @@ impl MailSetup {
             client,
             config.sync(),
             None,
+            &Shutdown::new(),
         )
         .await
         .unwrap_or_else(|e| panic!("sync failed: {e}"));
@@ -562,7 +561,7 @@ impl MailSetup {
         let client = client.unwrap_or_else(|e| panic!("login failed: {e}"));
         let mailbox = mailbox.to_string();
         let handle = compio::runtime::spawn(async move {
-            let Err(e) = Syncer::sync_continuously(
+            let result = Syncer::sync_continuously(
                 &mailbox,
                 &maildir_base_path,
                 &state_dir,
@@ -570,9 +569,10 @@ impl MailSetup {
                 idle_timout,
                 sync_config,
                 Some(ChangeRecorder::new(vec![Arc::new(NotifyingSink(call_tx))])),
+                &Shutdown::new(),
             )
             .await;
-            panic!("continuous sync failed: {e}");
+            panic!("continuous sync stopped: {result:?}");
         });
 
         (handle, call_rx)
@@ -602,7 +602,6 @@ impl ChangeSink for NotifyingSink {
 enum SessionError {
     Login(ClientError),
     Sync(SyncError),
-    Stopped,
 }
 
 impl std::fmt::Display for SessionError {
@@ -610,7 +609,6 @@ impl std::fmt::Display for SessionError {
         match self {
             Self::Login(e) => write!(f, "{e}"),
             Self::Sync(e) => write!(f, "{e}"),
-            Self::Stopped => write!(f, "stopped"),
         }
     }
 }
@@ -620,23 +618,36 @@ impl Transient for SessionError {
         match self {
             Self::Login(e) => e.is_transient(),
             Self::Sync(e) => e.is_transient(),
-            Self::Stopped => false,
         }
     }
 }
 
-/// Continuous sync reconnecting after transient errors. Stops when dropped.
+/// Continuous sync reconnecting after transient errors. Shuts down when dropped.
 pub struct ReconnectingSync {
-    stop: Arc<AtomicBool>,
+    shutdown: Shutdown,
     thread: Option<thread::JoinHandle<()>>,
+}
+
+impl ReconnectingSync {
+    /// Shuts the sync down and waits until it finished
+    ///
+    /// # Panics
+    /// If the sync failed
+    pub fn shut_down(mut self) {
+        self.join();
+    }
+
+    fn join(&mut self) {
+        self.shutdown.trigger();
+        if let Some(thread) = self.thread.take() {
+            assert_ok!(thread.join());
+        }
+    }
 }
 
 impl Drop for ReconnectingSync {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            assert_ok!(thread.join());
-        }
+        self.join();
     }
 }
 
@@ -650,50 +661,46 @@ impl MailSetup {
     pub fn sync_reconnecting(&self, mailbox: &str) -> ReconnectingSync {
         let config = self.config.clone();
         let mailbox = mailbox.to_string();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
+        let shutdown = Shutdown::new();
+        let session_shutdown = shutdown.clone();
         let thread = thread::spawn(move || {
             let tls = assert_ok!(Tls::new(config.connection()));
-            let error = reconnecting(&mailbox, || {
+            let result = reconnecting(&mailbox, &session_shutdown, || {
                 let rt = assert_ok!(compio::runtime::Runtime::new());
                 rt.block_on(async {
-                    let session = async {
-                        let client = Client::login(config.connection(), &tls, config.auth())
-                            .await
-                            .map_err(SessionError::Login)?;
-                        Syncer::sync_continuously(
-                            &mailbox,
-                            config.maildir_base_path(),
-                            config.state_dir(),
-                            client,
-                            config.idle_timout(),
-                            config.sync(),
-                            None,
-                        )
-                        .await
-                        .map_err(SessionError::Sync)
-                    };
-                    let stop = async {
-                        while !stopped.load(Ordering::Relaxed) {
-                            compio::time::sleep(Duration::from_millis(50)).await;
+                    let login = Client::login(config.connection(), &tls, config.auth());
+                    let client = match futures::future::select(
+                        std::pin::pin!(login),
+                        std::pin::pin!(session_shutdown.wait()),
+                    )
+                    .await
+                    {
+                        futures::future::Either::Left((client, _)) => {
+                            client.map_err(SessionError::Login)?
                         }
-                        Err(SessionError::Stopped)
+                        futures::future::Either::Right(_) => return Ok(()),
                     };
-                    futures::pin_mut!(session, stop);
-                    futures::future::select(session, stop)
-                        .await
-                        .factor_first()
-                        .0
+                    Syncer::sync_continuously(
+                        &mailbox,
+                        config.maildir_base_path(),
+                        config.state_dir(),
+                        client,
+                        config.idle_timout(),
+                        config.sync(),
+                        None,
+                        &session_shutdown,
+                    )
+                    .await
+                    .map_err(SessionError::Sync)
                 })
             });
-            assert!(
-                matches!(error, SessionError::Stopped),
-                "reconnecting sync failed: {error}"
-            );
+            if let Err(e) = result {
+                panic!("reconnecting sync failed: {e}");
+            }
         });
 
         ReconnectingSync {
-            stop,
+            shutdown,
             thread: Some(thread),
         }
     }

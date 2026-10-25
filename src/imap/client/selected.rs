@@ -33,6 +33,7 @@ pub enum IdleStopReason {
     Local { changes: LocalChanges },
     Rescan,
     LocalError(MaildirError),
+    Shutdown,
 }
 
 /// Bounds the commands sent before receiving completions, so that neither side blocks on full

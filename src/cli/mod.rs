@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::{
     cli::nuke::nuke,
-    cli::sync::{exit_on_panic, sync_all, sync_mailbox},
+    cli::sync::{exit_on_panic, handle_signals, sync_all, sync_mailbox},
 };
 
 #[derive(Parser)]
@@ -91,11 +91,16 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             if sync_args.idle {
                 exit_on_panic();
             }
+            let shutdown = handle_signals()?;
             if let Some(mailbox) = &sync_args.mailbox {
                 let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
-                sync_mailbox(&config, &tls, mailbox, sync_args.idle)
+                sync_mailbox(&config, &tls, mailbox, sync_args.idle, &shutdown)?;
+                if shutdown.has_failed() {
+                    return Err(Error::HookFailed);
+                }
+                Ok(())
             } else {
-                sync_all(config, sync_args.idle)
+                sync_all(config, sync_args.idle, &shutdown)
             }
         }
     }
@@ -111,6 +116,8 @@ impl Transient for Error {
             | Self::Input(_)
             | Self::Nuke(_)
             | Self::Runtime(_)
+            | Self::Signals(_)
+            | Self::HookFailed
             | Self::Spawn { .. }
             | Self::SyncAll(_) => false,
         }
@@ -129,6 +136,8 @@ pub enum Error {
     Nuke(io::Error),
     #[error("Cannot build async runtime: {0}")]
     Runtime(io::Error),
+    #[error("Cannot listen for signals: {0}")]
+    Signals(io::Error),
     #[error("Cannot log in: {0}")]
     Login(ClientError),
     #[error("Cannot list remote mailboxes: {0}")]
@@ -137,6 +146,8 @@ pub enum Error {
     Sync { mailbox: String, cause: SyncError },
     #[error("Cannot spawn sync thread for mailbox {mailbox}: {cause}")]
     Spawn { mailbox: String, cause: io::Error },
+    #[error("on_local_change hook failed")]
+    HookFailed,
     #[error("Syncing mailboxes {0:?} failed")]
     SyncAll(Vec<String>),
 }

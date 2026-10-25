@@ -25,6 +25,7 @@ compio = { version = "0.19.2", features = [
   "net",
   "native-tls",
   "process",
+  "signal",
 ] }
 crossfire = "3.1.22"
 derive-getters = { version = "0.5.0", features = ["auto_copy_getters"] }
@@ -38,6 +39,7 @@ imap-proto = "0.17.0"
 include_dir = "0.7.4"
 inotify = { version = "0.11.5", default-features = false }
 jiff = "0.2.38"
+libc = "0.2.191"
 log = { version = "0.4.34", features = [
   "kv",
   "release_max_level_debug",
@@ -49,6 +51,7 @@ rusqlite_migration = { version = "2.6.0", features = ["from-directory"] }
 rustix = { version = "1.1.5", features = [
   "fs",
   "net",
+  "process",
   "std",
   "system",
 ], default-features = false }
