@@ -16,7 +16,6 @@ use crossfire::{
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
-use rusqlite_migration::Migrations;
 use thiserror::Error;
 
 use crate::{
@@ -26,8 +25,16 @@ use crate::{
 
 const STATE_FILE_NAME: &str = "imapmaildir.db";
 const MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
-static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
-    Migrations::from_directory(&MIGRATIONS_DIR).expect("generating migrations should succeed")
+static MIGRATIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut dirs: Vec<_> = MIGRATIONS_DIR.dirs().collect();
+    dirs.sort_by_key(|dir| dir.path());
+    dirs.into_iter()
+        .map(|dir| {
+            dir.get_file(dir.path().join("up.sql"))
+                .and_then(|file| file.contents_utf8())
+                .expect("every migration should contain an utf8 up.sql")
+        })
+        .collect()
 });
 const JOB_QUEUE_SIZE: usize = 64;
 const GET_ALL_BY_ID_CHUNK_SIZE: usize = 256;
@@ -38,8 +45,28 @@ static GET_ALL_BY_ID_QUERY: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+fn migrate_to_latest(db: &mut Connection) -> Result<(), InitError> {
+    let current: u32 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let latest = u32::try_from(MIGRATIONS.len()).expect("migration count should fit into u32");
+    if current > latest {
+        return Err(InitError::Migrations(MigrationError::TooFarAhead {
+            current,
+            latest,
+        }));
+    }
+    for (version, migration) in (current + 1..).zip(&MIGRATIONS[current as usize..]) {
+        log::debug!("applying migration {version}");
+        let tx = db.transaction()?;
+        tx.execute_batch(migration)?;
+        tx.pragma_update(None, "user_version", version)?;
+        tx.commit()?;
+    }
+
+    Ok(())
+}
+
 fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
-    MIGRATIONS.to_latest(db)?;
+    migrate_to_latest(db)?;
     db.pragma_update(None, "journal_mode", "wal")?;
     // commits must be durable before renaming mails accordingly, otherwise a power loss makes
     // e.g. uploaded mails look untracked, which uploads them again
@@ -556,13 +583,13 @@ pub enum InitError {
     #[error("IO Issue when constructing DB {0}")]
     Io(io::Error),
     #[error("Could not apply migrations {0}")]
-    Migrations(rusqlite_migration::Error),
+    Migrations(MigrationError),
 }
 
-impl From<rusqlite_migration::Error> for InitError {
-    fn from(value: rusqlite_migration::Error) -> Self {
-        Self::Migrations(value)
-    }
+#[derive(Debug, Error)]
+pub enum MigrationError {
+    #[error("database schema version {current} is newer than latest known version {latest}")]
+    TooFarAhead { current: u32, latest: u32 },
 }
 
 impl From<Error> for InitError {
@@ -1014,15 +1041,35 @@ mod tests {
 
     #[rstest]
     fn test_dbiniterror_conversions() {
-        let error = rusqlite_migration::Error::InvalidUserVersion;
-        let dbinit_error: InitError = error.into();
-        assert_matches!(
-            dbinit_error,
-            InitError::Migrations(rusqlite_migration::Error::InvalidUserVersion)
-        );
         let error = Error::Conversion;
         let dbinit_error: InitError = error.into();
         assert_matches!(dbinit_error, InitError::DbError(Error::Conversion));
+    }
+
+    #[rstest]
+    fn test_migrations_are_applied_in_order_and_idempotent() {
+        let mut db = assert_ok!(Connection::open_in_memory());
+        assert_ok!(migrate_to_latest(&mut db));
+        let version: usize =
+            assert_ok!(db.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0)))
+                as usize;
+        assert_eq!(version, MIGRATIONS.len());
+        assert_ok!(migrate_to_latest(&mut db));
+    }
+
+    #[rstest]
+    fn test_migrations_reject_newer_schema() {
+        let mut db = assert_ok!(Connection::open_in_memory());
+        assert_ok!(db.pragma_update(
+            None,
+            "user_version",
+            assert_ok!(u32::try_from(MIGRATIONS.len())) + 1
+        ));
+        let error = assert_err!(migrate_to_latest(&mut db));
+        assert_matches!(
+            error,
+            InitError::Migrations(MigrationError::TooFarAhead { .. })
+        );
     }
 
     #[rstest]
