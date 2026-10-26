@@ -7,6 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/schnedo/imapmaildir/compare/v0.2.0...v0.3.0)
+
+### Features
+
+
+- Shutdown cleanly on SIGTERM/SIGINT - ([ab10b51](https://github.com/schnedo/imapmaildir/commit/ab10b51323ee7a5b47a54ec140c0535acf083752) (by @schnedo))
+- Report remote changes per mail to change hooks - ([65ee0e6](https://github.com/schnedo/imapmaildir/commit/65ee0e697ebcfa776507a264cb3a706bd4ec3ef8) (by @schnedo))
+- Add remote list command for listing remote mailboxes - ([f5744ea](https://github.com/schnedo/imapmaildir/commit/f5744ea2eb15ff0c2f3ccf4426ad60f0fa147bb3) (by @schnedo))
+- Reduce idle timeout if server starts disconnect during idle - ([e340a1e](https://github.com/schnedo/imapmaildir/commit/e340a1e24554129c28c0fcff04198ffcdd23042d) (by @schnedo))
+- Support oauth authentication with token provider - ([5d2e29f](https://github.com/schnedo/imapmaildir/commit/5d2e29fa3a790c02e8be3d5967ddb9b0e9ffe4ae) (by @schnedo))
+- Respect server's APPENDLIMIT - ([959ca66](https://github.com/schnedo/imapmaildir/commit/959ca6629b35e3f76f006e55c34a01390f68f0da) (by @schnedo))
+- Support servers without LITERAL+ support - ([6cb03da](https://github.com/schnedo/imapmaildir/commit/6cb03daec4a809bc5e0e9a4463ddafd1eeaa23f7) (by @schnedo))
+- Support CONDSTORE without QRESYNC - ([a253e18](https://github.com/schnedo/imapmaildir/commit/a253e18b73b3c55be4a4bdba6b8c1541b7e3f10a) (by @schnedo))
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate rusqlite to 0.41.0 - ([05fb0d5](https://github.com/schnedo/imapmaildir/commit/05fb0d554f7581b6f458441f630a60e3bbe75f4e) (by @renovate[bot]))
+- *(deps)* Update rust crate crossfire to 3.1.22 - ([454f0be](https://github.com/schnedo/imapmaildir/commit/454f0bebd0e69550fc70dabfbca440c09abde09e) (by @renovate[bot]))
+- *(deps)* Update rust crate base64 to 0.23.1 - ([4fbf332](https://github.com/schnedo/imapmaildir/commit/4fbf33235f40155f6fe20f4ea332207a7cad6668) (by @renovate[bot]))
+- Fail instead of reconnecting on unparseable server responses - ([845f05a](https://github.com/schnedo/imapmaildir/commit/845f05a369e456f4cc3a066dddab77bc218d4e21) (by @schnedo))
+- Respect capabilities announced after selecting a mailbox - ([0f7b687](https://github.com/schnedo/imapmaildir/commit/0f7b6871d627e3f1df57ae20213fddd4c95fa145) (by @schnedo))
+- Fail instead of reconnecting on misconfigured password or token command - ([e994b4a](https://github.com/schnedo/imapmaildir/commit/e994b4acf79e9f8154154788a2d47f18fbe48502) (by @schnedo))
+- Treat login rejections without temporary response code as permanent - ([e5fada2](https://github.com/schnedo/imapmaildir/commit/e5fada2d62ae3ce9eaabf5c210be6e708911ee95) (by @schnedo))
+- Drain task processing when initial sync fails before reconnecting - ([b901733](https://github.com/schnedo/imapmaildir/commit/b901733a4ba33a371e67b918627eff218cf28759) (by @schnedo))
+- Reconnect on transient & fail on unrecoverable errors instead of silently dropping connection - ([d89a359](https://github.com/schnedo/imapmaildir/commit/d89a35903b6b8b0fbf4ee0f8e9ddaf452173e0cc) (by @schnedo))
+- Replace old capabilities with new ones instead of appending according to rfc3501 - ([53db919](https://github.com/schnedo/imapmaildir/commit/53db9195efc3c77a401847c1d44d340218b255fb) (by @schnedo))
+- Restore locally deleted mail, if remote had changes - ([ee65829](https://github.com/schnedo/imapmaildir/commit/ee6582968a815cbe2c3239312592bd70ccdcd98a) (by @schnedo))
+- Keep unknown local flags in filename - ([350be72](https://github.com/schnedo/imapmaildir/commit/350be7233a346df958969a607341fc09e571be3d) (by @schnedo))
+- Only consider stored uids of MODIFIED responses instead of expanding server ranges - ([dd8050f](https://github.com/schnedo/imapmaildir/commit/dd8050fd91025e7d55952b6d7bbde02da748140d) (by @schnedo))
+- Reject appended uids of a different uid validity than the synced mailbox - ([60324c4](https://github.com/schnedo/imapmaildir/commit/60324c47152149e2c8475c9e8eb9534cf4a2143a) (by @schnedo))
+- Add delivery counter to file prefixes to keep them unique within a nanosecond - ([95065d8](https://github.com/schnedo/imapmaildir/commit/95065d8a9ded7b24361fdd1e51eab2050a20e21a) (by @schnedo))
+- Detect mails hard linked into maildir, which only emit a create event - ([7b78a2d](https://github.com/schnedo/imapmaildir/commit/7b78a2d94eb5a8659159d15ec6aa90330abc787b) (by @schnedo))
+- Forget files deleted or moved away before being written completely - ([7dd7d39](https://github.com/schnedo/imapmaildir/commit/7dd7d39045abf35e726e3a5623b2073e4dac65a1) (by @schnedo))
+- Forget ignored file updates on inotify overflow to not miss later changes - ([da5c66c](https://github.com/schnedo/imapmaildir/commit/da5c66c46c9e874034aa8d94b7090c141c9c29c3) (by @schnedo))
+- Keep existing mails when moving delivered mails with clashing names to cur - ([9e2e6ce](https://github.com/schnedo/imapmaildir/commit/9e2e6ce6e1168cfd8551d622ea528dcac7964412) (by @schnedo))
+- Detect silently broken server connections instead of hanging - ([c83fcb0](https://github.com/schnedo/imapmaildir/commit/c83fcb093bbfde0466909312913f273b61cc1be2) (by @schnedo))
+- Initialize empty maildir without state left by interrupted initialization - ([0434386](https://github.com/schnedo/imapmaildir/commit/04343863c10263a9eccea539067b923be09173d8) (by @schnedo))
+- Make state commits durable before renaming mails accordingly - ([2fa495e](https://github.com/schnedo/imapmaildir/commit/2fa495e4fbcc80e658c0a1fd2f23267239f9b6fc) (by @schnedo))
+- Sync copies of tracked mails carrying the same uid as new mails - ([d48ff4d](https://github.com/schnedo/imapmaildir/commit/d48ff4d6413a89e3e1f06d6b00c800a01d00890c) (by @schnedo))
+- Read maildir completely before renaming unstructured files to not list them twice - ([bdff95e](https://github.com/schnedo/imapmaildir/commit/bdff95e79c3ec77f4102fed1cc006b44b31e7eee) (by @schnedo))
+- Rescan instead of stopping sync if mails vanish while handling their changes - ([6355178](https://github.com/schnedo/imapmaildir/commit/6355178c0d643a45f0c13aff93fe057bb6ead131) (by @schnedo))
+- Match halves of renames reliably even if inotify events are backed up - ([e3f9c20](https://github.com/schnedo/imapmaildir/commit/e3f9c20cd0fd9d6e906822435ef439e33415ac7e) (by @schnedo))
+- Rescan maildir after starting to watch it to sync local changes made during sync - ([b01a81f](https://github.com/schnedo/imapmaildir/commit/b01a81fb3281c03911e6a771d681c2a726ce649c) (by @schnedo))
+- Apply unsolicited flag changes received while fetching metadata of rejected changes - ([de7227f](https://github.com/schnedo/imapmaildir/commit/de7227fb367d3986b0a07f623f5ce5f95a3603ce) (by @schnedo))
+- Split long uid sets into multiple commands to respect server line length limits - ([56c15fe](https://github.com/schnedo/imapmaildir/commit/56c15fe1c41090dcff86ad153450a195b17207d6) (by @schnedo))
+- Reject store batch limits of 0, which stopped uploading new mails - ([7a7ab79](https://github.com/schnedo/imapmaildir/commit/7a7ab79b6fa13439ae69c3d245afed0b4428f5a1) (by @schnedo))
+- Skip fetched mails without content instead of aborting sync - ([4127bee](https://github.com/schnedo/imapmaildir/commit/4127bee8ba3e96ad571754862b06c3d679362dbd) (by @schnedo))
+- Track all uploaded mails even if adding the uid to some of them fails - ([6fd3bdf](https://github.com/schnedo/imapmaildir/commit/6fd3bdf70ad4751c5b1d366a625e05be7372dedd) (by @schnedo))
+- Find mails renamed by other clients when updating flags or deleting them - ([5f5e388](https://github.com/schnedo/imapmaildir/commit/5f5e3886c0fdd2667f230a1d1680e111fbeac8ad) (by @schnedo))
+- Track prefixed file name after resolving name clash of new local mail - ([0ce3654](https://github.com/schnedo/imapmaildir/commit/0ce36547e549ddbde7b5f74bc2be600e3ba2e805) (by @schnedo))
+- Ignore accepted flag changes of locally vanished mails instead of aborting sync - ([39c8ad1](https://github.com/schnedo/imapmaildir/commit/39c8ad17557bca81557ac999c88c6113b8308c40) (by @schnedo))
+- Normalize reversed sequence ranges sent by the server instead of panicking - ([ea6e957](https://github.com/schnedo/imapmaildir/commit/ea6e957e1c837ce4b73311830c92746b272a1fc7) (by @schnedo))
+- Separate FETCH attributes by spaces as required by RFC 3501 - ([706c2fd](https://github.com/schnedo/imapmaildir/commit/706c2fdbab7ce57e437ec937f579f2958356b679) (by @schnedo))
+- Fix deleting wrong local mail during expunge while setup of sequence number to uid map - ([d6357ad](https://github.com/schnedo/imapmaildir/commit/d6357ad2544900211cc870389b5585b1312a7f30) (by @schnedo))
+- Correctly receive new mail if other client deletes mail during mail fetch - ([0f0c1ca](https://github.com/schnedo/imapmaildir/commit/0f0c1cae5cea40bb20ae5285e7490507a1d68848) (by @schnedo))
+- Raise error if server returns no mails on search instead of deleting everything - ([320bb3a](https://github.com/schnedo/imapmaildir/commit/320bb3a5052957f37569940a9edff29d7afd34d2) (by @schnedo))
+- Prevent wrong local sequence number to uid mapping during map generation - ([75d52fc](https://github.com/schnedo/imapmaildir/commit/75d52fc55ff51df228f1831376b4dd1b2d047565) (by @schnedo))
+- Prevent extra server round-trip when changing mail for second time in session - ([4d73708](https://github.com/schnedo/imapmaildir/commit/4d737082150e1b1896de24a450dd0a4efb7bc73d) (by @schnedo))
+- Rename mails without overwriting and require maildir directories - ([916ace1](https://github.com/schnedo/imapmaildir/commit/916ace18735792a4ba83237ce8634264b35655b7) (by @schnedo))
+- Keep unknown maildir flags instead of reuploading mail as new - ([8cd65ae](https://github.com/schnedo/imapmaildir/commit/8cd65aeec7068792c62fa8438eb13c1ad92ba6d8) (by @schnedo))
+- Skip mails rejected by server on APPEND instead of aborting sync - ([758526d](https://github.com/schnedo/imapmaildir/commit/758526d742c38272aa6ab75e5adfa4127b551c84) (by @schnedo))
+
+### Performance
+
+
+- Increase upload write speed on slow drives - ([af417cf](https://github.com/schnedo/imapmaildir/commit/af417cfd663f15ee21f830d3c77954367ac9287e) (by @schnedo))
+- Read new local mail directly into upload buffer instead of in memory copy - ([e759b39](https://github.com/schnedo/imapmaildir/commit/e759b3979d1a9b33e2fbf2e7b003388fbff7e350) (by @schnedo))
+- Limit amount of downloaded mail held in ram due to write speed limitations - ([11f2205](https://github.com/schnedo/imapmaildir/commit/11f22058961d3d076ad596f626351f17a3db2e23) (by @schnedo))
+- Move blocking maildir list out of main thread - ([8eb2499](https://github.com/schnedo/imapmaildir/commit/8eb24991163e436d09c2466074726d80fa127490) (by @schnedo))
+- Batch retry of rejected changes - ([987d9b5](https://github.com/schnedo/imapmaildir/commit/987d9b5a3e0d2f0030946c2ec1f664f937303e1d) (by @schnedo))
+- Avoid copying list of remote UIDs - ([db8edf4](https://github.com/schnedo/imapmaildir/commit/db8edf43b5cc805e1b3823a55e32690e03a6113c) (by @schnedo))
+- Only parse server response after newline got received - ([04c3b29](https://github.com/schnedo/imapmaildir/commit/04c3b2919fef6cf929e705ce510a04d97126e287) (by @schnedo))
+- Minor fixes in no QRESYNC flag changes - ([7b0a38e](https://github.com/schnedo/imapmaildir/commit/7b0a38e140328eb1ddf82fc41339631c737e0b3d) (by @schnedo))
+- Stream all STORE commands independend of the mails modseq - ([32bf5b9](https://github.com/schnedo/imapmaildir/commit/32bf5b97f3e644adaceb787ee2d07393325fa9ba) (by @schnedo))
+- Lookup missing uids more efficiently in no QRESYNC case - ([9153f3d](https://github.com/schnedo/imapmaildir/commit/9153f3d75cc38d0a9c3111e78ae71f89501a1950) (by @schnedo))
+- Batch state lookups and read next upload batch while appending - ([dcef649](https://github.com/schnedo/imapmaildir/commit/dcef649dae66f63d03f51e46cb174ad3140b4f74) (by @schnedo))
+- Avoid unnecessary allocations and copies on sync paths - ([8ce3cec](https://github.com/schnedo/imapmaildir/commit/8ce3cec2c92ede5f1c4dec6ae888cd7fa58f4941) (by @schnedo))
+- Read and append new local mails in batches - ([a33a3c3](https://github.com/schnedo/imapmaildir/commit/a33a3c3b1d672672c7c711691d0dfa8e53e5ed6b) (by @schnedo))
+
+### Revert
+
+
+- "fix: keep unknown maildir flags instead of reuploading mail as new" - ([09a3097](https://github.com/schnedo/imapmaildir/commit/09a30975b82762842bacb20fae870b7f569d86ed) (by @schnedo))
+
+### Chore
+
+
+- Remove stale todo comments - ([a9b52a3](https://github.com/schnedo/imapmaildir/commit/a9b52a3c345e23b9ca5cfe9e45c946702e4617e6) (by @schnedo))
+
+### Refactor
+
+
+- Replace rusqlite_migration with custom migration code - ([4f3a61f](https://github.com/schnedo/imapmaildir/commit/4f3a61fa714a26e40ea45dde4fa9a4a77a90530f) (by @schnedo))
+- Move ConnectionConfig to connection module - ([09d1f4c](https://github.com/schnedo/imapmaildir/commit/09d1f4c518265adefe5565bf27d35101aa3a1a7d) (by @schnedo))
+- Return results instead of panicking - ([c5a3fa5](https://github.com/schnedo/imapmaildir/commit/c5a3fa57de1178a63b66af34083dda969b1a5312) (by @schnedo))
+
+### Contributors
+
+* @schnedo
+* @renovate[bot]
+
 ## [0.2.0](https://github.com/schnedo/imapmaildir/compare/v0.1.15...v0.2.0)
 
 ### Features
