@@ -13,8 +13,8 @@ use std::{
 use compio::signal::unix::signal;
 use futures::future::{self, Either};
 use imapmaildir::{
-    ChangeRecorder, Client, IdleTimeout, Shutdown, Syncer, Tls, batched_hook, config::Account,
-    failure_handler, reconnecting,
+    ChangeRecorder, Client, IdleTimeout, Shutdown, Syncer, TagSync, Tls, batched_hook,
+    config::Account, failure_handler, reconnecting,
 };
 use rustix::process::Signal;
 
@@ -139,15 +139,16 @@ pub fn sync_mailbox(
     tls: &Tls,
     mailbox: &str,
     idle: bool,
+    tags: Option<&TagSync>,
     shutdown: &Shutdown,
 ) -> Result<(), Error> {
     if idle {
         let idle_timeout = IdleTimeout::new(config.idle_timout());
         reconnecting(mailbox, shutdown, || {
-            sync_continuously(config, tls, mailbox, &idle_timeout, shutdown)
+            sync_continuously(config, tls, mailbox, &idle_timeout, tags, shutdown)
         })
     } else {
-        sync_once(config, tls, mailbox, shutdown)
+        sync_once(config, tls, mailbox, tags, shutdown)
     }
 }
 
@@ -166,6 +167,7 @@ fn sync_continuously(
     tls: &Tls,
     mailbox: &str,
     idle_timeout: &IdleTimeout,
+    tags: Option<&TagSync>,
     shutdown: &Shutdown,
 ) -> Result<(), Error> {
     let rt = compio::runtime::Runtime::new().map_err(Error::Runtime)?;
@@ -185,6 +187,7 @@ fn sync_continuously(
             idle_timeout.get(),
             config.sync(),
             changes,
+            tags,
             shutdown,
         )
         .await;
@@ -207,7 +210,13 @@ fn sync_continuously(
     })
 }
 
-fn sync_once(config: &Account, tls: &Tls, mailbox: &str, shutdown: &Shutdown) -> Result<(), Error> {
+fn sync_once(
+    config: &Account,
+    tls: &Tls,
+    mailbox: &str,
+    tags: Option<&TagSync>,
+    shutdown: &Shutdown,
+) -> Result<(), Error> {
     let rt = compio::runtime::Runtime::new().map_err(Error::Runtime)?;
 
     rt.block_on(async {
@@ -224,6 +233,7 @@ fn sync_once(config: &Account, tls: &Tls, mailbox: &str, shutdown: &Shutdown) ->
             client,
             config.sync(),
             changes,
+            tags,
             shutdown,
         )
         .await;
@@ -247,7 +257,12 @@ fn sync_once(config: &Account, tls: &Tls, mailbox: &str, shutdown: &Shutdown) ->
     })
 }
 
-pub fn sync_all(config: Account, idle: bool, shutdown: &Shutdown) -> Result<(), Error> {
+pub fn sync_all(
+    config: Account,
+    idle: bool,
+    tags: Option<&TagSync>,
+    shutdown: &Shutdown,
+) -> Result<(), Error> {
     let config = Arc::new(config);
     let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
     let mut sync_handles = Vec::new();
@@ -257,8 +272,16 @@ pub fn sync_all(config: Account, idle: bool, shutdown: &Shutdown) -> Result<(), 
         let tls = tls.clone();
         let mailbox_clone = mailbox.clone();
         let thread_shutdown = shutdown.clone();
+        let tags = tags.cloned();
         let spawned = thread::Builder::new().name(mailbox.clone()).spawn(move || {
-            if let Err(e) = sync_mailbox(&config, &tls, &mailbox_clone, idle, &thread_shutdown) {
+            if let Err(e) = sync_mailbox(
+                &config,
+                &tls,
+                &mailbox_clone,
+                idle,
+                tags.as_ref(),
+                &thread_shutdown,
+            ) {
                 // other mailboxes may take long to finish
                 log::error!("{e}");
                 if idle {

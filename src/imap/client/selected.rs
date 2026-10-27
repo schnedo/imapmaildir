@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
@@ -23,22 +23,65 @@ use crate::{
         transport::{self, Chain, Connection, ResponseData, ResponseHandler},
     },
     maildir::{FlagChange, LocalMail, MaildirFile, NewLocalMailMetadata},
-    repository::{Flag, ModSeq, SequenceRange, SequenceSet, Uid, UidValidity},
+    repository::{
+        Flag, KeywordSource, Keywords, ModSeq, SequenceRange, SequenceSet, Uid, UidValidity,
+    },
     sync::{ByteBudget, Task},
 };
 
 pub enum IdleStopReason {
     Timeout,
     Remote,
-    Local { changes: LocalChanges },
+    Local {
+        changes: LocalChanges,
+    },
     Rescan,
+    /// Tags changed in notmuch
+    Tags,
     LocalError(MaildirError),
+    /// Watching notmuch for tag changes stopped
+    TagsError(crate::notmuch::Error),
     Shutdown,
 }
 
 /// Bounds the commands sent before receiving completions, so that neither side blocks on full
 /// socket buffers while the other is still sending
 const MAX_PIPELINED_COMMANDS: usize = 64;
+
+/// Keywords the server stores permanently for the selected mailbox (RFC 3501 7.1)
+#[derive(Debug, Clone)]
+pub struct PermanentKeywords {
+    /// Whether new keywords can be created (`\*`)
+    pub any: bool,
+    /// Existing keywords, that can be stored
+    pub existing: Keywords,
+}
+
+impl Default for PermanentKeywords {
+    /// Servers not reporting permanent flags let clients store all flags
+    fn default() -> Self {
+        Self {
+            any: true,
+            existing: Keywords::default(),
+        }
+    }
+}
+
+impl PermanentKeywords {
+    /// Whether the server can store `keyword` of `source` when `added` to or removed from mails.
+    /// Warns otherwise.
+    fn can_store(&self, keyword: &str, source: KeywordSource, added: bool) -> bool {
+        let storable = Keywords::is_storable(keyword, source)
+            && (!added
+                || source != KeywordSource::Flags
+                || self.any
+                || self.existing.contains(keyword));
+        if !storable {
+            log::warn!("server cannot store keyword {keyword}, not syncing it");
+        }
+        storable
+    }
+}
 
 /// Maximum length of sequence sets in commands, as servers limit the length of command lines.
 /// RFC 7162 4 recommends limiting them to 8192 octets.
@@ -52,8 +95,10 @@ pub struct SelectedClient {
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     own_modseqs: OwnModSeqs,
     uid_validity: UidValidity,
+    permanent_keywords: PermanentKeywords,
 }
 impl SelectedClient {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         connection: Connection,
         capabilities: Capabilities,
@@ -62,6 +107,7 @@ impl SelectedClient {
         budget: ByteBudget,
         exists: u32,
         uid_validity: UidValidity,
+        permanent_keywords: PermanentKeywords,
     ) -> Result<Self, Error> {
         if !capabilities.contains(Capability::UidPlus) {
             return Err(Error::MissingCapability(Capability::UidPlus));
@@ -76,12 +122,44 @@ impl SelectedClient {
                 message_count: MessageCount::new(exists),
                 tracking: (!qresync).then(|| SequenceTracking::new(exists)),
                 capabilities,
+                unknown_keywords: false,
             },
             idle_stop_rx,
             idle_stop_tx: Some(idle_stop_tx),
             own_modseqs: OwnModSeqs::default(),
             uid_validity,
+            permanent_keywords,
         })
+    }
+
+    /// Where the server keeps keywords of mails
+    pub fn keyword_source(&self) -> KeywordSource {
+        self.mailbox_handler.capabilities.keyword_source()
+    }
+
+    /// `change` without keywords, that the server cannot store, so that they do not get
+    /// applied as if they were stored
+    pub fn storable(&self, change: &FlagChange) -> FlagChange {
+        let source = self.keyword_source();
+        let mut storable = change.clone();
+        storable
+            .keywords
+            .added
+            .retain(|keyword| self.permanent_keywords.can_store(keyword, source, true));
+        storable
+            .keywords
+            .removed
+            .retain(|keyword| self.permanent_keywords.can_store(keyword, source, false));
+
+        storable
+    }
+
+    /// Items of FETCH commands for metadata of mails
+    fn metadata_items(&self) -> &'static str {
+        match self.keyword_source() {
+            KeywordSource::Flags => "UID MODSEQ FLAGS",
+            KeywordSource::GmailLabels => "UID MODSEQ FLAGS X-GM-LABELS",
+        }
     }
 
     pub fn supports_qresync(&self) -> bool {
@@ -134,7 +212,10 @@ impl SelectedClient {
 
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
         for sequence_set in sequence_set.chunks(MAX_SEQUENCE_SET_LEN) {
-            let command = format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS BODY.PEEK[])");
+            let command = format!(
+                "UID FETCH {sequence_set} ({} BODY.PEEK[])",
+                self.metadata_items()
+            );
             log::debug!("{command}");
             self.connection
                 .send(command.into(), &mut self.mailbox_handler)
@@ -145,7 +226,7 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all(&mut self) -> Result<(), Error> {
-        let command = "UID FETCH 1:* (UID MODSEQ FLAGS BODY.PEEK[])";
+        let command = format!("UID FETCH 1:* ({} BODY.PEEK[])", self.metadata_items());
         log::debug!("{command}");
         self.connection
             .send(command.into(), &mut self.mailbox_handler)
@@ -163,10 +244,14 @@ impl SelectedClient {
         } else {
             ""
         };
-        let command = format!("UID FETCH 1:* (UID MODSEQ FLAGS) (CHANGEDSINCE {modseq}{vanished})");
+        let command = format!(
+            "UID FETCH 1:* ({}) (CHANGEDSINCE {modseq}{vanished})",
+            self.metadata_items()
+        );
         if let Some(tracking) = &mut self.mailbox_handler.tracking {
             tracking.unsolicited_change = false;
         }
+        self.mailbox_handler.unknown_keywords = false;
         self.collect_metadata(command, None).await
     }
 
@@ -178,7 +263,7 @@ impl SelectedClient {
         for sequence_set in sequence_set.chunks(MAX_SEQUENCE_SET_LEN) {
             metadata.extend(
                 self.collect_metadata(
-                    format!("UID FETCH {sequence_set} (UID MODSEQ FLAGS)"),
+                    format!("UID FETCH {sequence_set} ({})", self.metadata_items()),
                     Some(sequence_set.iter().collect()),
                 )
                 .await?,
@@ -189,7 +274,7 @@ impl SelectedClient {
     }
 
     pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
-        self.collect_metadata("UID FETCH 1:* (UID MODSEQ FLAGS)".to_string(), None)
+        self.collect_metadata(format!("UID FETCH 1:* ({})", self.metadata_items()), None)
             .await
     }
 
@@ -206,6 +291,7 @@ impl SelectedClient {
         let collector = MetadataCollector {
             sequences: self.mailbox_handler.needs_uids().then(Vec::new),
             requested,
+            keyword_source: self.keyword_source(),
             ..MetadataCollector::default()
         };
         let exists = self.mailbox_handler.message_count.begin_command();
@@ -232,9 +318,10 @@ impl SelectedClient {
 
     pub async fn complete_initial_sync(&mut self, modseq: ModSeq) -> Result<(), Error> {
         let (done_tx, done_rx) = oneshot();
+        let source = self.keyword_source();
         self.mailbox_handler
             .task_tx
-            .send(Task::CompleteInitialSync(modseq, done_tx))
+            .send(Task::CompleteInitialSync(modseq, source, done_tx))
             .await
             .map_err(|_| Error::TaskProcessingStopped)?;
         done_rx.await.map_err(|_| Error::TaskProcessingStopped)
@@ -359,37 +446,122 @@ impl SelectedClient {
         Ok(ranges.into_iter().flatten().collect())
     }
 
-    pub async fn store_flag_change(
+    /// Stores each change on its mails unchanged since `highest_modseq`. Returns the UIDs of
+    /// each change rejected due to remote changes and the stored change, which lacks keywords
+    /// the server refused, e.g. as they are too long.
+    pub async fn store_flag_changes(
         &mut self,
         highest_modseq: ModSeq,
-        change: FlagChange,
-        sequence_set: &SequenceSet,
-    ) -> Result<HashSet<Uid>, Error> {
-        let pending = self
-            .own_modseqs
-            .unchanged_since(highest_modseq, sequence_set);
-        self.store_flag_change_since(pending, change).await
+        changes: Vec<(FlagChange, &SequenceSet)>,
+    ) -> Result<Vec<(HashSet<Uid>, FlagChange)>, Error> {
+        let changes = changes
+            .into_iter()
+            .map(|(change, sequence_set)| {
+                let pending = self
+                    .own_modseqs
+                    .unchanged_since(highest_modseq, sequence_set);
+                (pending, change)
+            })
+            .collect();
+        self.store_flag_changes_since(changes).await
     }
 
-    /// Stores `change` on mails unchanged since their modseq in `pending` and returns the UIDs
-    /// rejected due to remote changes
-    pub async fn store_flag_change_since(
+    /// Stores each change on its mails unchanged since their modseq in its `pending`. These
+    /// must be disjoint. Returns the UIDs of each change rejected due to remote changes and the
+    /// stored change, which lacks keywords the server refused, e.g. as they are too long.
+    pub async fn store_flag_changes_since(
         &mut self,
-        mut pending: HashMap<Uid, ModSeq>,
-        change: FlagChange,
-    ) -> Result<HashSet<Uid>, Error> {
-        let mut rejected = HashSet::new();
-        for (operation, flags) in [('+', change.added), ('-', change.removed)] {
-            if flags.is_empty() {
-                continue;
+        changes: Vec<(HashMap<Uid, ModSeq>, FlagChange)>,
+    ) -> Result<Vec<(HashSet<Uid>, FlagChange)>, Error> {
+        let source = self.keyword_source();
+        let mut stores: Vec<ChangeStore> = changes
+            .into_iter()
+            .map(|(pending, change)| ChangeStore {
+                steps: store_items(&change, source, &self.permanent_keywords)
+                    .into_iter()
+                    .map(StoreStep::Items)
+                    .collect(),
+                pending,
+                stored: change,
+                rejected: HashSet::new(),
+            })
+            .collect();
+        loop {
+            // the next step of all changes at once, as their mails are disjoint. Steps of a
+            // change follow each other, as each one needs the modseqs of the one before.
+            let steps: Vec<(usize, StoreStep)> = stores
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, store)| !store.pending.is_empty())
+                .filter_map(|(index, store)| store.steps.pop_front().map(|step| (index, step)))
+                .collect();
+            if steps.is_empty() {
+                break;
             }
-            rejected.extend(
-                self.store_flags_grouped(&mut pending, operation, flags)
-                    .await?,
-            );
+            let commands: Vec<StoreCommand> = steps
+                .iter()
+                .enumerate()
+                .flat_map(|(step, (store, items))| {
+                    let (operation, items) = items.command();
+                    grouped(&stores[*store].pending).into_iter().map(
+                        move |(unchanged_since, sequence_set)| StoreCommand {
+                            step,
+                            unchanged_since,
+                            sequence_set,
+                            operation,
+                            items: items.clone(),
+                        },
+                    )
+                })
+                .collect();
+            let mut refused: Vec<Option<Option<String>>> = vec![None; steps.len()];
+            for commands in commands.chunks(MAX_PIPELINED_COMMANDS) {
+                let (results, modseqs) = self.store_flags(commands).await?;
+                // also of commands pipelined with failed ones, which got stored nevertheless
+                for (uid, modseq) in modseqs {
+                    for store in &mut stores {
+                        if let Some(pending_modseq) = store.pending.get_mut(&uid) {
+                            *pending_modseq = modseq;
+                            break;
+                        }
+                    }
+                }
+                let mut failed = None;
+                for (command, result) in commands.iter().zip(results) {
+                    let (store, step) = &steps[command.step];
+                    let store = &mut stores[*store];
+                    match result {
+                        Ok(modified) => {
+                            for uid in &modified {
+                                store.pending.remove(uid);
+                            }
+                            store.rejected.extend(modified);
+                        }
+                        Err(Error::Transport(transport::Error::No(reason)))
+                            if step.is_refusable() && !is_transient_no(reason.as_ref()) =>
+                        {
+                            refused[command.step] = Some(reason);
+                        }
+                        Err(e) => {
+                            failed.get_or_insert(e);
+                        }
+                    }
+                }
+                if let Some(e) = failed {
+                    return Err(e);
+                }
+            }
+            for ((store, step), reason) in steps.into_iter().zip(refused) {
+                if let Some(reason) = reason {
+                    stores[store].refuse(step, reason.as_deref().unwrap_or("NO"));
+                }
+            }
         }
 
-        Ok(rejected)
+        Ok(stores
+            .into_iter()
+            .map(|store| (store.rejected, store.stored))
+            .collect())
     }
 
     /// Stores flags of `pending` mails grouped by their UNCHANGEDSINCE modseq, pipelining the
@@ -398,53 +570,56 @@ impl SelectedClient {
     async fn store_flags_grouped(
         &mut self,
         pending: &mut HashMap<Uid, ModSeq>,
-        operation: char,
-        flags: BitFlags<Flag>,
+        operation: &'static str,
+        items: &str,
     ) -> Result<HashSet<Uid>, Error> {
-        let mut groups: HashMap<ModSeq, Vec<Uid>> = HashMap::new();
-        for (uid, modseq) in pending.iter() {
-            groups.entry(*modseq).or_default().push(*uid);
-        }
-        let groups: Vec<_> = groups
+        let commands: Vec<StoreCommand> = grouped(pending)
             .into_iter()
-            .flat_map(|(unchanged_since, uids)| {
-                let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
-                set.chunks(MAX_SEQUENCE_SET_LEN)
-                    .into_iter()
-                    .map(move |set| (unchanged_since, set))
+            .map(|(unchanged_since, sequence_set)| StoreCommand {
+                step: 0,
+                unchanged_since,
+                sequence_set,
+                operation,
+                items: items.to_string(),
             })
             .collect();
         let mut rejected = HashSet::new();
-        for groups in groups.chunks(MAX_PIPELINED_COMMANDS) {
-            let (modified, modseqs) = self.store_flags(groups, operation, flags).await?;
+        for commands in commands.chunks(MAX_PIPELINED_COMMANDS) {
+            let (results, modseqs) = self.store_flags(commands).await?;
             for (uid, modseq) in modseqs {
                 if let Some(pending_modseq) = pending.get_mut(&uid) {
                     *pending_modseq = modseq;
                 }
             }
-            for uid in modified {
-                pending.remove(&uid);
-                rejected.insert(uid);
+            for modified in results {
+                for uid in modified? {
+                    pending.remove(&uid);
+                    rejected.insert(uid);
+                }
             }
         }
 
         Ok(rejected)
     }
 
-    /// Pipelines a `UID STORE` per group of UNCHANGEDSINCE modseq and UIDs. Pipelining is safe,
-    /// as the groups are disjoint.
+    /// Pipelines `commands`, which must store disjoint mails. Returns the UIDs each one
+    /// rejected due to remote changes or its error, and the new modseqs of stored mails.
     async fn store_flags(
         &mut self,
-        groups: &[(ModSeq, SequenceSet)],
-        operation: char,
-        flags: BitFlags<Flag>,
-    ) -> Result<(HashSet<Uid>, HashMap<Uid, ModSeq>), Error> {
-        let flags = Flag::format(flags).unwrap_or_default();
-        let commands = groups
+        commands: &[StoreCommand],
+    ) -> Result<(Vec<Result<HashSet<Uid>, Error>>, HashMap<Uid, ModSeq>), Error> {
+        let raw = commands
             .iter()
-            .map(|(unchanged_since, sequence_set)| {
+            .map(|command| {
+                let StoreCommand {
+                    unchanged_since,
+                    sequence_set,
+                    operation,
+                    items,
+                    ..
+                } = command;
                 let command = format!(
-                    "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}FLAGS.SILENT ({flags})"
+                    "UID STORE {sequence_set} (UNCHANGEDSINCE {unchanged_since}) {operation}.SILENT ({items})"
                 );
                 log::debug!("{command}");
                 command.into_bytes()
@@ -461,7 +636,7 @@ impl SelectedClient {
         let mut handler = Chain(store_handler, &mut self.mailbox_handler);
         let responses = self
             .connection
-            .send_pipelined(commands, &mut handler)
+            .send_pipelined_each(raw, &mut handler)
             .await?;
         let StoreHandler { modseqs, sequences } = handler.0;
         self.own_modseqs.record(&modseqs);
@@ -469,15 +644,19 @@ impl SelectedClient {
         if let Some(sequences) = sequences {
             self.mailbox_handler.apply_fetched_uids(sequences);
         }
-        let mut modified = HashSet::new();
-        for (response, (_, sequence_set)) in responses.iter().zip(groups) {
-            modified.extend(modified_uids(response, sequence_set)?);
-        }
-        if !modified.is_empty() {
-            log::warn!("mails {modified:?} changed on server. Not updating their flags");
-        }
+        let results = responses
+            .into_iter()
+            .zip(commands)
+            .map(|(response, command)| {
+                let modified = modified_uids(&response?, &command.sequence_set)?;
+                if !modified.is_empty() {
+                    log::warn!("mails {modified:?} changed on server. Not updating their flags");
+                }
+                Ok(modified)
+            })
+            .collect();
 
-        Ok((modified, modseqs))
+        Ok((results, modseqs))
     }
 
     pub async fn delete(
@@ -498,7 +677,7 @@ impl SelectedClient {
         mut pending: HashMap<Uid, ModSeq>,
     ) -> Result<HashSet<Uid>, Error> {
         let modified = self
-            .store_flags_grouped(&mut pending, '+', Flag::Deleted.into())
+            .store_flags_grouped(&mut pending, "+FLAGS", &Flag::Deleted.to_string())
             .await?;
         if !modified.is_empty() {
             log::warn!("mails {modified:?} changed on server. Not deleting them");
@@ -615,6 +794,7 @@ enum IdleEvent {
 
 #[derive(Default)]
 struct MetadataCollector {
+    keyword_source: KeywordSource,
     metadata: Vec<RemoteMailMetadata>,
     highest_sequence: u32,
     /// Only collected while tracking the sequence to UID map
@@ -639,12 +819,19 @@ impl MetadataCollector {
         if let imap_proto::Response::Fetch(sequence, attributes) = response.parsed()
             && let parsed = FetchAttributes::parse(attributes)
             && parsed.body.is_none()
-            && let Some(metadata) = parsed.metadata()?
+            && let Some(metadata) = parsed.metadata(self.keyword_source)?
             && self
                 .requested
                 .as_ref()
                 .is_none_or(|requested| requested.contains(&metadata.uid()))
         {
+            if metadata.keywords().is_none() {
+                // e.g. labels sent as literals, which imap-proto cannot parse
+                log::warn!(
+                    "server reported mail {} without readable labels, which may stay unsynced",
+                    metadata.uid()
+                );
+            }
             self.highest_sequence = self.highest_sequence.max(*sequence);
             if let Some(sequences) = &mut self.sequences {
                 sequences.push((*sequence, metadata.uid()));
@@ -655,6 +842,204 @@ impl MetadataCollector {
             Ok(Some(response))
         }
     }
+}
+
+/// `UID STORE` of a step storing a change
+struct StoreCommand {
+    /// Index of the step among the ones stored at once
+    step: usize,
+    unchanged_since: ModSeq,
+    sequence_set: SequenceSet,
+    operation: &'static str,
+    items: String,
+}
+
+/// UIDs of `pending` grouped by their modseq, in sequence sets not exceeding
+/// [`MAX_SEQUENCE_SET_LEN`]
+fn grouped(pending: &HashMap<Uid, ModSeq>) -> Vec<(ModSeq, SequenceSet)> {
+    let mut groups: HashMap<ModSeq, Vec<Uid>> = HashMap::new();
+    for (uid, modseq) in pending {
+        groups.entry(*modseq).or_default().push(*uid);
+    }
+    groups
+        .into_iter()
+        .flat_map(|(unchanged_since, uids)| {
+            let set = SequenceSet::try_from(&uids).expect("grouped uids should not be empty");
+            set.chunks(MAX_SEQUENCE_SET_LEN)
+                .into_iter()
+                .map(move |set| (unchanged_since, set))
+        })
+        .collect()
+}
+
+/// Storing a change on its mails step by step
+struct ChangeStore {
+    /// Mails not rejected yet with the modseq they must be unchanged since
+    pending: HashMap<Uid, ModSeq>,
+    /// The change without keywords the server refused
+    stored: FlagChange,
+    rejected: HashSet<Uid>,
+    steps: VecDeque<StoreStep>,
+}
+
+impl ChangeStore {
+    /// Continues after the server refused `step` for a not transient `reason`
+    fn refuse(&mut self, step: StoreStep, reason: &str) {
+        match step {
+            StoreStep::Items(items) => {
+                log::debug!(
+                    "server refused {} ({reason}), storing keywords one by one",
+                    items.operation
+                );
+                let operation = items.operation;
+                let keywords =
+                    items
+                        .keywords
+                        .into_iter()
+                        .zip(items.originals)
+                        .map(|(keyword, original)| StoreStep::Keyword {
+                            operation,
+                            keyword,
+                            original,
+                        });
+                let flags = (!items.flags.is_empty()).then(|| StoreStep::Flags {
+                    operation,
+                    flags: items.flags.join(" "),
+                });
+                for step in flags.into_iter().chain(keywords).rev() {
+                    self.steps.push_front(step);
+                }
+            }
+            StoreStep::Keyword {
+                operation,
+                original,
+                ..
+            } => {
+                log::warn!("server refused {operation} {original} ({reason}), not syncing it");
+                let refused = if operation.starts_with('+') {
+                    &mut self.stored.keywords.added
+                } else {
+                    &mut self.stored.keywords.removed
+                };
+                refused.retain(|kept| *kept != original);
+            }
+            StoreStep::Flags { .. } => unreachable!("flags are not refusable"),
+        }
+    }
+}
+
+/// Operation of storing a change
+enum StoreStep {
+    /// All items of an operation. If the server refuses them, its flags and each of its
+    /// keywords get stored separately.
+    Items(StoreItems),
+    Flags {
+        operation: &'static str,
+        flags: String,
+    },
+    /// A single keyword, which the change loses if the server refuses it
+    Keyword {
+        operation: &'static str,
+        /// Formatted keyword
+        keyword: String,
+        /// Keyword as in the change
+        original: String,
+    },
+}
+
+impl StoreStep {
+    fn command(&self) -> (&'static str, String) {
+        match self {
+            Self::Items(items) => (items.operation, items.joined()),
+            Self::Flags { operation, flags } => (operation, flags.clone()),
+            Self::Keyword {
+                operation, keyword, ..
+            } => (operation, keyword.clone()),
+        }
+    }
+
+    /// Whether the server may refuse it, e.g. as keywords are too long
+    fn is_refusable(&self) -> bool {
+        match self {
+            Self::Items(items) => !items.keywords.is_empty(),
+            Self::Flags { .. } => false,
+            Self::Keyword { .. } => true,
+        }
+    }
+}
+
+/// Items of a `STORE` operation, e.g. `+FLAGS`
+#[derive(Debug, PartialEq, Eq)]
+struct StoreItems {
+    operation: &'static str,
+    flags: Vec<String>,
+    /// Formatted keywords
+    keywords: Vec<String>,
+    /// Keywords as in the change
+    originals: Vec<String>,
+}
+
+impl StoreItems {
+    fn joined(&self) -> String {
+        let mut items = self.flags.clone();
+        items.extend(self.keywords.iter().cloned());
+        items.join(" ")
+    }
+}
+
+/// The `+`/`-` operations and their `FLAGS` or `X-GM-LABELS` items storing `change`.
+/// Keywords the server cannot store get dropped.
+fn store_items(
+    change: &FlagChange,
+    source: KeywordSource,
+    permanent_keywords: &PermanentKeywords,
+) -> Vec<StoreItems> {
+    let keywords = |keywords: &Keywords, added: bool| -> (Vec<String>, Vec<String>) {
+        keywords
+            .iter()
+            .filter(|keyword| permanent_keywords.can_store(keyword, source, added))
+            .map(|keyword| {
+                let formatted = match source {
+                    KeywordSource::GmailLabels if !keyword.starts_with('\\') => {
+                        encoding::quote(keyword).expect("storable labels should be quotable")
+                    }
+                    _ => keyword.to_string(),
+                };
+                (formatted, keyword.to_string())
+            })
+            .unzip()
+    };
+    let (added, added_originals) = keywords(&change.keywords.added, true);
+    let (removed, removed_originals) = keywords(&change.keywords.removed, false);
+    let flags = |flags: BitFlags<Flag>| flags.iter().map(|flag| flag.to_string()).collect();
+    let item = |operation, flags, keywords, originals| StoreItems {
+        operation,
+        flags,
+        keywords,
+        originals,
+    };
+    let items = match source {
+        KeywordSource::Flags => vec![
+            item("+FLAGS", flags(change.added), added, added_originals),
+            item("-FLAGS", flags(change.removed), removed, removed_originals),
+        ],
+        KeywordSource::GmailLabels => vec![
+            item("+FLAGS", flags(change.added), Vec::new(), Vec::new()),
+            item("-FLAGS", flags(change.removed), Vec::new(), Vec::new()),
+            item("+X-GM-LABELS", Vec::new(), added, added_originals),
+            item("-X-GM-LABELS", Vec::new(), removed, removed_originals),
+        ],
+    };
+
+    items
+        .into_iter()
+        .filter(|items| !items.flags.is_empty() || !items.keywords.is_empty())
+        .collect()
+}
+
+/// Whether a NO response with `reason` may succeed later
+fn is_transient_no(reason: Option<&String>) -> bool {
+    reason.is_some_and(|reason| transport::is_transient_no(reason))
 }
 
 fn plausible_uids(uids: Vec<Uid>, exists: u32) -> Result<Vec<Uid>, Error> {
@@ -764,6 +1149,7 @@ impl StoreHandler {
                 uid: Some(uid),
                 modseq: Some(modseq),
                 flags: None,
+                labels: None,
                 body: None,
             } = FetchAttributes::parse(attributes)
         {
@@ -831,6 +1217,8 @@ struct MailboxHandler {
     tracking: Option<SequenceTracking>,
     /// Updated by unsolicited CAPABILITY responses
     capabilities: Capabilities,
+    /// Flags of mails changed without reporting their keywords, e.g. Gmail labels
+    unknown_keywords: bool,
 }
 
 /// Resolves sequence numbers of unsolicited responses to UIDs without QRESYNC
@@ -866,10 +1254,11 @@ impl ResponseHandler for MailboxHandler {
                 self.message_count.on_fetch(*sequence);
                 let attributes = FetchAttributes::parse(attributes);
                 log::trace!("FETCH {attributes:?}");
+                let source = self.capabilities.keyword_source();
                 let metadata = if let Some(tracking) = &mut self.tracking {
                     let uid = attributes.uid.map(Uid::try_from).transpose()?;
                     let resolved = tracking.uid_map.on_fetch(*sequence, uid);
-                    let metadata = attributes.metadata_with_uid(resolved.or(uid))?;
+                    let metadata = attributes.metadata_with_uid(resolved.or(uid), source)?;
                     if metadata.is_none() && attributes.uid.is_none() && attributes.flags.is_some()
                     {
                         log::debug!("cannot resolve uid of mail {sequence} with changed flags");
@@ -878,8 +1267,14 @@ impl ResponseHandler for MailboxHandler {
                     }
                     metadata
                 } else {
-                    attributes.metadata()?
+                    attributes.metadata(source)?
                 };
+                if let Some(metadata) = &metadata
+                    && metadata.keywords().is_none()
+                {
+                    log::debug!("keywords of mail {} changed unreported", metadata.uid());
+                    self.unknown_keywords = true;
+                }
                 let task = match (metadata, attributes.body) {
                     (Some(metadata), Some(Some(content))) => {
                         self.budget
@@ -985,6 +1380,7 @@ impl MailboxHandler {
 
     fn needs_remote_sync(&self) -> bool {
         self.message_count.has_unknown()
+            || self.unknown_keywords
             || self
                 .tracking
                 .as_ref()
@@ -1002,6 +1398,8 @@ impl MailboxHandler {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    use rstest::*;
 
     use super::*;
     use crate::imap::client::encoding::LiteralMode;
@@ -1033,6 +1431,7 @@ mod tests {
             message_count: MessageCount::new(exists),
             tracking: Some(SequenceTracking::new(exists)),
             capabilities: Capabilities::default(),
+            unknown_keywords: false,
         };
 
         (handler, task_rx)
@@ -1303,6 +1702,106 @@ mod tests {
         assert!(task_rx.try_recv().is_err());
         assert!(assertables::assert_some!(&handler.tracking).unsolicited_change);
         assert!(handler.needs_remote_sync());
+    }
+
+    #[rstest]
+    #[case(b"* 1 FETCH (UID 3 MODSEQ (5) FLAGS (\\Seen))\r\n", None, true)]
+    #[case(
+        b"* 1 FETCH (UID 3 MODSEQ (5) FLAGS (\\Seen) X-GM-LABELS (\\Inbox))\r\n",
+        Some(&["\\Inbox"][..]),
+        false
+    )]
+    #[compio::test]
+    async fn test_mailbox_handler_takes_gmail_labels_or_requests_sync(
+        #[case] response: &'static [u8],
+        #[case] labels: Option<&[&str]>,
+        #[case] needs_sync: bool,
+    ) {
+        let (mut handler, task_rx) = mailbox_handler(1);
+        handler.capabilities.use_gmail_labels(true);
+        handle(&mut handler, b"* CAPABILITY IMAP4rev1 X-GM-EXT-1\r\n").await;
+
+        handle(&mut handler, response).await;
+
+        let Ok(Task::UpdateFlags(metadata)) = task_rx.try_recv() else {
+            panic!("flag change should be applied");
+        };
+        assert_eq!(metadata.keywords().cloned(), labels.map(Keywords::of));
+        assert_eq!(handler.needs_remote_sync(), needs_sync);
+    }
+
+    fn joined(items: Vec<StoreItems>) -> Vec<(&'static str, String)> {
+        items
+            .into_iter()
+            .map(|items| (items.operation, items.joined()))
+            .collect()
+    }
+
+    fn keyword_change() -> FlagChange {
+        FlagChange {
+            added: Flag::Seen.into(),
+            removed: Flag::Flagged.into(),
+            keywords: crate::repository::KeywordChange {
+                added: Keywords::of(&["$Junk", "my label", "\\Inbox"]),
+                removed: Keywords::of(&["work"]),
+            },
+        }
+    }
+
+    #[test]
+    fn test_store_items_combine_flags_and_keywords() {
+        let items = joined(store_items(
+            &keyword_change(),
+            KeywordSource::Flags,
+            &PermanentKeywords::default(),
+        ));
+
+        assert_eq!(
+            items,
+            vec![
+                ("+FLAGS", "\\Seen $Junk".to_string()),
+                ("-FLAGS", "\\Flagged work".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_store_items_skip_keywords_server_cannot_create() {
+        let permanent = PermanentKeywords {
+            any: false,
+            existing: Keywords::of(&["work"]),
+        };
+        let mut change = keyword_change();
+        change.keywords.added = Keywords::of(&["$Junk", "work"]);
+
+        let items = joined(store_items(&change, KeywordSource::Flags, &permanent));
+
+        assert_eq!(
+            items,
+            vec![
+                ("+FLAGS", "\\Seen work".to_string()),
+                ("-FLAGS", "\\Flagged work".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_store_items_store_gmail_labels_separately() {
+        let items = joined(store_items(
+            &keyword_change(),
+            KeywordSource::GmailLabels,
+            &PermanentKeywords::default(),
+        ));
+
+        assert_eq!(
+            items,
+            vec![
+                ("+FLAGS", "\\Seen".to_string()),
+                ("-FLAGS", "\\Flagged".to_string()),
+                ("+X-GM-LABELS", "\"$Junk\" \\Inbox \"my label\"".to_string()),
+                ("-X-GM-LABELS", "\"work\"".to_string()),
+            ]
+        );
     }
 
     #[test]

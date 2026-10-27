@@ -2,6 +2,7 @@ pub mod config;
 mod imap;
 pub mod logging;
 mod maildir;
+mod notmuch;
 mod repository;
 mod sync;
 
@@ -10,6 +11,9 @@ pub use crate::imap::ClientError;
 pub use crate::imap::Tls;
 pub use crate::imap::TransportError;
 pub use crate::maildir::{ChangeRecorder, ChangeSink, MailChange};
+pub use crate::notmuch::{
+    Error as NotmuchError, Location as NotmuchLocation, Notmuch, TagConfig, TagSync,
+};
 pub use crate::sync::Error as SyncError;
 pub use crate::sync::IdleTimeout;
 pub use crate::sync::Shutdown;

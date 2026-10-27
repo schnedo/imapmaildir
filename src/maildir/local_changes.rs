@@ -4,21 +4,43 @@ use enumflags2::BitFlags;
 
 use crate::{
     maildir::{NewLocalMailMetadata, OtherFlags},
-    repository::{Flag, SequenceSet, SequenceSetBuilder, Uid},
+    notmuch::Revision,
+    repository::{Flag, KeywordChange, SequenceSet, SequenceSetBuilder, Uid},
 };
 
-#[derive(Debug, Default, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, Default, PartialEq, Eq, Hash, Clone)]
 pub struct FlagChange {
     pub added: BitFlags<Flag>,
     pub removed: BitFlags<Flag>,
+    pub keywords: KeywordChange,
 }
 
 impl FlagChange {
-    fn then(self, next: Self) -> Self {
+    pub fn new(added: BitFlags<Flag>, removed: BitFlags<Flag>) -> Self {
+        Self {
+            added,
+            removed,
+            keywords: KeywordChange::default(),
+        }
+    }
+
+    pub fn of_keywords(keywords: KeywordChange) -> Self {
+        Self {
+            keywords,
+            ..Self::default()
+        }
+    }
+
+    pub fn then(&self, next: &Self) -> Self {
         Self {
             added: (self.added & !next.removed) | next.added,
             removed: (self.removed & !next.added) | next.removed,
+            keywords: self.keywords.then(&next.keywords),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.keywords.is_empty()
     }
 }
 
@@ -28,8 +50,8 @@ pub struct LocalFlagChanges {
 }
 
 impl LocalFlagChanges {
-    pub fn iter(&self) -> impl Iterator<Item = (FlagChange, &SequenceSet)> {
-        self.changes.iter().map(|(change, set)| (*change, set))
+    pub fn iter(&self) -> impl Iterator<Item = (&FlagChange, &SequenceSet)> {
+        self.changes.iter()
     }
 }
 
@@ -42,7 +64,7 @@ impl LocalFlagChangesBuilder {
     pub fn build(self) -> LocalFlagChanges {
         let mut grouped: HashMap<FlagChange, SequenceSetBuilder> = HashMap::new();
         for (uid, change) in self.changes {
-            if change != FlagChange::default() {
+            if !change.is_empty() {
                 grouped.entry(change).or_default().add(uid);
             }
         }
@@ -56,8 +78,10 @@ impl LocalFlagChangesBuilder {
     }
 
     pub fn insert(&mut self, uid: Uid, change: FlagChange) {
-        let entry = self.changes.entry(uid).or_default();
-        *entry = entry.then(change);
+        self.changes
+            .entry(uid)
+            .and_modify(|existing| *existing = existing.then(&change))
+            .or_insert(change);
     }
 
     pub fn remove(&mut self, uid: Uid) {
@@ -67,13 +91,15 @@ impl LocalFlagChangesBuilder {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct LocalChanges {
     pub updates: LocalFlagChangesBuilder,
     pub deletions: Vec<Uid>,
     pub news: Vec<NewLocalMailMetadata>,
     /// Flags without IMAP equivalent changed by other clients, which only need storing
     pub other_flags: Vec<(Uid, OtherFlags)>,
+    /// Revision of notmuch, up to which tag changes are included
+    pub tags_revision: Option<Revision>,
 }
 
 impl LocalChanges {
@@ -86,7 +112,7 @@ impl LocalChanges {
             updates,
             deletions,
             news,
-            other_flags: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -119,7 +145,7 @@ mod tests {
     }
 
     fn change(added: BitFlags<Flag>, removed: BitFlags<Flag>) -> FlagChange {
-        FlagChange { added, removed }
+        FlagChange::new(added, removed)
     }
 
     #[rstest]
@@ -135,9 +161,9 @@ mod tests {
         set: SequenceSet,
     ) {
         let expected = change(Flag::Seen.into(), Flag::Flagged.into());
-        builder.insert(uid, expected);
+        builder.insert(uid, expected.clone());
         let changes = builder.build();
-        assert_eq!(vec![(expected, &set)], changes.iter().collect::<Vec<_>>());
+        assert_eq!(vec![(&expected, &set)], changes.iter().collect::<Vec<_>>());
     }
 
     #[rstest]
@@ -154,7 +180,7 @@ mod tests {
         let changes = builder.build();
         assert_eq!(
             vec![(
-                change(Flag::Flagged | Flag::Answered, Flag::Seen.into()),
+                &change(Flag::Flagged | Flag::Answered, Flag::Seen.into()),
                 &set
             )],
             changes.iter().collect::<Vec<_>>()
@@ -166,14 +192,14 @@ mod tests {
         let expected = change(Flag::Seen.into(), BitFlags::empty());
         let first = assert_ok!(Uid::try_from(1));
         let second = assert_ok!(Uid::try_from(2));
-        builder.insert(first, expected);
-        builder.insert(second, expected);
+        builder.insert(first, expected.clone());
+        builder.insert(second, expected.clone());
         let changes = builder.build();
         let mut set = SequenceSetBuilder::default();
         set.add(first);
         set.add(second);
         assert_eq!(
-            vec![(expected, &assert_ok!(set.build()))],
+            vec![(&expected, &assert_ok!(set.build()))],
             changes.iter().collect::<Vec<_>>()
         );
     }

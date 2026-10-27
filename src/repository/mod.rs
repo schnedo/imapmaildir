@@ -1,4 +1,5 @@
 mod flag;
+mod keyword;
 mod mailbox_metadata;
 mod modseq;
 mod sequence_set;
@@ -6,6 +7,9 @@ mod uid;
 mod uid_validity;
 
 pub use flag::Flag;
+pub use keyword::KeywordChange;
+pub use keyword::KeywordSource;
+pub use keyword::Keywords;
 pub use mailbox_metadata::MailboxMetadata;
 pub use mailbox_metadata::MailboxMetadataBuilder;
 pub use mailbox_metadata::MailboxMetadataBuilderError;

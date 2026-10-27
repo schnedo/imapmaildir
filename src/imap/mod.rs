@@ -12,6 +12,7 @@ pub use client::IdleStopReason;
 pub use client::OAuth2Auth;
 pub use client::PlainAuth;
 pub use client::SelectedClient;
+pub use client::{decode_modified_utf7, encode_modified_utf7};
 pub use remote_changes::RemoteChanges;
 pub use remote_changes::Selection;
 pub use remote_mail::RemoteContent;

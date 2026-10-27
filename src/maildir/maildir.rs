@@ -461,6 +461,10 @@ impl Maildir {
         Ok((file, size))
     }
 
+    pub fn cur(&self) -> &Path {
+        &self.cur
+    }
+
     pub fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
         self.cur.join(mail.filename())
     }

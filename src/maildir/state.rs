@@ -1,8 +1,10 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::Into,
+    ffi::OsString,
     fmt::Debug,
     io,
+    os::unix::ffi::OsStringExt as _,
     path::{Path, PathBuf},
     sync::LazyLock,
     thread,
@@ -15,12 +17,13 @@ use crossfire::{
 };
 use enumflags2::BitFlag;
 use include_dir::{Dir, include_dir};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Result, Row};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Params, Result, Row};
 use thiserror::Error;
 
 use crate::{
     maildir::{LocalMailMetadata, MaildirFile as _, OtherFlags},
-    repository::{Flag, ModSeq, Uid, UidValidity},
+    notmuch::Revision,
+    repository::{Flag, KeywordSource, Keywords, ModSeq, Uid, UidValidity},
 };
 
 const STATE_FILE_NAME: &str = "imapmaildir.db";
@@ -38,12 +41,15 @@ static MIGRATIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 });
 const JOB_QUEUE_SIZE: usize = 64;
 const GET_ALL_BY_ID_CHUNK_SIZE: usize = 256;
-static GET_ALL_BY_ID_QUERY: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "select uid,flags,fileprefix,other_flags from mail_metadata where uid in ({})",
-        vec!["?"; GET_ALL_BY_ID_CHUNK_SIZE].join(",")
-    )
-});
+static GET_ALL_BY_ID_PARAMS: LazyLock<String> =
+    LazyLock::new(|| vec!["?"; GET_ALL_BY_ID_CHUNK_SIZE].join(","));
+static GET_TAGS_PENDING_PAGE_QUERY: LazyLock<String> =
+    LazyLock::new(|| format!("{TAGS_PENDING_QUERY} uid > ?1 order by uid limit ?2"));
+const TAGS_PENDING_QUERY: &str = "select uid,flags,fileprefix,other_flags,keywords,notmuch_keywords \
+    from mail_metadata where (notmuch_keywords is null or notmuch_keywords != keywords) and";
+
+/// Mail, whose keywords differ from the ones last synced to notmuch, with both of them
+type TagsPending = (LocalMailMetadata, Keywords, Option<Keywords>);
 
 fn migrate_to_latest(db: &mut Connection) -> Result<(), InitError> {
     let current: u32 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -149,6 +155,22 @@ impl State {
         result_rx.await.map_err(|_| Error::ThreadStopped)?
     }
 
+    /// Executes `sql` with each of `params` in one transaction
+    async fn execute_all<P: Params>(
+        &self,
+        sql: &'static str,
+        params: impl IntoIterator<Item = P> + Send + 'static,
+    ) -> Result<(), Error> {
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            execute_each(&transaction, sql, params)?;
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn close(self) -> Result<(), Error> {
         let (closed_tx, closed_rx) = oneshot();
         self.jobs
@@ -200,16 +222,238 @@ impl State {
         .await
     }
 
-    pub async fn complete_initial_sync(&self, highest_modseq: ModSeq) -> Result<(), Error> {
+    /// Completes the initial sync, which fetched keywords from `keyword_source`
+    pub async fn complete_initial_sync(
+        &self,
+        highest_modseq: ModSeq,
+        keyword_source: KeywordSource,
+    ) -> Result<(), Error> {
         log::trace!("completing initial sync with highest_modseq {highest_modseq}");
         self.call(move |db| {
-            db.execute(
+            let transaction = db.transaction()?;
+            transaction.execute(
                 "insert into highest_modseq (highest_modseq) values (?1)",
                 [i64::from(highest_modseq)],
             )?;
+            set_keyword_source(&transaction, keyword_source)?;
+            transaction.commit()?;
 
             Ok(())
         })
+        .await
+    }
+
+    /// Where the stored keywords came from. `None` for states of versions not storing keywords.
+    pub async fn keyword_source(&self) -> Result<Option<KeywordSource>, Error> {
+        self.call(|db| {
+            let source: Option<String> = db
+                .query_one("select source from keyword_source", [], |row| row.get(0))
+                .optional()?;
+
+            Ok(source.and_then(|source| KeywordSource::parse(&source)))
+        })
+        .await
+    }
+
+    pub async fn set_keyword_source(&self, keyword_source: KeywordSource) -> Result<(), Error> {
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            set_keyword_source(&transaction, keyword_source)?;
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// Keywords of stored mails among `uids`
+    pub async fn keywords(&self, uids: Vec<Uid>) -> Result<HashMap<Uid, Keywords>, Error> {
+        log::trace!("get keywords of {} mails", uids.len());
+        self.call(move |db| {
+            let mut keywords = HashMap::with_capacity(uids.len());
+            for_each_by_id(
+                db,
+                "select uid,keywords from mail_metadata where",
+                &uids,
+                |row| {
+                    keywords.insert(
+                        uid_of(row)?,
+                        Keywords::from_stored(&row.get::<_, String>(1)?),
+                    );
+                    Ok(())
+                },
+            )?;
+
+            Ok(keywords)
+        })
+        .await
+    }
+
+    /// Keywords last synced to notmuch of stored mails among `uids`, `None` if never synced,
+    /// and the ones, whose tags notmuch has, but which stay local
+    pub async fn notmuch_keywords(
+        &self,
+        uids: Vec<Uid>,
+    ) -> Result<HashMap<Uid, (Option<Keywords>, Keywords)>, Error> {
+        self.call(move |db| {
+            let mut keywords = HashMap::with_capacity(uids.len());
+            for_each_by_id(
+                db,
+                "select uid,notmuch_keywords,notmuch_local from mail_metadata where",
+                &uids,
+                |row| {
+                    let stored: Option<String> = row.get(1)?;
+                    let local: String = row.get(2)?;
+                    keywords.insert(
+                        uid_of(row)?,
+                        (
+                            stored.as_deref().map(Keywords::from_stored),
+                            Keywords::from_stored(&local),
+                        ),
+                    );
+                    Ok(())
+                },
+            )?;
+
+            Ok(keywords)
+        })
+        .await
+    }
+
+    /// Mails among `uids` with tags pending
+    pub async fn tags_pending_of(&self, uids: Vec<Uid>) -> Result<Vec<TagsPending>, Error> {
+        self.call(move |db| {
+            let mut pending = Vec::new();
+            for_each_by_id(db, TAGS_PENDING_QUERY, &uids, |row| {
+                pending.push(read_tags_pending(row)?);
+                Ok(())
+            })?;
+
+            Ok(pending)
+        })
+        .await
+    }
+
+    /// Up to `limit` mails with tags pending and UIDs after `after`
+    pub async fn tags_pending(&self, after: u32, limit: usize) -> Result<Vec<TagsPending>, Error> {
+        self.call(move |db| {
+            let mut stmt = db.prepare_cached(&GET_TAGS_PENDING_PAGE_QUERY)?;
+            stmt.query_map(
+                (after, i64::try_from(limit).unwrap_or(i64::MAX)),
+                read_tags_pending,
+            )?
+            .map(|pending| Ok(pending?))
+            .collect()
+        })
+        .await
+    }
+
+    /// Records keywords as synced to notmuch
+    pub async fn set_notmuch_keywords_all(&self, data: Vec<(Uid, Keywords)>) -> Result<(), Error> {
+        log::trace!("updating notmuch keywords of {} mail caches", data.len());
+        self.execute_all(
+            "update mail_metadata set notmuch_keywords=?1 where uid=?2",
+            keywords_params(data),
+        )
+        .await
+    }
+
+    /// Records keywords, whose tags notmuch has, but which stay local
+    pub async fn set_notmuch_local_all(&self, data: Vec<(Uid, Keywords)>) -> Result<(), Error> {
+        self.execute_all(
+            "update mail_metadata set notmuch_local=?1 where uid=?2",
+            keywords_params(data),
+        )
+        .await
+    }
+
+    /// Forgets the keywords synced to notmuch, e.g. after its database got recreated, and the
+    /// revision tags got synced up to
+    pub async fn forget_notmuch_keywords(&self) -> Result<(), Error> {
+        self.call(|db| {
+            let transaction = db.transaction()?;
+            transaction.execute(
+                "update mail_metadata set notmuch_keywords=null, notmuch_local=''",
+                [],
+            )?;
+            transaction.execute("delete from tags_revision", [])?;
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// Revision of the notmuch database, up to which changed tags got synced, with the
+    /// fingerprint of the tag mapping used
+    pub async fn tags_revision(&self) -> Result<Option<(Revision, String)>, Error> {
+        self.call(|db| {
+            Ok(db
+                .query_one(
+                    "select uuid,revision,mapping from tags_revision",
+                    [],
+                    |row| {
+                        Ok((
+                            Revision {
+                                uuid: row.get(0)?,
+                                number: row.get::<_, i64>(1)?.cast_unsigned(),
+                            },
+                            row.get(2)?,
+                        ))
+                    },
+                )
+                .optional()?)
+        })
+        .await
+    }
+
+    pub async fn set_tags_revision(
+        &self,
+        revision: Revision,
+        mapping: String,
+    ) -> Result<(), Error> {
+        self.call(move |db| {
+            let transaction = db.transaction()?;
+            transaction.execute("delete from tags_revision", [])?;
+            transaction.execute(
+                "insert into tags_revision (uuid,revision,mapping) values (?1,?2,?3)",
+                (&revision.uuid, revision.number.cast_signed(), &mapping),
+            )?;
+            transaction.commit()?;
+
+            Ok(())
+        })
+        .await
+    }
+
+    /// Files to remove from notmuch, that got deleted before `deleted` seconds since the epoch
+    pub async fn notmuch_removals(&self, deleted: i64) -> Result<Vec<PathBuf>, Error> {
+        self.call(move |db| {
+            let mut stmt =
+                db.prepare_cached("select path from notmuch_removals where deleted <= ?1")?;
+            stmt.query_map([deleted], |row| row.get::<_, Vec<u8>>(0))?
+                .map(|path| Ok(PathBuf::from(OsString::from_vec(path?))))
+                .collect()
+        })
+        .await
+    }
+
+    pub async fn delete_notmuch_removals(&self, paths: Vec<PathBuf>) -> Result<(), Error> {
+        self.execute_all(
+            "delete from notmuch_removals where path = ?1",
+            paths
+                .into_iter()
+                .map(|path| [path.into_os_string().into_vec()]),
+        )
+        .await
+    }
+
+    pub async fn update_keywords_all(&self, data: Vec<(Uid, Keywords)>) -> Result<(), Error> {
+        log::trace!("updating keywords of {} mail caches", data.len());
+        self.execute_all(
+            "update mail_metadata set keywords=?1 where uid=?2",
+            keywords_params(data),
+        )
         .await
     }
 
@@ -280,9 +524,12 @@ impl State {
         self.call(|db| get_highest_modseq(db)).await
     }
 
+    /// Stores new mails with their `keywords`. Returns the stored ones and conflicting ones,
+    /// whose UID is already stored.
     pub async fn store_all(
         &self,
         data: Vec<LocalMailMetadata>,
+        mut keywords: HashMap<Uid, Keywords>,
     ) -> Result<(Vec<LocalMailMetadata>, Vec<LocalMailMetadata>), Error> {
         log::trace!("storing {} mail caches", data.len());
         self.call(move |db| {
@@ -291,14 +538,19 @@ impl State {
             let mut conflicts = Vec::new();
             {
                 let mut stmt = transaction.prepare_cached(
-                    "insert into mail_metadata (uid,flags,fileprefix,other_flags) values (?1,?2,?3,?4)",
+                    "insert into mail_metadata (uid,flags,fileprefix,other_flags,keywords) values (?1,?2,?3,?4,?5)",
                 )?;
                 for entry in data {
+                    let keywords = keywords
+                        .remove(&entry.uid())
+                        .map(|keywords| keywords.to_stored())
+                        .unwrap_or_default();
                     match stmt.execute((
                         u32::from(entry.uid()),
                         entry.flags().bits(),
                         &entry.fileprefix(),
                         entry.other_flags().as_str(),
+                        keywords,
                     )) {
                         Ok(_) => stored.push(entry),
                         Err(rusqlite::Error::SqliteFailure(
@@ -336,16 +588,16 @@ impl State {
     pub async fn get_all_by_id(&self, uids: Vec<Uid>) -> Result<Vec<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata of {} mails", uids.len());
         self.call(move |db| {
-            let mut stmt = db.prepare_cached(&GET_ALL_BY_ID_QUERY)?;
             let mut entries = Vec::with_capacity(uids.len());
-            for chunk in uids.chunks(GET_ALL_BY_ID_CHUNK_SIZE) {
-                let params = (0..GET_ALL_BY_ID_CHUNK_SIZE)
-                    .map(|i| u32::from(chunk.get(i).unwrap_or(&chunk[0]).to_owned()));
-                let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
-                while let Some(row) = rows.next()? {
+            for_each_by_id(
+                db,
+                "select uid,flags,fileprefix,other_flags from mail_metadata where",
+                &uids,
+                |row| {
                     entries.push(row.try_into()?);
-                }
-            }
+                    Ok(())
+                },
+            )?;
 
             Ok(entries)
         })
@@ -378,22 +630,15 @@ impl State {
     /// Updates flags without IMAP equivalent, which other clients changed in the maildir
     pub async fn update_other_flags_all(&self, data: Vec<(Uid, OtherFlags)>) -> Result<(), Error> {
         log::trace!("updating other flags of {} mail caches", data.len());
-        self.call(move |db| {
-            let transaction = db.transaction()?;
-            {
-                let mut stmt = transaction
-                    .prepare_cached("update mail_metadata set other_flags=?1 where uid=?2")?;
-                for (uid, other_flags) in data {
-                    stmt.execute((other_flags.as_str(), u32::from(uid)))?;
-                }
-            }
-            transaction.commit()?;
-
-            Ok(())
-        })
+        self.execute_all(
+            "update mail_metadata set other_flags=?1 where uid=?2",
+            data.into_iter()
+                .map(|(uid, other_flags)| (other_flags.into_string(), u32::from(uid))),
+        )
         .await
     }
 
+    /// Inserts mails without keywords
     pub async fn insert_all(&self, data: Vec<LocalMailMetadata>) -> Result<(), Error> {
         log::trace!("inserting {} mail caches", data.len());
         self.call(move |db| {
@@ -419,16 +664,32 @@ impl State {
     }
 
     pub async fn delete_all_by_id(&self, uids: Vec<Uid>) -> Result<(), Error> {
+        self.delete_all_by_id_removing(uids, Vec::new(), 0).await
+    }
+
+    /// Deletes mails and remembers their files at `paths`, deleted at `deleted` seconds since
+    /// the epoch, for removing them from notmuch, also after failures
+    pub async fn delete_all_by_id_removing(
+        &self,
+        uids: Vec<Uid>,
+        paths: Vec<PathBuf>,
+        deleted: i64,
+    ) -> Result<(), Error> {
         log::trace!("deleting {} mail caches", uids.len());
         self.call(move |db| {
             let transaction = db.transaction()?;
-            {
-                let mut stmt =
-                    transaction.prepare_cached("delete from mail_metadata where uid = ?1")?;
-                for uid in uids {
-                    stmt.execute([u32::from(uid)])?;
-                }
-            }
+            execute_each(
+                &transaction,
+                "delete from mail_metadata where uid = ?1",
+                uids.into_iter().map(|uid| [u32::from(uid)]),
+            )?;
+            execute_each(
+                &transaction,
+                "insert or replace into notmuch_removals (path,deleted) values (?1,?2)",
+                paths
+                    .into_iter()
+                    .map(|path| (path.into_os_string().into_vec(), deleted)),
+            )?;
             transaction.commit()?;
 
             Ok(())
@@ -592,6 +853,70 @@ fn get_highest_modseq(db: &Connection) -> Result<ModSeq, Error> {
     result?
 }
 
+fn set_keyword_source(db: &Connection, source: KeywordSource) -> Result<(), rusqlite::Error> {
+    log::trace!("setting keyword source {source:?}");
+    db.execute("delete from keyword_source", [])?;
+    db.execute(
+        "insert into keyword_source (source) values (?1)",
+        [source.as_str()],
+    )?;
+
+    Ok(())
+}
+
+fn execute_each<P: Params>(
+    db: &Connection,
+    sql: &str,
+    params: impl IntoIterator<Item = P>,
+) -> Result<(), rusqlite::Error> {
+    let mut stmt = db.prepare_cached(sql)?;
+    for params in params {
+        stmt.execute(params)?;
+    }
+
+    Ok(())
+}
+
+fn keywords_params(data: Vec<(Uid, Keywords)>) -> impl Iterator<Item = (String, u32)> + Send {
+    data.into_iter()
+        .map(|(uid, keywords)| (keywords.to_stored(), u32::from(uid)))
+}
+
+/// Calls `f` with the rows of `select` followed by a condition on the UIDs of `uids`, which
+/// gets queried in chunks
+fn for_each_by_id(
+    db: &Connection,
+    select: &str,
+    uids: &[Uid],
+    mut f: impl FnMut(&Row) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut stmt = db.prepare_cached(&format!("{select} uid in ({})", *GET_ALL_BY_ID_PARAMS))?;
+    for chunk in uids.chunks(GET_ALL_BY_ID_CHUNK_SIZE) {
+        let params = (0..GET_ALL_BY_ID_CHUNK_SIZE)
+            .map(|i| u32::from(chunk.get(i).unwrap_or(&chunk[0]).to_owned()));
+        let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+        while let Some(row) = rows.next()? {
+            f(row)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn uid_of(row: &Row) -> Result<Uid, Error> {
+    Uid::try_from(row.get::<_, u32>(0)?).map_err(|_| Error::Conversion)
+}
+
+fn read_tags_pending(row: &Row) -> Result<TagsPending, rusqlite::Error> {
+    let keywords: String = row.get(4)?;
+    let synced: Option<String> = row.get(5)?;
+    Ok((
+        LocalMailMetadata::try_from(row)?,
+        Keywords::from_stored(&keywords),
+        synced.as_deref().map(Keywords::from_stored),
+    ))
+}
+
 fn set_highest_modseq(db: &Connection, value: ModSeq) -> Result<(), rusqlite::Error> {
     log::trace!("setting highest_modseq {value}");
     let mut stmt = db.prepare_cached("update highest_modseq set highest_modseq=?1")?;
@@ -644,7 +969,7 @@ mod tests {
         assert_ok!(
             incomplete_state
                 .state
-                .complete_initial_sync(highest_modseq)
+                .complete_initial_sync(highest_modseq, KeywordSource::Flags)
                 .await
         );
         incomplete_state
@@ -674,7 +999,7 @@ mod tests {
         let stored: Vec<_> = (1..=600)
             .map(|i| LocalMailMetadata::new(uid(i), Flag::Seen.into(), Some(i.to_string())))
             .collect();
-        assert_is_empty!(assert_ok!(state.state.store_all(stored.clone()).await).1);
+        assert_is_empty!(assert_ok!(state.state.store_all(stored.clone(), HashMap::new()).await).1);
         let requested = (300..=700).map(uid).collect();
 
         let mut entries = assert_ok!(state.state.get_all_by_id(requested).await);
@@ -780,7 +1105,7 @@ mod tests {
         assert_ok!(
             incomplete_state
                 .state
-                .complete_initial_sync(highest_modseq)
+                .complete_initial_sync(highest_modseq, KeywordSource::Flags)
                 .await
         );
 
@@ -843,6 +1168,74 @@ mod tests {
         let remote: Vec<_> = vec![1, 2, 3, 4, 5, 8, 10].into_iter().map(uid).collect();
         assert_is_empty!(assert_ok!(state.state.uids_not_in(remote).await));
         assert_eq!(assert_ok!(state.state.uids().await).len(), 4);
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_keywords_are_stored_and_updated(
+        #[future] state: TestState,
+        metadata: LocalMailMetadata,
+    ) {
+        let uid = metadata.uid();
+        let keywords: Keywords = ["$Junk", "my label"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_ok!(
+            state
+                .state
+                .store_all(vec![metadata], HashMap::from([(uid, keywords.clone())]))
+                .await
+        );
+        assert_eq!(
+            assert_ok!(state.state.keywords(vec![uid]).await),
+            HashMap::from([(uid, keywords)])
+        );
+
+        assert_ok!(
+            state
+                .state
+                .update_keywords_all(vec![(uid, Keywords::default())])
+                .await
+        );
+
+        assert_eq!(
+            assert_ok!(state.state.keywords(vec![uid]).await),
+            HashMap::from([(uid, Keywords::default())])
+        );
+    }
+
+    #[rstest]
+    #[compio::test]
+    #[awt]
+    async fn test_keyword_source_is_set_by_initial_sync_and_updated(
+        #[future] incomplete_state: TestState,
+        highest_modseq: ModSeq,
+    ) {
+        assert_none!(assert_ok!(incomplete_state.state.keyword_source().await));
+
+        assert_ok!(
+            incomplete_state
+                .state
+                .complete_initial_sync(highest_modseq, KeywordSource::GmailLabels)
+                .await
+        );
+        assert_eq!(
+            assert_ok!(incomplete_state.state.keyword_source().await),
+            Some(KeywordSource::GmailLabels)
+        );
+
+        assert_ok!(
+            incomplete_state
+                .state
+                .set_keyword_source(KeywordSource::Flags)
+                .await
+        );
+        assert_eq!(
+            assert_ok!(incomplete_state.state.keyword_source().await),
+            Some(KeywordSource::Flags)
+        );
     }
 
     #[rstest]
@@ -1113,5 +1506,19 @@ mod tests {
         let TestState { state, dir } = state;
         drop(dir);
         drop(state);
+    }
+
+    #[test]
+    fn test_pending_tags_get_found_without_scanning_all_mails() {
+        let mut db = assert_ok!(Connection::open_in_memory());
+        assert_ok!(migrate_to_latest(&mut db));
+
+        let plan: String = assert_ok!(db.query_one(
+            &format!("explain query plan {}", *GET_TAGS_PENDING_PAGE_QUERY),
+            (0, 1),
+            |row| row.get(3),
+        ));
+
+        assert_contains!(plan, "USING INDEX mail_metadata_tags_pending");
     }
 }

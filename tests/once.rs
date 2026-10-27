@@ -466,7 +466,9 @@ async fn test_remote_changes_get_recorded(#[future] mail_setup: MailSetup) {
     assert_len_eq_x!(changes.as_slice(), 2);
     assert_any!(changes.iter(), |change: &MailChange| matches!(
         change,
-        MailChange::Downloaded { uid, path, flags }
+        MailChange::Downloaded {
+            uid, path, flags, ..
+        }
             if u64::from(u32::from(*uid)) == downloaded.uid() && path.exists() && flags.is_empty()
     ));
     assert_any!(changes.iter(), |change: &MailChange| matches!(

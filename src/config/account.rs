@@ -6,9 +6,9 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
-    config::{Auth, Batching, HookFailure, Hooks},
+    config::{Auth, Batching, HookFailure, Hooks, NotmuchConfig},
     imap::ConnectionConfig,
-    sync,
+    notmuch, sync,
 };
 
 #[derive(Deserialize)]
@@ -34,6 +34,7 @@ struct AccountConfigFile {
     store_batch_max_bytes: Option<NonZeroUsize>,
     #[serde(default, with = "humantime_serde")]
     shutdown_timeout: Option<Duration>,
+    notmuch: Option<notmuch::ConfigFile>,
 }
 
 // todo: why 2 structs? custom logic should be configurable in serde/derive_getters
@@ -49,6 +50,8 @@ pub struct Account {
     hooks: Hooks,
     #[getter(copy)]
     sync: sync::Config,
+    /// Syncs keywords with notmuch tags if set
+    notmuch: Option<NotmuchConfig>,
 }
 
 impl Account {
@@ -65,6 +68,7 @@ impl Account {
         idle_timout: Duration,
         hooks: Hooks,
         sync: sync::Config,
+        notmuch: Option<NotmuchConfig>,
     ) -> Self {
         Self {
             auth,
@@ -75,6 +79,7 @@ impl Account {
             idle_timout,
             hooks,
             sync,
+            notmuch,
         }
     }
 
@@ -132,6 +137,7 @@ impl Account {
                         .unwrap_or(default.shutdown_timeout()),
                 )
             },
+            notmuch: config.notmuch.map(NotmuchConfig::from),
         })
     }
 }

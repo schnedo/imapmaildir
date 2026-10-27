@@ -5,8 +5,10 @@ mod sync;
 use std::io::{self, stdin};
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
 use imapmaildir::{
-    ClientError, SyncError, Tls, Transient, TransportError,
+    ClientError, Notmuch, NotmuchError, SyncError, TagSync, Tls, Transient, TransportError,
     config::{Account, AccountError},
     logging,
 };
@@ -91,19 +93,48 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             if sync_args.idle {
                 exit_on_panic();
             }
+            let tags = tag_sync(&config)?;
             let shutdown = handle_signals()?;
             if let Some(mailbox) = &sync_args.mailbox {
                 let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
-                sync_mailbox(&config, &tls, mailbox, sync_args.idle, &shutdown)?;
+                sync_mailbox(
+                    &config,
+                    &tls,
+                    mailbox,
+                    sync_args.idle,
+                    tags.as_ref(),
+                    &shutdown,
+                )?;
                 if shutdown.has_failed() {
                     return Err(Error::HookFailed);
                 }
                 Ok(())
             } else {
-                sync_all(config, sync_args.idle, &shutdown)
+                sync_all(config, sync_args.idle, tags.as_ref(), &shutdown)
             }
         }
     }
+}
+
+/// Opens the notmuch database, if tags should be synced
+fn tag_sync(config: &Account) -> Result<Option<TagSync>, Error> {
+    let Some(notmuch) = config.notmuch() else {
+        return Ok(None);
+    };
+    let handle = Notmuch::start(notmuch.location().clone()).map_err(Error::Notmuch)?;
+    let maildir = config.maildir_base_path();
+    // notmuch only indexes mails below its mail root
+    if !maildir.is_absolute() || !maildir.starts_with(handle.mail_root()) {
+        return Err(Error::OutsideMailRoot {
+            maildir: maildir.clone(),
+            mail_root: handle.mail_root().to_path_buf(),
+        });
+    }
+
+    Ok(Some(TagSync {
+        notmuch: handle,
+        config: notmuch.tags().clone(),
+    }))
 }
 
 impl Transient for Error {
@@ -112,6 +143,8 @@ impl Transient for Error {
             Self::Login(e) | Self::List(e) => e.is_transient(),
             Self::Sync { cause, .. } => cause.is_transient(),
             Self::Config(_)
+            | Self::Notmuch(_)
+            | Self::OutsideMailRoot { .. }
             | Self::Tls(_)
             | Self::Input(_)
             | Self::Nuke(_)
@@ -128,6 +161,17 @@ impl Transient for Error {
 pub enum Error {
     #[error("{0}")]
     Config(AccountError),
+    #[error("Cannot sync tags: {0}")]
+    Notmuch(NotmuchError),
+    #[error(
+        "Cannot sync tags of maildir {} outside notmuch's mail root {}",
+        maildir.display(),
+        mail_root.display()
+    )]
+    OutsideMailRoot {
+        maildir: PathBuf,
+        mail_root: PathBuf,
+    },
     #[error("Cannot set up TLS: {0}")]
     Tls(TransportError),
     #[error("Cannot read user input: {0}")]

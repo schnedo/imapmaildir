@@ -10,10 +10,14 @@ use crate::{
             capability::{Capabilities, Capability},
             encoding,
             fetch::FetchAttributes,
+            selected::PermanentKeywords,
         },
         transport::{Connection, ResponseData, ResponseHandler},
     },
-    repository::{MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder, UidValidity},
+    repository::{
+        KeywordSource, Keywords, MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder,
+        UidValidity,
+    },
     sync::{ByteBudget, Task},
 };
 
@@ -107,12 +111,31 @@ impl AuthenticatedClient {
 
     /// Lists the names of all selectable mailboxes
     pub async fn list(&mut self) -> Result<Vec<String>, Error> {
+        Ok(self.list_mailboxes().await?.mailboxes)
+    }
+
+    /// Name of the mailbox containing all mails, e.g. Gmail's `[Gmail]/All Mail` (RFC 6154)
+    pub async fn all_mail(&mut self) -> Result<Option<String>, Error> {
+        Ok(self.list_mailboxes().await?.all_mail)
+    }
+
+    /// Uses Gmail's labels as keywords, if the server supports them
+    pub fn use_gmail_labels(&mut self, enabled: bool) {
+        self.capabilities.use_gmail_labels(enabled);
+    }
+
+    /// Where the server keeps keywords of mails
+    pub fn keyword_source(&self) -> KeywordSource {
+        self.capabilities.keyword_source()
+    }
+
+    async fn list_mailboxes(&mut self) -> Result<ListHandler, Error> {
         let command = "LIST \"\" \"*\"";
         log::debug!("{command}");
         let mut handler = ListHandler::default();
         self.connection.send(command.into(), &mut handler).await?;
 
-        Ok(handler.mailboxes)
+        Ok(handler)
     }
 
     async fn do_select(
@@ -131,6 +154,7 @@ impl AuthenticatedClient {
             updates: Vec::new(),
             deletions: None,
             exists: None,
+            permanent_keywords: PermanentKeywords::default(),
         };
         self.connection.send(command.into(), &mut handler).await?;
         let SelectHandler {
@@ -138,6 +162,7 @@ impl AuthenticatedClient {
             updates,
             deletions,
             exists,
+            permanent_keywords,
             ..
         } = handler;
 
@@ -154,6 +179,7 @@ impl AuthenticatedClient {
             budget,
             exists.ok_or(Error::MissingExists)?,
             mailbox_data.uid_validity(),
+            permanent_keywords,
         )?;
 
         Ok(Selection {
@@ -201,6 +227,7 @@ impl EnabledHandler {
 #[derive(Default)]
 struct ListHandler {
     mailboxes: Vec<String>,
+    all_mail: Option<String>,
 }
 
 impl ResponseHandler for ListHandler {
@@ -230,7 +257,15 @@ impl ListHandler {
                     _ => false,
                 });
             if selectable {
-                self.mailboxes.push(encoding::decode_mailbox(&list.name));
+                let name = encoding::decode_mailbox(&list.name);
+                if list
+                    .name_attributes
+                    .iter()
+                    .any(|attribute| matches!(attribute, imap_proto::NameAttribute::All))
+                {
+                    self.all_mail = Some(name.clone());
+                }
+                self.mailboxes.push(name);
             } else {
                 log::trace!("skipping unselectable mailbox {}", list.name);
             }
@@ -248,6 +283,7 @@ struct SelectHandler<'a> {
     updates: Vec<RemoteMailMetadata>,
     deletions: Option<SequenceSet>,
     exists: Option<u32>,
+    permanent_keywords: PermanentKeywords,
 }
 
 impl ResponseHandler for SelectHandler<'_> {
@@ -334,7 +370,11 @@ impl SelectHandler<'_> {
                         .highest_modseq(modseq.try_into().map_err(Error::InvalidModSeq)?);
                 }
                 imap_proto::ResponseCode::PermanentFlags(flags) => {
-                    log::trace!("not handling Data response PermanentFlags {flags:?}");
+                    log::trace!("permanent flags {flags:?}");
+                    self.permanent_keywords = PermanentKeywords {
+                        any: flags.iter().any(|flag| flag == "\\*"),
+                        existing: Keywords::from_flags(flags),
+                    };
                 }
                 imap_proto::ResponseCode::UidNext(uid_next) => {
                     log::trace!("not handling Data response UidNext {uid_next:?}");
@@ -354,7 +394,7 @@ impl SelectHandler<'_> {
                 log::trace!("handling fetch with attributes {attributes:?}");
                 self.updates.push(
                     FetchAttributes::parse(attributes)
-                        .metadata()?
+                        .metadata(self.capabilities.keyword_source())?
                         .ok_or(Error::IncompleteMetadata)?,
                 );
             }
@@ -387,6 +427,7 @@ mod tests {
             updates: Vec::new(),
             deletions: None,
             exists: None,
+            permanent_keywords: PermanentKeywords::default(),
         };
 
         assert_none!(assert_ok!(handler.handle_response(ResponseData::from_raw(
@@ -430,6 +471,23 @@ mod tests {
         )));
 
         assert_eq!(handler.mailboxes, vec!["INBOX", "Archive/Entwürfe"]);
+    }
+
+    #[test]
+    fn test_list_handler_finds_mailbox_of_all_mails() {
+        let mut handler = ListHandler::default();
+
+        assert_none!(handler.collect(ResponseData::from_raw(
+            b"* LIST (\\HasNoChildren) \"/\" INBOX\r\n"
+        )));
+        assert_none!(handler.collect(ResponseData::from_raw(
+            b"* LIST (\\All \\HasNoChildren) \"/\" \"[Gmail]/Alle Nachrichten\"\r\n"
+        )));
+
+        assert_eq!(
+            handler.all_mail.as_deref(),
+            Some("[Gmail]/Alle Nachrichten")
+        );
     }
 
     #[test]

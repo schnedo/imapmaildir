@@ -80,6 +80,12 @@ Configure using the home-manager module:
         };
         # Optional hook informed about remote changes, see "Change hooks" below
         onChange = [ "notify-send" "new mail" ];
+        # Optional syncing of keywords with notmuch tags, see "Syncing tags with notmuch" below
+        notmuch = {
+            enable = true;
+            # Tags of keywords, that are named differently
+            tags = { "$Junk" = "spam"; };
+        };
         # Optional service configuration.
         # There are default values in place so you do not need to configure this.
         service = {
@@ -156,6 +162,66 @@ while IFS="$(printf '\t')" read -r mailbox type path details old_path; do
     esac
 done
 ```
+
+### Syncing tags with notmuch
+
+`imapmaildir` can sync keywords of mails, i.e. IMAP flags without system flag
+like `$Junk`, with tags of [notmuch](https://notmuchmail.org) in both
+directions. On Gmail, it syncs labels via `X-GM-LABELS` instead. Enable it with
+`notmuch.enable` or a `[notmuch]` section in the account config:
+
+```toml
+[notmuch]
+# notmuch configuration file and profile. Default to notmuch's lookup, e.g.
+# $NOTMUCH_CONFIG or $XDG_CONFIG_HOME/notmuch/default/config
+# config = "/home/me/.notmuch-config"
+# profile = "work"
+# Tags, that are not synced, in addition to the ones notmuch manages itself:
+# unread, replied, flagged, draft, passed, deleted, new, attachment, signed and
+# encrypted
+ignore_tags = ["todo"]
+
+# Tags of keywords, that are named differently
+[notmuch.tags]
+"$Junk" = "spam"
+```
+
+- System flags like `\Seen` are no keywords. notmuch syncs them with tags like
+  `unread` via the maildir file names, if `maildir.synchronize_flags` is set.
+- `imapmaildir` indexes the mails it syncs itself, so that `notmuch new` is not
+  needed for them. New mails get the tags of `new.tags`, except synced ones,
+  which only come from the server. Therefore the maildir must be below the mail
+  root of notmuch. Tags of other mails, e.g. ones moved in by other programs,
+  get synced once notmuch indexed them.
+- Keywords and tags changed on both sides keep the server's state.
+- Keywords are case-insensitive on the server, but tags are not. A tag differing
+  from an existing keyword only in case, e.g. `Work` for `work`, takes the
+  server's spelling once the server reports the mail's keywords.
+- When syncing a mailbox with notmuch for the first time, after changing
+  `ignore_tags` or `tags` or after the notmuch database got replaced, e.g. by
+  `notmuch compact` or recreating it, the tags of all mails get merged with the
+  keywords of the server: missing keywords get added as tags, tags only in
+  notmuch get synced to the server. Nothing gets removed. Synced tags of
+  `new.tags`, e.g. `inbox` on Gmail, stay local then, as `notmuch new` adds them
+  to every mail. They get synced again, once removed and added again. The same
+  applies to new mails uploaded to the server. Add tags, that should stay
+  local, to `ignore_tags` before.
+- Tags belong to messages, so tag changes get synced to all copies of a message.
+- Tag changes in notmuch get noticed by watching the files of its database with
+  inotify. Therefore the database must not be changed on another host, e.g. via
+  a network filesystem.
+- Tags the server refuses, e.g. as they are too long, stay local.
+- Mails deleted on the server stay in notmuch for five minutes, so that moving
+  them between synced mailboxes keeps their tags.
+- `inbox`, which notmuch adds to new mails, is only synced on Gmail.
+- Gmail labels map to tags of the same name, except for system labels:
+  `\Inbox` is `inbox`, `\Important` is `important` and `\Sent` is `sent`.
+  `\Starred` and `\Draft` are synced as flags. Others, e.g. `\Trash`, are not
+  synced, as they move mails out of the mailbox of all mails. As labels of a
+  mail are only complete in Gmail's mailbox of all mails, `[Gmail]/All Mail` or
+  its localized name must be the only synced mailbox.
+- Syncing tags needs libnotmuch 5.4 (notmuch 0.32) or later, which gets loaded
+  at runtime.
 
 ### Shutting down
 
