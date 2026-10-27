@@ -2,18 +2,35 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use std::fmt::{Debug, Formatter, Result};
 
-use crate::repository::{Flag, ModSeq, Uid};
+use crate::repository::{Flag, Keywords, ModSeq, Uid};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct RemoteMailMetadata {
     uid: Uid,
     flags: BitFlags<Flag>,
     modseq: ModSeq,
+    /// `None` if the server did not report them, e.g. Gmail labels of unsolicited FETCH responses
+    keywords: Option<Keywords>,
 }
 
 impl RemoteMailMetadata {
     pub fn new(uid: Uid, flags: BitFlags<Flag>, modseq: ModSeq) -> Self {
-        Self { uid, flags, modseq }
+        Self {
+            uid,
+            flags,
+            modseq,
+            keywords: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_keywords(mut self, keywords: Option<Keywords>) -> Self {
+        self.keywords = keywords;
+        self
+    }
+
+    pub fn keywords(&self) -> Option<&Keywords> {
+        self.keywords.as_ref()
     }
 
     pub fn modseq(&self) -> ModSeq {

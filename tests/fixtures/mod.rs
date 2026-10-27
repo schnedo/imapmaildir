@@ -19,8 +19,8 @@ use crossfire::{
 };
 use derivative::Derivative;
 use imapmaildir::{
-    ChangeRecorder, ChangeSink, Client, ClientError, MailChange, Shutdown, SyncError, Syncer, Tls,
-    Transient, config as config_m, logging, reconnecting,
+    ChangeRecorder, ChangeSink, Client, ClientError, MailChange, Shutdown, SyncError, Syncer,
+    TagSync, Tls, Transient, config as config_m, logging, reconnecting,
 };
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
@@ -447,6 +447,23 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_with_changes(&self, mailbox: &str, changes: Option<ChangeRecorder>) {
+        self.sync_with(mailbox, changes, None).await;
+    }
+
+    /// Syncs `mailbox` once, syncing keywords with `tags`
+    ///
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_with_tags(&self, mailbox: &str, tags: &TagSync) {
+        self.sync_with(mailbox, None, Some(tags)).await;
+    }
+
+    async fn sync_with(
+        &self,
+        mailbox: &str,
+        changes: Option<ChangeRecorder>,
+        tags: Option<&TagSync>,
+    ) {
         let config = self.config();
         let client = Client::login(
             config.connection(),
@@ -463,6 +480,7 @@ impl MailSetup {
             client,
             config.sync(),
             changes,
+            tags,
             &Shutdown::new(),
         )
         .await
@@ -535,6 +553,7 @@ impl MailSetup {
             client,
             config.sync(),
             None,
+            None,
             &Shutdown::new(),
         )
         .await
@@ -546,6 +565,18 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_continuous(&self, mailbox: &str) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
+        self.sync_continuous_with_tags(mailbox, None).await
+    }
+
+    /// Syncs `mailbox` continuously, syncing keywords with `tags`
+    ///
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_continuous_with_tags(
+        &self,
+        mailbox: &str,
+        tags: Option<TagSync>,
+    ) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
         let (call_tx, call_rx) = mpsc::bounded_blocking_async(1);
         let config = self.config();
         let maildir_base_path = config.maildir_base_path().clone();
@@ -569,6 +600,7 @@ impl MailSetup {
                 idle_timout,
                 sync_config,
                 Some(ChangeRecorder::new(vec![Arc::new(NotifyingSink(call_tx))])),
+                tags.as_ref(),
                 &Shutdown::new(),
             )
             .await;
@@ -687,6 +719,7 @@ impl MailSetup {
                         client,
                         config.idle_timout(),
                         config.sync(),
+                        None,
                         None,
                         &session_shutdown,
                     )
@@ -827,6 +860,7 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             Duration::from_secs(30),
             config_m::Hooks::default(),
             config_m::SyncConfig::default(),
+            None,
         )),
         tmp_dir,
         server_mail_storge: ServerMailStorage {

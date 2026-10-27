@@ -28,4 +28,5 @@ pub use maildir_repository::LocalEvent;
 pub use maildir_repository::LocalWatcher;
 pub use maildir_repository::MaildirRepository;
 pub use maildir_repository::StoreError;
+pub use maildir_repository::TagsError;
 pub use state::Error as StateError;

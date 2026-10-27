@@ -90,6 +90,7 @@
                 cargo
                 cargo-nextest
                 clippy
+                notmuch
                 openssl.dev
                 pkg-config
                 rust-analyzer
@@ -114,9 +115,9 @@
               '';
 
             env = {
+              # libnotmuch gets loaded at runtime
+              LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.notmuch ];
             };
-            # LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-            # ];
 
           };
 

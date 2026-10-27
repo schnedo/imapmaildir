@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 
 use enumflags2::{BitFlags, bitflags};
 
-use crate::imap::client::encoding::LiteralMode;
+use crate::{imap::client::encoding::LiteralMode, repository::KeywordSource};
 
 #[bitflags]
 #[repr(u16)]
@@ -12,6 +12,7 @@ use crate::imap::client::encoding::LiteralMode;
 pub enum Capability {
     Condstore, // rfc7162
     Enable,    // rfc5161
+    GmailExt,  // https://developers.google.com/workspace/gmail/imap/imap-extensions
     Idle,      // rfc2177
     Imap4rev1,
     LiteralMinus, // rfc7888
@@ -23,7 +24,9 @@ pub enum Capability {
 }
 #[derive(Debug, Default)]
 pub struct Capabilities {
-    capabilities: BitFlags<Capability>,
+    supported: BitFlags<Capability>,
+    /// Whether Gmail labels are used as keywords, as they are synced
+    gmail_labels: bool,
     /// Maximum size of appended mails in octets, if the server announces one for all mailboxes
     /// (RFC 7889)
     append_limit: Option<NonZeroU64>,
@@ -33,38 +36,41 @@ impl Capabilities {
     pub fn insert(&mut self, capability: &imap_proto::Capability) {
         match capability {
             imap_proto::Capability::Imap4rev1 => {
-                self.capabilities.insert(Capability::Imap4rev1);
+                self.supported.insert(Capability::Imap4rev1);
             }
             imap_proto::Capability::Auth(_) => {
                 unreachable!("tried inserting auth capability in capabilities");
             }
             imap_proto::Capability::Atom(cow) => match cow.as_ref() {
                 "CONDSTORE" => {
-                    self.capabilities.insert(Capability::Condstore);
+                    self.supported.insert(Capability::Condstore);
                 }
                 "ENABLE" => {
-                    self.capabilities.insert(Capability::Enable);
+                    self.supported.insert(Capability::Enable);
+                }
+                "X-GM-EXT-1" => {
+                    self.supported.insert(Capability::GmailExt);
                 }
                 "IDLE" => {
-                    self.capabilities.insert(Capability::Idle);
+                    self.supported.insert(Capability::Idle);
                 }
                 "LITERAL-" => {
-                    self.capabilities.insert(Capability::LiteralMinus);
+                    self.supported.insert(Capability::LiteralMinus);
                 }
                 "LITERAL+" => {
-                    self.capabilities.insert(Capability::LiteralPlus);
+                    self.supported.insert(Capability::LiteralPlus);
                 }
                 "MULTIAPPEND" => {
-                    self.capabilities.insert(Capability::Multiappend);
+                    self.supported.insert(Capability::Multiappend);
                 }
                 "QRESYNC" => {
-                    self.capabilities.insert(Capability::QResync);
+                    self.supported.insert(Capability::QResync);
                 }
                 "SASL-IR" => {
-                    self.capabilities.insert(Capability::SaslIr);
+                    self.supported.insert(Capability::SaslIr);
                 }
                 "UIDPLUS" => {
-                    self.capabilities.insert(Capability::UidPlus);
+                    self.supported.insert(Capability::UidPlus);
                 }
                 "APPENDLIMIT" => {
                     // limits per mailbox require STATUS (APPENDLIMIT), which imap-proto cannot
@@ -85,13 +91,16 @@ impl Capabilities {
     }
 
     pub fn contains(&self, other: Capability) -> bool {
-        self.capabilities.contains(other)
+        self.supported.contains(other)
     }
 
     /// Replaces all capabilities with those of a CAPABILITY response after login, as capability
     /// lists are complete (RFC 3501 7.2.1)
     pub fn replace(&mut self, caps: &[imap_proto::Capability]) {
-        *self = Self::default();
+        *self = Self {
+            gmail_labels: self.gmail_labels,
+            ..Self::default()
+        };
         for cap in caps {
             match cap {
                 imap_proto::Capability::Imap4rev1 | imap_proto::Capability::Atom(_) => {
@@ -107,6 +116,21 @@ impl Capabilities {
 
     pub fn append_limit(&self) -> Option<NonZeroU64> {
         self.append_limit
+    }
+
+    /// Uses Gmail's labels as keywords, if the server supports them. Fetching them otherwise
+    /// costs extra round trips.
+    pub fn use_gmail_labels(&mut self, enabled: bool) {
+        self.gmail_labels = enabled;
+    }
+
+    /// Gmail keeps keywords as labels and reports them more completely via `X-GM-LABELS`
+    pub fn keyword_source(&self) -> KeywordSource {
+        if self.gmail_labels && self.contains(Capability::GmailExt) {
+            KeywordSource::GmailLabels
+        } else {
+            KeywordSource::Flags
+        }
     }
 
     pub fn literal_mode(&self) -> LiteralMode {
@@ -130,7 +154,7 @@ pub enum AuthCapability {
 }
 #[derive(Debug, Default)]
 pub struct AuthCapabilities {
-    capabilities: BitFlags<AuthCapability>,
+    supported: BitFlags<AuthCapability>,
 }
 
 impl AuthCapabilities {
@@ -138,13 +162,13 @@ impl AuthCapabilities {
         match capability {
             imap_proto::Capability::Auth(cow) => match cow.as_ref() {
                 "OAUTHBEARER" => {
-                    self.capabilities.insert(AuthCapability::OAuthBearer);
+                    self.supported.insert(AuthCapability::OAuthBearer);
                 }
                 "PLAIN" => {
-                    self.capabilities.insert(AuthCapability::Plain);
+                    self.supported.insert(AuthCapability::Plain);
                 }
                 "XOAUTH2" => {
-                    self.capabilities.insert(AuthCapability::XOAuth2);
+                    self.supported.insert(AuthCapability::XOAuth2);
                 }
                 _ => {
                     log::trace!("unknown auth capability {cow}");
@@ -157,7 +181,7 @@ impl AuthCapabilities {
     }
 
     pub fn contains(&self, other: AuthCapability) -> bool {
-        self.capabilities.contains(other)
+        self.supported.contains(other)
     }
 }
 
@@ -181,6 +205,20 @@ mod tests {
         assert!(auth_capabilities.contains(AuthCapability::OAuthBearer));
         assert!(!auth_capabilities.contains(AuthCapability::Plain));
         assert!(capabilities.contains(Capability::SaslIr));
+    }
+
+    #[test]
+    fn test_gmail_extension_selects_labels_as_keyword_source() {
+        let mut capabilities = Capabilities::default();
+        assert_eq!(capabilities.keyword_source(), KeywordSource::Flags);
+
+        capabilities.insert(&imap_proto::Capability::Atom(Cow::Borrowed("X-GM-EXT-1")));
+        assert_eq!(capabilities.keyword_source(), KeywordSource::Flags);
+
+        capabilities.use_gmail_labels(true);
+        capabilities.replace(&[imap_proto::Capability::Atom(Cow::Borrowed("X-GM-EXT-1"))]);
+
+        assert_eq!(capabilities.keyword_source(), KeywordSource::GmailLabels);
     }
 
     #[rstest]

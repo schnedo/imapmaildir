@@ -146,7 +146,7 @@ pub fn decode_mailbox(name: &str) -> String {
     })
 }
 
-fn decode_modified_utf7(encoded: &str) -> Option<String> {
+pub fn decode_modified_utf7(encoded: &str) -> Option<String> {
     let mut decoded = String::with_capacity(encoded.len());
     let mut rest = encoded;
     while let Some(start) = rest.find('&') {
@@ -192,7 +192,7 @@ fn decode_modified_base64(encoded: &str) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
-fn encode_modified_utf7(name: &str) -> String {
+pub fn encode_modified_utf7(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     let mut pending = Vec::new();
     for c in name.chars() {

@@ -11,7 +11,8 @@ use enumflags2::BitFlags;
 use crate::{
     imap::RemoteMailMetadata,
     maildir::{FlagChange, LocalChanges, LocalMail, NewLocalMailMetadata, OtherFlags},
-    repository::{Flag, ModSeq, SequenceSet, Uid},
+    notmuch::Revision,
+    repository::{Flag, KeywordSource, Keywords, ModSeq, SequenceSet, Uid},
     sync::{Error, Task},
 };
 
@@ -66,12 +67,12 @@ impl RepositoryHandle {
         }
     }
 
+    /// Applies stored changes, each of its mails
     pub async fn apply_flag_changes(
         &self,
-        uids: Vec<Uid>,
-        change: FlagChange,
+        changes: Vec<(Vec<Uid>, FlagChange)>,
     ) -> Result<(), Error> {
-        self.send(Task::ApplyFlagChanges(uids, change)).await
+        self.send(Task::ApplyFlagChanges(changes)).await
     }
 
     pub async fn update_other_flags(
@@ -88,12 +89,29 @@ impl RepositoryHandle {
         self.request(|reply| Task::OpenMail(metadata, reply)).await
     }
 
-    pub async fn flags(&self, uids: Vec<Uid>) -> Result<HashMap<Uid, BitFlags<Flag>>, Error> {
+    /// Stored flags and keywords of `uids`
+    pub async fn flags(
+        &self,
+        uids: Vec<Uid>,
+    ) -> Result<HashMap<Uid, (BitFlags<Flag>, Keywords)>, Error> {
         self.request(|reply| Task::Flags(uids, reply)).await
     }
 
     pub async fn detect_changes(&self) -> Result<LocalChanges, Error> {
         self.request(Task::DetectChanges).await
+    }
+
+    /// Tag changes in notmuch, see [`crate::maildir::MaildirRepository::detect_tag_changes`]
+    pub async fn detect_tag_changes(&self) -> Result<LocalChanges, Error> {
+        self.request(Task::DetectTagChanges).await
+    }
+
+    pub async fn complete_tag_changes(&self, revision: Revision) -> Result<(), Error> {
+        self.send(Task::CompleteTagChanges(revision)).await
+    }
+
+    pub async fn set_keyword_source(&self, source: KeywordSource) -> Result<(), Error> {
+        self.send(Task::SetKeywordSource(source)).await
     }
 
     pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {

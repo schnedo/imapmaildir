@@ -114,7 +114,9 @@ fn flag_difference(flags: &str, other: &str) -> String {
 /// Formats `change` as `<mailbox>\t<type>\t<path>\t<details>\t<old_path>\n`
 fn format_line(mailbox: &str, change: &MailChange) -> String {
     let (kind, path, details, old_path) = match change {
-        MailChange::Downloaded { uid, path, flags } => (
+        MailChange::Downloaded {
+            uid, path, flags, ..
+        } => (
             "downloaded",
             Some(path),
             format!("uid={uid} flags={flags}"),
@@ -149,6 +151,9 @@ fn format_line(mailbox: &str, change: &MailChange) -> String {
             Some(from),
         ),
         MailChange::Overflow => ("overflow", None, String::new(), None),
+        MailChange::KeywordsChanged { .. } => {
+            unreachable!("keyword changes should not be batched")
+        }
     };
     let path = path.map(|path| escape(&path.to_string_lossy()));
     let old_path = old_path.map(|path| escape(&path.to_string_lossy()));
@@ -166,7 +171,8 @@ fn uid_of(change: &MailChange) -> Option<Uid> {
         MailChange::Downloaded { uid, .. }
         | MailChange::Uploaded { uid, .. }
         | MailChange::Deleted { uid, .. }
-        | MailChange::FlagsChanged { uid, .. } => Some(*uid),
+        | MailChange::FlagsChanged { uid, .. }
+        | MailChange::KeywordsChanged { uid, .. } => Some(*uid),
         MailChange::Overflow => None,
     }
 }
@@ -207,8 +213,9 @@ impl ChangeBatch {
         self.len = 0;
     }
 
+    /// Ignores keyword changes, as they are not part of the reported lines
     fn add(&mut self, change: MailChange) {
-        if self.overflowed {
+        if self.overflowed || matches!(change, MailChange::KeywordsChanged { .. }) {
             return;
         }
         self.first_recorded.get_or_insert_with(Instant::now);
@@ -241,13 +248,18 @@ impl ChangeBatch {
     fn merge(previous: MailChange, next: MailChange) -> Option<MailChange> {
         match (previous, next) {
             (
-                MailChange::Downloaded { uid, .. },
+                MailChange::Downloaded { uid, keywords, .. },
                 MailChange::FlagsChanged {
                     to: path,
                     new: flags,
                     ..
                 },
-            ) => Some(MailChange::Downloaded { uid, path, flags }),
+            ) => Some(MailChange::Downloaded {
+                uid,
+                path,
+                flags,
+                keywords,
+            }),
             (
                 MailChange::Uploaded { uid, from, .. },
                 MailChange::FlagsChanged { to, new: flags, .. },
@@ -516,6 +528,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::repository::Keywords;
 
     fn uid(value: u32) -> Uid {
         assert_ok!(Uid::try_from(value))
@@ -526,6 +539,7 @@ mod tests {
             uid: uid(id),
             path: PathBuf::from(format!("/m/cur/{id}:2,S")),
             flags: "S".to_string(),
+            keywords: Keywords::default(),
         }
     }
 

@@ -248,6 +248,20 @@ impl Connection {
         commands: Vec<Vec<u8>>,
         handler: &mut H,
     ) -> Result<Vec<ResponseData>, H::Error> {
+        self.send_pipelined_each(commands, handler)
+            .await?
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Like [`Self::send_pipelined`], but with the completion of each command, e.g. as some
+    /// may succeed despite others getting rejected
+    pub async fn send_pipelined_each<H: ResponseHandler>(
+        &mut self,
+        commands: Vec<Vec<u8>>,
+        handler: &mut H,
+    ) -> Result<Vec<Result<ResponseData, Error>>, H::Error> {
         let mut completions = Completions::default();
         for command in commands {
             let tag = self.tag_generator.next();
@@ -264,7 +278,7 @@ impl Connection {
             completions.complete(tag, completion)?;
         }
 
-        completions.into_responses().map_err(Into::into)
+        Ok(completions.into_results())
     }
 
     pub async fn receive_completion<H: ResponseHandler>(
@@ -403,7 +417,7 @@ impl Completions {
         Ok(())
     }
 
-    fn into_responses(self) -> Result<Vec<ResponseData>, Error> {
+    fn into_results(self) -> Vec<Result<ResponseData, Error>> {
         self.results
             .into_iter()
             .map(|completion| completion.expect("all pipelined commands should be complete"))
@@ -827,10 +841,10 @@ mod tests {
         assert_ok!(completions.complete("a1".to_string(), Ok(done(b"a1 OK done\r\n"))));
         assert!(completions.is_complete());
 
-        let responses = assert_ok!(completions.into_responses());
-        let tags: Vec<_> = responses
-            .iter()
-            .map(|response| match response.parsed() {
+        let tags: Vec<_> = completions
+            .into_results()
+            .into_iter()
+            .map(|response| match assert_ok!(response).parsed() {
                 imap_proto::Response::Done { tag, .. } => tag.0.clone(),
                 other => panic!("unexpected response {other:?}"),
             })
@@ -855,14 +869,17 @@ mod tests {
     }
 
     #[test]
-    fn test_completions_fails_with_first_failed_command() {
+    fn test_completions_keep_failures_of_each_command() {
         let mut completions = expecting(&["a1", "a2", "a3"]);
 
         assert_ok!(completions.complete("a3".to_string(), Err(Error::Bad(None))));
         assert_ok!(completions.complete("a1".to_string(), Ok(done(b"a1 OK done\r\n"))));
         assert_ok!(completions.complete("a2".to_string(), Err(Error::No(None))));
 
-        assert_matches!(completions.into_responses(), Err(Error::No(None)));
+        assert_matches!(
+            completions.into_results().as_slice(),
+            [Ok(_), Err(Error::No(None)), Err(Error::Bad(None))]
+        );
     }
 
     #[rstest]

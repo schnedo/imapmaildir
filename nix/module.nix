@@ -82,6 +82,37 @@
               default = null;
               description = "Changes queued per hook, beyond which they get dropped for a single overflow line. Defaults to 10000";
             };
+            notmuch = lib.mkOption {
+              type = lib.types.submodule {
+                options = {
+                  enable = lib.mkEnableOption "syncing IMAP keywords, or Gmail labels, with notmuch tags. imapmaildir then indexes synced mails itself";
+                  config = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "notmuch configuration file. Defaults to notmuch's lookup, e.g. $XDG_CONFIG_HOME/notmuch/default/config";
+                  };
+                  profile = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "notmuch profile";
+                  };
+                  ignoreTags = lib.mkOption {
+                    type = lib.types.nullOr (lib.types.listOf lib.types.str);
+                    default = null;
+                    description = "Tags, that are not synced, in addition to the tags notmuch manages itself: unread, replied, flagged, draft, passed, deleted, new, attachment, signed and encrypted. `inbox` is only synced with Gmail's \\Inbox label";
+                  };
+                  tags = lib.mkOption {
+                    type = lib.types.attrsOf lib.types.str;
+                    default = { };
+                    description = "Tags of keywords, that are named differently";
+                    example = {
+                      "$Junk" = "spam";
+                    };
+                  };
+                };
+              };
+              default = { };
+            };
             shutdownTimeoutSeconds = lib.mkOption {
               type = lib.types.nullOr lib.types.ints.positive;
               default = null;
@@ -187,7 +218,7 @@
         let
           toml = pkgs.formats.toml { };
           toCmd = cmd: if builtins.isList cmd then cmd else [ cmd ];
-          inherit (account.imapmaildir) oauth2;
+          inherit (account.imapmaildir) oauth2 notmuch;
         in
         {
           "imapmaildir/accounts/${name}.toml" = {
@@ -233,6 +264,12 @@
                 }
                 // lib.optionalAttrs (!builtins.isNull account.imapmaildir.shutdownTimeoutSeconds) {
                   shutdown_timeout = "${builtins.toString account.imapmaildir.shutdownTimeoutSeconds}s";
+                }
+                // lib.optionalAttrs notmuch.enable {
+                  notmuch = lib.filterAttrs (_: v: v != null) {
+                    inherit (notmuch) tags config profile;
+                    ignore_tags = notmuch.ignoreTags;
+                  };
                 }
               );
           };

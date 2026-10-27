@@ -1,6 +1,6 @@
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
-use crate::repository::Uid;
+use crate::repository::{Keywords, Uid};
 
 /// Change of the remote state, that got applied to the local maildir
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +9,7 @@ pub enum MailChange {
         uid: Uid,
         path: PathBuf,
         flags: String,
+        keywords: Keywords,
     },
     Uploaded {
         uid: Uid,
@@ -26,6 +27,13 @@ pub enum MailChange {
         to: PathBuf,
         old: String,
         new: String,
+    },
+    /// Keywords changed, which are not part of the file name
+    KeywordsChanged {
+        uid: Uid,
+        path: PathBuf,
+        added: Keywords,
+        removed: Keywords,
     },
     /// Changes got dropped, so the mailbox needs to be rescanned
     Overflow,

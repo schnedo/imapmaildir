@@ -11,4 +11,5 @@ pub use hooks::Batching;
 pub use hooks::HookFailure;
 pub use hooks::Hooks;
 
+pub use crate::notmuch::Config as NotmuchConfig;
 pub use crate::sync::Config as SyncConfig;

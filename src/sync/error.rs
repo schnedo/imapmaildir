@@ -6,7 +6,7 @@ use crate::{
     imap::ClientError,
     maildir::{
         DeleteError, DetectChangesError, InitError, LoadError, MaildirError,
-        MaildirRepositoryError, StateError, StoreError,
+        MaildirRepositoryError, StateError, StoreError, TagsError,
     },
     repository::UidValidity,
 };
@@ -31,6 +31,15 @@ pub enum Error {
     Repository(MaildirRepositoryError),
     #[error("{0}")]
     Maildir(MaildirError),
+    #[error("Cannot sync tags: {0}")]
+    Tags(#[from] TagsError),
+    #[error(
+        "Syncing tags with Gmail requires syncing only its mailbox of all mails {all_mail:?} instead of {mailbox}"
+    )]
+    GmailTagsRequireAllMail {
+        mailbox: String,
+        all_mail: Option<String>,
+    },
     #[error("Remote uid validity {remote} differs from local {local}")]
     UidValidityMismatch {
         local: UidValidity,
@@ -50,6 +59,7 @@ impl Error {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Imap(e) => e.is_transient(),
+            Self::Tags(e) | Self::Delete(DeleteError::Tags(e)) => e.is_transient(),
             _ => false,
         }
     }
