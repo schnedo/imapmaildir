@@ -4,7 +4,7 @@ use crate::{
     },
     maildir::{
         ChangeRecorder, FlagChange, LocalChanges, LocalEvent, LocalMail, LocalWatcher, MailChange,
-        MaildirRepositoryError, NewLocalMailMetadata,
+        NewLocalMailMetadata,
     },
     repository::{ModSeq, SequenceSet, Uid, UidValidity},
     sync::{ByteBudget, Config, Error, RepositoryHandle, Shutdown, task::Task},
@@ -803,6 +803,28 @@ impl Syncer {
         (batch, None)
     }
 
+    /// Merges queued flag updates, e.g. from unsolicited FETCH responses while idling, to apply
+    /// them in a single repository transaction. Later updates of a mail replace earlier ones.
+    fn collect_update_batch(
+        first: RemoteMailMetadata,
+        task_rx: &AsyncRx<Array<Task>>,
+        config: Config,
+    ) -> (Vec<RemoteMailMetadata>, Option<Task>) {
+        let mut batch: HashMap<Uid, RemoteMailMetadata> = HashMap::new();
+        batch.insert(first.uid(), first);
+        while batch.len() < config.store_batch_size() {
+            match task_rx.try_recv() {
+                Ok(Task::UpdateFlags(metadata)) => {
+                    batch.insert(metadata.uid(), metadata);
+                }
+                Ok(task) => return (batch.into_values().collect(), Some(task)),
+                Err(_) => break,
+            }
+        }
+
+        (batch.into_values().collect(), None)
+    }
+
     /// Merges queued deletions, e.g. from per-mail EXPUNGE responses without QRESYNC, to delete
     /// them in a single repository transaction
     fn collect_delete_batch(
@@ -867,20 +889,7 @@ impl Syncer {
             Task::UidsNotIn(uids, reply) => {
                 reply.send(maildir_repository.uids_not_in(uids).await?);
             }
-            Task::UpdateFlags(remote_mail_metadata) => {
-                log::debug!(
-                    "Setting flags of mail {} to {}",
-                    remote_mail_metadata.uid(),
-                    remote_mail_metadata.flags()
-                );
-                match maildir_repository.update_flags(&remote_mail_metadata).await {
-                    Ok(()) => {}
-                    Err(MaildirRepositoryError::NoExists { uid }) => {
-                        log::warn!("ignoring flag update of locally missing mail {uid}");
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
+            Task::UpdateFlags(_) => unreachable!("flag updates should be handled in batches"),
         }
 
         Ok(())
@@ -959,6 +968,20 @@ impl Syncer {
                         stored_unrecorded = true;
                     }
                     result.map_err(Error::from)
+                }
+                Task::UpdateFlags(metadata) => {
+                    let (batch, task) = Self::collect_update_batch(metadata, task_rx, config);
+                    next_task = task;
+                    log::debug!("updating flags of {} mails", batch.len());
+                    match maildir_repository.apply_remote_updates(&batch).await {
+                        Ok(missing) => {
+                            for uid in missing {
+                                log::warn!("ignoring flag update of locally missing mail {uid}");
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(e.into()),
+                    }
                 }
                 Task::Delete(sequence_set) => {
                     let (batch, task) = Self::collect_delete_batch(&sequence_set, task_rx, config);

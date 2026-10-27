@@ -225,26 +225,6 @@ impl MaildirRepository {
         });
     }
 
-    pub async fn update_flags(&self, mail_metadata: &RemoteMailMetadata) -> Result<(), Error> {
-        let uid = mail_metadata.uid();
-
-        if let Some(mut entry) = self.state.get_by_id(uid).await? {
-            log::info!(
-                "update flags of mail {uid}: {} -> {}",
-                entry.flags(),
-                mail_metadata.flags()
-            );
-            if entry.flags() != mail_metadata.flags() {
-                let new_flags = mail_metadata.flags();
-                self.handle_flags(&mut entry, new_flags).await?;
-            }
-
-            Ok(())
-        } else {
-            Err(Error::NoExists { uid })
-        }
-    }
-
     /// Opens a new mail for uploading it. Returns `None` if it vanished meanwhile.
     pub async fn open_mail(
         &self,
@@ -348,31 +328,6 @@ impl MaildirRepository {
             old,
             new: entry.info(),
         });
-    }
-
-    async fn handle_flags(
-        &self,
-        entry: &mut LocalMailMetadata,
-        new_flags: BitFlags<Flag>,
-    ) -> Result<(), Error> {
-        let old_flags = entry.info();
-        match self.maildir.update_flags(entry, new_flags).await {
-            Ok(from) => {
-                self.state.update(entry).await?;
-                // `None` if e.g. other clients already applied the same flags locally
-                if let Some(from) = from {
-                    self.record_flags_changed(entry, from, old_flags);
-                }
-
-                Ok(())
-            }
-            Err(maildir::Error::Missing(_)) => {
-                self.state.delete_by_id(entry.uid()).await?;
-
-                Err(Error::NoExists { uid: entry.uid() })
-            }
-            Err(e) => Err(e.into()),
-        }
     }
 
     /// Tracks uploaded mails with their new UIDs. Tracks all of them even if renaming some fails,
@@ -1152,7 +1107,13 @@ mod tests {
         assert_ne!(metadata.flags(), flags);
         let metadata = RemoteMailMetadata::new(metadata.uid(), flags, metadata.modseq());
 
-        assert_ok!(repo_with_mail.repo.repo.update_flags(&metadata).await);
+        assert_is_empty!(assert_ok!(
+            repo_with_mail
+                .repo
+                .repo
+                .apply_remote_updates(&[metadata])
+                .await
+        ));
     }
 
     #[rstest]
@@ -1165,8 +1126,12 @@ mod tests {
         let metadata = mail.metadata();
         let metadata = RemoteMailMetadata::new(metadata.uid(), metadata.flags(), metadata.modseq());
 
-        let result = assert_err!(repo.repo.update_flags(&metadata).await);
-        assert_matches!(result, Error::NoExists { .. });
+        let missing = assert_ok!(
+            repo.repo
+                .apply_remote_updates(std::slice::from_ref(&metadata))
+                .await
+        );
+        assert_eq!(missing, vec![metadata.uid()]);
     }
 
     #[rstest]
@@ -1787,7 +1752,7 @@ mod tests {
             metadata.modseq(),
         );
 
-        assert_ok!(repo.repo.update_flags(&metadata).await);
+        assert_ok!(repo.repo.apply_remote_updates(&[metadata]).await);
 
         let recorded = changes.take();
         let [MailChange::FlagsChanged { old, new, to, .. }] = recorded.as_slice() else {
@@ -1817,7 +1782,7 @@ mod tests {
         ));
         let metadata = RemoteMailMetadata::new(metadata.uid(), renamed.flags(), metadata.modseq());
 
-        assert_ok!(repo.repo.update_flags(&metadata).await);
+        assert_ok!(repo.repo.apply_remote_updates(&[metadata]).await);
 
         assert_is_empty!(changes.take());
         assert!(repo.repo.maildir.get_path_of(&renamed).exists());
