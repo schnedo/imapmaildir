@@ -280,23 +280,6 @@ impl State {
         self.call(|db| get_highest_modseq(db)).await
     }
 
-    pub async fn update(&self, data: &LocalMailMetadata) -> Result<(), Error> {
-        log::trace!("updating mail cache {data:?}");
-        let (flags, other_flags, uid) = (
-            data.flags().bits(),
-            data.other_flags().as_str().to_owned(),
-            u32::from(data.uid()),
-        );
-        self.call(move |db| {
-            let mut stmt = db
-                .prepare_cached("update mail_metadata set flags=?1, other_flags=?2 where uid=?3")?;
-            stmt.execute((flags, other_flags, uid))?;
-
-            Ok(())
-        })
-        .await
-    }
-
     pub async fn store_all(
         &self,
         data: Vec<LocalMailMetadata>,
@@ -447,17 +430,6 @@ impl State {
                 }
             }
             transaction.commit()?;
-
-            Ok(())
-        })
-        .await
-    }
-
-    pub async fn delete_by_id(&self, uid: Uid) -> Result<(), Error> {
-        log::trace!("deleting {uid:?}");
-        self.call(move |db| {
-            let mut stmt = db.prepare_cached("delete from mail_metadata where uid = ?1")?;
-            stmt.execute([u32::from(uid)])?;
 
             Ok(())
         })
@@ -946,7 +918,7 @@ mod tests {
         let flags = Flag::Seen | Flag::Deleted;
         assert_ne!(flags, metadata.flags());
         metadata.set_flags(flags);
-        assert_ok!(state.state.update(&metadata).await);
+        assert_ok!(state.state.update_all(vec![metadata.clone()]).await);
         let stored = assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
         assert_eq!(metadata, stored);
     }
@@ -981,7 +953,7 @@ mod tests {
     async fn test_delete_by_uid_succeeds(#[future] state: TestState, metadata: LocalMailMetadata) {
         assert_ok!(state.state.insert_all(vec![metadata.clone()]).await);
         assert_some!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
-        assert_ok!(state.state.delete_by_id(metadata.uid()).await);
+        assert_ok!(state.state.delete_all_by_id(vec![metadata.uid()]).await);
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
     }
 
@@ -993,7 +965,7 @@ mod tests {
         metadata: LocalMailMetadata,
     ) {
         assert_none!(assert_ok!(state.state.get_by_id(metadata.uid()).await));
-        assert_ok!(state.state.delete_by_id(metadata.uid()).await);
+        assert_ok!(state.state.delete_all_by_id(vec![metadata.uid()]).await);
     }
 
     #[rstest]
