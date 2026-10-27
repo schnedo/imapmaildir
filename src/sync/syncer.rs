@@ -634,14 +634,32 @@ impl Syncer {
             repository.delete(set).await?;
         }
 
-        let missing = repository
-            .apply_remote_updates(remote_changes.updates)
-            .await?;
+        let missing = Self::apply_remote_updates(repository, remote_changes.updates).await?;
         if let Ok(sequence_set) = SequenceSet::try_from(&missing) {
             client.fetch_mail(&sequence_set).await?;
         }
 
         Ok(())
+    }
+
+    /// Applies `updates` in batches, as e.g. fetching all metadata again concerns all mails, which
+    /// the task would otherwise load from the state at once. Returns the UIDs of mails missing
+    /// locally.
+    async fn apply_remote_updates(
+        repository: &RepositoryHandle,
+        updates: Vec<RemoteMailMetadata>,
+    ) -> Result<Vec<Uid>, Error> {
+        let mut updates = updates.into_iter();
+        let mut missing = Vec::new();
+        loop {
+            let batch: Vec<_> = updates.by_ref().take(REMOTE_UPDATE_BATCH_SIZE).collect();
+            if batch.is_empty() {
+                break;
+            }
+            missing.extend(repository.apply_remote_updates(batch).await?);
+        }
+
+        Ok(missing)
     }
 
     /// Discards local changes of mails changed remotely, as remote changes win. Returns the
@@ -1021,6 +1039,12 @@ impl Syncer {
 
 struct CloseOnDrop(ByteBudget);
 
+/// Fetched mail updates applied per task
+#[cfg(not(test))]
+const REMOTE_UPDATE_BATCH_SIZE: usize = 10_000;
+#[cfg(test)]
+const REMOTE_UPDATE_BATCH_SIZE: usize = 2;
+
 impl Drop for CloseOnDrop {
     fn drop(&mut self) {
         self.0.close();
@@ -1224,6 +1248,50 @@ mod tests {
 
         assert_eq!(batch, vec![1, 2]);
         assert_matches!(next, Some(Task::SetHighestModseq(_)));
+    }
+
+    #[compio::test]
+    async fn test_remote_updates_get_applied_in_several_batches() {
+        let (mail_dir, state_dir) = (assert_ok!(TempDir::new()), assert_ok!(TempDir::new()));
+        let mut repository = assert_ok!(
+            MaildirRepository::try_init(
+                assert_ok!(UidValidity::try_from(1)),
+                mail_dir.path(),
+                state_dir.path()
+            )
+            .await
+        );
+        let stored: Vec<RemoteMail> = (1..=3).map(|uid| mail(uid, 1)).collect();
+        assert_ok!(repository.store_batch(&stored).await);
+        let flagged = Flag::Seen | Flag::Flagged;
+        // more than fit into a batch, including mails missing locally
+        let updates: Vec<RemoteMailMetadata> = (1..=5)
+            .map(|uid| {
+                RemoteMailMetadata::new(
+                    assert_ok!(Uid::try_from(uid)),
+                    flagged,
+                    assert_ok!(ModSeq::try_from(10)),
+                )
+            })
+            .collect();
+        assert!(updates.len() > 2 * REMOTE_UPDATE_BATCH_SIZE);
+        let (task_tx, task_rx) = mpsc::bounded_async(16);
+        let handle = RepositoryHandle::new(task_tx);
+        let budget = ByteBudget::new(1024);
+
+        let (processed, missing) = futures::join!(
+            Syncer::process_tasks(&mut repository, &task_rx, &budget, Config::default(), None),
+            async move { Syncer::apply_remote_updates(&handle, updates).await }
+        );
+
+        assert_ok!(processed);
+        let missing: Vec<u32> = assert_ok!(missing).into_iter().map(u32::from).collect();
+        assert_eq!(missing, vec![4, 5]);
+        let uids: Vec<Uid> = (1..=3).map(|uid| assert_ok!(Uid::try_from(uid))).collect();
+        let flags = assert_ok!(repository.flags(uids).await);
+        assert_eq!(flags.len(), 3);
+        assert!(flags.values().all(|flags| *flags == flagged));
+        assert_ok!(repository.close().await);
     }
 
     #[test]
