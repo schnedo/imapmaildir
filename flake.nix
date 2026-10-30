@@ -64,21 +64,6 @@
               '';
             };
 
-            watchCoverage = pkgs.writeShellApplication {
-              name = "watchCoverage";
-              runtimeInputs = with pkgs; [
-                entr
-                fd
-                cargo-llvm-cov
-              ];
-              text = ''
-                export LLVM_COV=${lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-cov"}
-                export LLVM_PROFDATA=${lib.getExe' pkgs.rustc.llvmPackages.llvm "llvm-profdata"}
-                cargo llvm-cov nextest --no-tests warn --html --open "$@"
-                fd -e rs | entr -ccp cargo llvm-cov nextest --no-tests warn --html "$@"
-              '';
-            };
-
           };
 
           devShells.default = pkgs.mkShell {
@@ -97,7 +82,6 @@
                 rustc
                 rustfmt
                 self'.packages.showDependencyGraph
-                self'.packages.watchCoverage
                 sqlitebrowser
                 # keep-sorted end
               ]
