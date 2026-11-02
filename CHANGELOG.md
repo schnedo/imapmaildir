@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/schnedo/imapmaildir/compare/v0.3.0...v0.4.0)
+
+### Features
+
+
+- Sync imap keywords and gmail labels with notmuch tags - ([b7385f0](https://github.com/schnedo/imapmaildir/commit/b7385f0fa13f8fe9de795e25121c9cd8ea69344c) (by @schnedo))
+
+### Performance
+
+
+- Apply fetched mail updates in batches - ([a3dd2e1](https://github.com/schnedo/imapmaildir/commit/a3dd2e179ea41e3cb99bb3cb55fdcd00c3e8c93a) (by @schnedo))
+- Batch flag updates while idling - ([5e6f8d2](https://github.com/schnedo/imapmaildir/commit/5e6f8d2b4b4db3580e1cf7df2f312d821a0d1388) (by @schnedo))
+
+### Chore
+
+
+- *(deps)* Lock file maintenance - ([eb86fc8](https://github.com/schnedo/imapmaildir/commit/eb86fc859cce0a39d750ddda15463fd4d43bfa86) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+* @schnedo
+
 ## [0.3.0](https://github.com/schnedo/imapmaildir/compare/v0.2.0...v0.3.0)
 
 ### Features
