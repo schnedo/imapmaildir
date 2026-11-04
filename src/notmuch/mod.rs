@@ -25,7 +25,7 @@ use crate::repository::KeywordSource;
 
 pub use config::{Config, ConfigFile};
 pub use database::{Database, Error as DatabaseError, Location, Revision};
-pub use mapping::{TagConfig, TagMapping};
+pub use mapping::{ProcessedTagError, TagConfig, TagMapping};
 #[cfg(test)]
 pub use tags::tests as test_support;
 pub use tags::{IndexOptions, TagUpdate, changed, rename, update};

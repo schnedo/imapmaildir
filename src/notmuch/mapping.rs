@@ -41,6 +41,34 @@ pub struct TagConfig {
     pub ignored_tags: Vec<String>,
     /// Tags of keywords, that are not named like them, e.g. `$Junk` = `spam`
     pub tags: BTreeMap<String, String>,
+    /// Synced tag, that marks mails, whose indexing already added the tags of `new.tags`
+    pub processed_tag: Option<String>,
+}
+
+/// A configured processed tag, that can never be synced
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error(
+    "processed_tag {0:?} cannot be synced, as it is empty, too long, has control characters or is ignored"
+)]
+pub struct ProcessedTagError(String);
+
+impl TagConfig {
+    /// # Errors
+    /// If the processed tag is empty, longer than notmuch stores, has control characters or is
+    /// ignored
+    pub fn validate_processed_tag(&self) -> Result<(), ProcessedTagError> {
+        match &self.processed_tag {
+            Some(tag)
+                if tag.is_empty()
+                    || tag.len() > MAX_TAG_LEN
+                    || tag.contains(char::is_control)
+                    || self.ignored_tags.contains(tag) =>
+            {
+                Err(ProcessedTagError(tag.clone()))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Default for TagConfig {
@@ -48,6 +76,7 @@ impl Default for TagConfig {
         Self {
             ignored_tags: DEFAULT_IGNORED_TAGS.map(str::to_string).to_vec(),
             tags: BTreeMap::new(),
+            processed_tag: None,
         }
     }
 }
@@ -59,6 +88,7 @@ pub struct TagMapping {
     ignored: HashSet<String>,
     to_tag: HashMap<String, String>,
     to_keyword: HashMap<String, String>,
+    processed_tag: Option<String>,
 }
 
 impl TagMapping {
@@ -94,12 +124,28 @@ impl TagMapping {
             }
         }
 
-        Self {
+        let mut mapping = Self {
             source,
             ignored,
             to_tag,
             to_keyword,
-        }
+            processed_tag: None,
+        };
+        mapping.processed_tag = config.processed_tag.clone().filter(|tag| {
+            let synced = mapping.is_synced(tag);
+            if !synced {
+                // depends on the server, e.g. `inbox` is no keyword without Gmail
+                log::warn!("ignoring processed_tag {tag:?}, as the server cannot sync it");
+            }
+            synced
+        });
+
+        mapping
+    }
+
+    /// Synced tag, that marks mails, whose indexing already added the tags of `new.tags`
+    pub fn processed_tag(&self) -> Option<&str> {
+        self.processed_tag.as_deref()
     }
 
     /// Identifies the mapping, whose changes require syncing all tags again
@@ -199,6 +245,32 @@ mod tests {
 
     use super::*;
     use crate::notmuch::test_support::set;
+
+    fn with_processed(tag: &str) -> TagMapping {
+        TagMapping::new(
+            &TagConfig {
+                processed_tag: Some(tag.to_string()),
+                ..TagConfig::default()
+            },
+            KeywordSource::Flags,
+        )
+    }
+
+    #[test]
+    fn test_keeps_syncable_processed_tag() {
+        assert_eq!(
+            with_processed("processed").processed_tag(),
+            Some("processed")
+        );
+    }
+
+    #[rstest]
+    #[case::ignored("unread")]
+    #[case::empty("")]
+    #[case::too_long(&"a".repeat(MAX_TAG_LEN + 1))]
+    fn test_drops_unsyncable_processed_tag(#[case] tag: &str) {
+        assert_none!(with_processed(tag).processed_tag());
+    }
 
     fn mapping(source: KeywordSource, tags: &[(&str, &str)]) -> TagMapping {
         TagMapping::new(
@@ -340,6 +412,7 @@ mod tests {
             &TagConfig {
                 ignored_tags: vec!["todo".to_string()],
                 tags: BTreeMap::new(),
+                processed_tag: None,
             },
             KeywordSource::Flags,
         );

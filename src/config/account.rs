@@ -95,7 +95,7 @@ impl Account {
         let contents =
             read_to_string(&config_home).map_err(|e| Error::Read(config_home.clone(), e))?;
         let config: AccountConfigFile =
-            toml::from_str(&contents).map_err(|e| Error::Parse(config_home, e))?;
+            toml::from_str(&contents).map_err(|e| Error::Parse(config_home.clone(), e))?;
 
         let data_home = data_home()?;
         let maildir_base_path = config
@@ -137,7 +137,11 @@ impl Account {
                         .unwrap_or(default.shutdown_timeout()),
                 )
             },
-            notmuch: config.notmuch.map(NotmuchConfig::from),
+            notmuch: config
+                .notmuch
+                .map(NotmuchConfig::try_from)
+                .transpose()
+                .map_err(|e| Error::Notmuch(config_home.clone(), e))?,
         })
     }
 }
@@ -182,4 +186,6 @@ pub enum Error {
     Read(PathBuf, io::Error),
     #[error("Cannot parse account config {0}: {1}")]
     Parse(PathBuf, toml::de::Error),
+    #[error("Invalid notmuch config of account config {0}: {1}")]
+    Notmuch(PathBuf, notmuch::ProcessedTagError),
 }

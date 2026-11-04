@@ -1090,8 +1090,8 @@ impl MaildirRepository {
                 )
                 .await?;
         }
-        let flushed = deleted.iter().any(|(_, path, _)| path.is_some())
-            && self.flush_for_record().await;
+        let flushed =
+            deleted.iter().any(|(_, path, _)| path.is_some()) && self.flush_for_record().await;
         for (uid, path, _) in deleted.into_iter().filter(|_| flushed) {
             if let Some(path) = path {
                 self.record(|| MailChange::Deleted { uid, path });
@@ -3341,6 +3341,72 @@ mod tests {
                 assert_ok!(repo.flush_tags().await);
             }
             changes
+        }
+
+        /// Syncs the processed tag `processed`
+        fn sync_processed_tag(repo: &mut MaildirRepository) {
+            let notmuch = assert_some!(repo.tags.take()).notmuch;
+            repo.sync_tags(Some(SyncedTags {
+                notmuch,
+                mapping: Arc::new(TagMapping::new(
+                    &TagConfig {
+                        processed_tag: Some("processed".to_string()),
+                        ..TagConfig::default()
+                    },
+                    KeywordSource::Flags,
+                )),
+            }));
+        }
+
+        #[compio::test]
+        async fn test_indexed_mails_get_processed_tag_synced_to_server() {
+            let Some(TaggedRepo {
+                mut repo, database, ..
+            }) = tagged_repo().await
+            else {
+                return;
+            };
+            sync_processed_tag(&mut repo);
+
+            let path = store(&repo, 1, &["work"]).await;
+
+            assert_eq!(database.tags(&path), set(&["inbox", "processed", "work"]));
+            let expected = FlagChange::of_keywords(KeywordChange {
+                added: Keywords::of(&["processed"]),
+                removed: Keywords::default(),
+            });
+            assert_eq!(
+                complete(&repo)
+                    .await
+                    .updates
+                    .build()
+                    .iter()
+                    .collect::<Vec<_>>(),
+                vec![(&expected, &SequenceSet::from(assert_ok!(Uid::try_from(1))))]
+            );
+        }
+
+        #[compio::test]
+        async fn test_mails_with_processed_tag_get_no_new_tags() {
+            let Some(TaggedRepo {
+                mut repo, database, ..
+            }) = tagged_repo().await
+            else {
+                return;
+            };
+            sync_processed_tag(&mut repo);
+
+            let path = store(&repo, 1, &["processed", "work"]).await;
+
+            assert_eq!(database.tags(&path), set(&["processed", "work"]));
+            assert_is_empty!(
+                complete(&repo)
+                    .await
+                    .updates
+                    .build()
+                    .iter()
+                    .collect::<Vec<_>>()
+            );
         }
 
         #[compio::test]
