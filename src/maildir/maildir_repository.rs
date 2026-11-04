@@ -526,6 +526,21 @@ impl MaildirRepository {
             .await
     }
 
+    /// Makes the renames and removals in `cur` durable, so that only flushed changes get
+    /// reported. Returns whether they can be reported.
+    async fn flush_for_record(&self) -> bool {
+        if !self.records_changes() {
+            return false;
+        }
+        match self.maildir.sync_cur().await {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("cannot flush changes, not reporting them: {e}");
+                false
+            }
+        }
+    }
+
     fn record(&self, change: impl FnOnce() -> MailChange) {
         if let Some(changes) = &*self.changes.borrow() {
             changes.record(change());
@@ -728,6 +743,14 @@ impl MaildirRepository {
         }
 
         Ok(())
+    }
+
+    async fn record_recovered(&self, recovered: Vec<(LocalMailMetadata, Keywords)>) {
+        if !recovered.is_empty() && self.flush_for_record().await {
+            for (entry, keywords) in recovered {
+                self.record_downloaded(&entry, keywords);
+            }
+        }
     }
 
     fn record_downloaded(&self, mail: &LocalMailMetadata, keywords: Keywords) {
@@ -941,7 +964,7 @@ impl MaildirRepository {
                 .map(|(entry, from, _)| (from.clone(), self.maildir.get_path_of(entry)))
                 .collect(),
         );
-        if record {
+        if record && !renames.is_empty() && self.flush_for_record().await {
             for (entry, from, old) in renames {
                 self.record_flags_changed(&entry, from, old);
             }
@@ -1018,7 +1041,8 @@ impl MaildirRepository {
         // merges tags of notmuch, which then get synced to the server, except ones of
         // `new.tags`
         self.mark_tags_pending(uids);
-        for (renamed, from) in uploaded {
+        let flushed = !uploaded.is_empty() && self.flush_for_record().await;
+        for (renamed, from) in uploaded.into_iter().filter(|_| flushed) {
             self.record(|| MailChange::Uploaded {
                 uid: renamed.uid(),
                 from,
@@ -1066,7 +1090,9 @@ impl MaildirRepository {
                 )
                 .await?;
         }
-        for (uid, path, _) in deleted {
+        let flushed = deleted.iter().any(|(_, path, _)| path.is_some())
+            && self.flush_for_record().await;
+        for (uid, path, _) in deleted.into_iter().filter(|_| flushed) {
             if let Some(path) = path {
                 self.record(|| MailChange::Deleted { uid, path });
             }
@@ -1202,6 +1228,7 @@ impl MaildirRepository {
                 .await?;
         }
         let mut deletions = Vec::new();
+        let mut recovered = Vec::new();
         for entry in missing {
             if self.maildir.recover_from_tmp(&entry).await? {
                 log::warn!("recovered mail {} from tmp", entry.uid());
@@ -1215,11 +1242,12 @@ impl MaildirRepository {
                 } else {
                     Keywords::default()
                 };
-                self.record_downloaded(&entry, keywords);
+                recovered.push((entry, keywords));
             } else {
                 deletions.push(entry.uid());
             }
         }
+        self.record_recovered(recovered).await;
         let untracked = stream::iter(maildir_mails.into_values().flatten().chain(duplicates))
             .map(|maildata| self.maildir.remove_uid(maildata))
             .buffered(MAX_CONCURRENT_FILE_OPS)
