@@ -17,6 +17,8 @@ pub struct IndexOptions {
     synced_new_tags: BTreeSet<String>,
     /// Whether to update tags from maildir flags
     synchronize_flags: bool,
+    /// Synced tag, that marks mails indexed by us, whose new mail tags must not get added again
+    processed_tag: Option<String>,
 }
 
 impl IndexOptions {
@@ -31,23 +33,39 @@ impl IndexOptions {
             new_tags,
             synced_new_tags: synced_new_tags.into_iter().collect(),
             synchronize_flags: database.synchronizes_flags()?,
+            processed_tag: mapping.processed_tag().map(str::to_string),
         })
     }
 
     /// Indexes the mail at `path`. Returns its message and whether it is new to notmuch.
     /// `None` if it is no mail or vanished.
+    ///
+    /// With `known` tags of the mail, new mails with the processed tag get no new mail tags, as
+    /// they were indexed before. Other new mails get the processed tag, which then syncs. Without,
+    /// they only get the new mail tags, as a tag added then would not get synced.
     fn index<'db>(
         &self,
         database: &'db Database,
         path: &Path,
+        known: Option<&BTreeSet<String>>,
     ) -> Result<Option<(Message<'db>, bool)>, Error> {
         let Some((message, new)) = database.index_file(path)? else {
             return Ok(None);
         };
         message.frozen(|message| {
             if new {
-                for tag in &self.new_tags {
-                    message.add_tag(tag)?;
+                let processed = self
+                    .processed_tag
+                    .as_ref()
+                    .zip(known)
+                    .map(|(tag, known)| (tag, known.contains(tag)));
+                if !processed.is_some_and(|(_, already)| already) {
+                    for tag in &self.new_tags {
+                        message.add_tag(tag)?;
+                    }
+                    if let Some((tag, _)) = processed {
+                        message.add_tag(tag)?;
+                    }
                 }
             }
             if self.synchronize_flags {
@@ -89,7 +107,7 @@ pub fn update(
         None if !update.path.exists() => return Ok(None),
         // e.g. renamed by other programs, so that notmuch only knows the message under another
         // file name, or new to notmuch, e.g. as its database got recreated
-        None => match options.index(database, &update.path)? {
+        None => match options.index(database, &update.path, Some(&update.tags))? {
             Some((message, false)) => {
                 forget_vanished(database, &message, &update.path)?;
                 // changing tags of the message read before would restore the vanished files
@@ -150,7 +168,7 @@ pub fn rename(
     to: &Path,
 ) -> Result<(), Error> {
     // removing the last file would remove the message with its tags
-    let Some((message, _)) = options.index(database, to)? else {
+    let Some((message, _)) = options.index(database, to, None)? else {
         // e.g. renamed again by other programs. Other files keep the message.
         if !from.exists()
             && let Some(message) = database.find_by_filename(from)?
@@ -421,6 +439,72 @@ pub mod tests {
         // without configuration, new mails get `inbox` and `unread`, which `synchronize_flags`
         // keeps for mails without `S` flag
         assert_eq!(database.tags(&path), set(&["inbox", "unread", "work"]));
+    }
+
+    fn processed() -> TagMapping {
+        TagMapping::new(
+            &TagConfig {
+                processed_tag: Some("processed".to_string()),
+                ..TagConfig::default()
+            },
+            KeywordSource::Flags,
+        )
+    }
+
+    #[test]
+    fn test_update_adds_processed_tag_to_new_mail() {
+        let Some(database) = TestDatabase::if_available() else {
+            return;
+        };
+        let path = database.mail("INBOX/cur", "1,U=1:2,S", "one@example.com");
+
+        update_with(&database, &processed(), &path, None, &["work"]);
+
+        assert_eq!(database.tags(&path), set(&["inbox", "processed", "work"]));
+    }
+
+    #[test]
+    fn test_update_skips_new_tags_of_new_mail_with_processed_tag() {
+        let Some(database) = TestDatabase::if_available() else {
+            return;
+        };
+        let path = database.mail("INBOX/cur", "1,U=1:2,", "one@example.com");
+
+        update_with(&database, &processed(), &path, None, &["processed", "work"]);
+
+        // `unread` comes from the maildir flags, not from `new.tags`
+        assert_eq!(database.tags(&path), set(&["processed", "unread", "work"]));
+    }
+
+    #[test]
+    fn test_update_adds_no_processed_tag_to_known_mail() {
+        let Some(database) = TestDatabase::if_available() else {
+            return;
+        };
+        let path = database.mail("INBOX/cur", "1,U=1:2,S", "one@example.com");
+        database.index_file(&path);
+
+        update_with(&database, &processed(), &path, Some(&[]), &["work"]);
+
+        assert_eq!(database.tags(&path), set(&["work"]));
+    }
+
+    #[test]
+    fn test_rename_adds_no_processed_tag() {
+        let Some(database) = TestDatabase::if_available() else {
+            return;
+        };
+        let from = database.mail("INBOX/cur", "1:2,S", "one@example.com");
+        database.index_file(&from);
+        let to = from.with_file_name("1,U=1:2,S");
+        std::fs::rename(&from, &to).unwrap();
+        let opened = database.open(true);
+        let options = assert_ok!(IndexOptions::of(&opened, &processed()));
+
+        assert_ok!(rename(&opened, &options, &from, &to));
+        assert_ok!(opened.close());
+
+        assert!(!database.tags(&to).contains("processed"));
     }
 
     #[test]

@@ -83,7 +83,12 @@ Configure using the home-manager module:
         # Optional syncing of keywords with notmuch tags, see "Syncing tags with notmuch" below
         notmuch = {
             enable = true;
-            # Tags of keywords, that are named differently
+            # Marks mails, whose indexing added the tags of `new.tags`. imapmaildir adds
+# this tag to the new mails it indexes, so that it gets synced. Mails with it
+# downloaded later, e.g. by another host, get no tags of `new.tags`. Off by default.
+# processed_tag = "processed"
+
+# Tags of keywords, that are named differently
             tags = { "$Junk" = "spam"; };
         };
         # Optional service configuration.
@@ -181,6 +186,11 @@ directions. On Gmail, it syncs labels via `X-GM-LABELS` instead. Enable it with
 # encrypted
 ignore_tags = ["todo"]
 
+# Marks mails, whose indexing added the tags of `new.tags`. imapmaildir adds
+# this tag to the new mails it indexes, so that it gets synced. Mails with it
+# downloaded later, e.g. by another host, get no tags of `new.tags`. Off by default.
+# processed_tag = "processed"
+
 # Tags of keywords, that are named differently
 [notmuch.tags]
 "$Junk" = "spam"
@@ -193,6 +203,11 @@ ignore_tags = ["todo"]
   which only come from the server. Therefore the maildir must be below the mail
   root of notmuch. Tags of other mails, e.g. ones moved in by other programs,
   get synced once notmuch indexed them.
+- With `processed_tag`, new mails indexed by `imapmaildir` get that tag as well,
+  while mails already having it from the server get no tags of `new.tags`. Mails
+  indexed otherwise, e.g. by `notmuch new` or after being renamed by other
+  programs, do not get it. The tag must be syncable: the config is rejected if it
+  is in `ignore_tags`, empty, too long or has control characters.
 - Keywords and tags changed on both sides keep the server's state.
 - Keywords are case-insensitive on the server, but tags are not. A tag differing
   from an existing keyword only in case, e.g. `Work` for `work`, takes the

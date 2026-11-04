@@ -101,6 +101,12 @@
                     default = null;
                     description = "Tags, that are not synced, in addition to the tags notmuch manages itself: unread, replied, flagged, draft, passed, deleted, new, attachment, signed and encrypted. `inbox` is only synced with Gmail's \\Inbox label";
                   };
+                  processedTag = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Synced tag, that imapmaildir adds to the new mails it indexes. Mails downloaded with it get none of notmuch's new.tags. Disabled if null";
+                    example = "processed";
+                  };
                   tags = lib.mkOption {
                     type = lib.types.attrsOf lib.types.str;
                     default = { };
@@ -269,6 +275,7 @@
                   notmuch = lib.filterAttrs (_: v: v != null) {
                     inherit (notmuch) tags config profile;
                     ignore_tags = notmuch.ignoreTags;
+                    processed_tag = notmuch.processedTag;
                   };
                 }
               );
