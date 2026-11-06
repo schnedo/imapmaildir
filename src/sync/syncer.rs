@@ -434,6 +434,20 @@ impl Syncer {
         Ok(SequenceSet::from_sorted(missing_uids).ok())
     }
 
+    /// Fails if tags get synced, but the server cannot store new keywords for them
+    fn check_tags_storable(
+        tags: Option<&TagSync>,
+        client: &SelectedClient,
+        mailbox: &str,
+    ) -> Result<(), Error> {
+        if tags.is_some() && !client.can_create_keywords() {
+            return Err(Error::TagsRequireNewKeywords {
+                mailbox: mailbox.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn check_uid_validity(local: UidValidity, remote: UidValidity) -> Result<(), Error> {
         if local == remote {
             Ok(())
@@ -489,6 +503,7 @@ impl Syncer {
             ..
         } = selection;
         Self::check_uid_validity(uid_validity, mailbox_data.uid_validity())?;
+        Self::check_tags_storable(tags, &client, mailbox)?;
         maildir_repository.sync_tags(tags.map(|tags| tags.synced(client.keyword_source())));
         let local_watcher = maildir_repository.local_watcher();
         let task_handle =
@@ -912,6 +927,7 @@ impl Syncer {
             mailbox_data,
             ..
         } = selection?;
+        Self::check_tags_storable(tags, &client, mailbox)?;
 
         let (mut maildir_repository, local_uids) = if let Some(maildir_repository) =
             maildir_repository

@@ -10,13 +10,11 @@ use crate::{
             capability::{Capabilities, Capability},
             encoding,
             fetch::FetchAttributes,
-            selected::PermanentKeywords,
         },
         transport::{Connection, ResponseData, ResponseHandler},
     },
     repository::{
-        KeywordSource, Keywords, MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder,
-        UidValidity,
+        KeywordSource, MailboxMetadataBuilder, ModSeq, SequenceSet, SequenceSetBuilder, UidValidity,
     },
     sync::{ByteBudget, Task},
 };
@@ -158,7 +156,7 @@ impl AuthenticatedClient {
             updates: Vec::new(),
             deletions: None,
             exists: None,
-            permanent_keywords: PermanentKeywords::default(),
+            new_keywords: true,
         };
         self.connection.send(command.into(), &mut handler).await?;
         let SelectHandler {
@@ -166,7 +164,7 @@ impl AuthenticatedClient {
             updates,
             deletions,
             exists,
-            permanent_keywords,
+            new_keywords,
             ..
         } = handler;
 
@@ -183,7 +181,7 @@ impl AuthenticatedClient {
             budget,
             exists.ok_or(Error::MissingExists)?,
             mailbox_data.uid_validity(),
-            permanent_keywords,
+            new_keywords,
         )?;
 
         Ok(Selection {
@@ -288,7 +286,8 @@ struct SelectHandler<'a> {
     updates: Vec<RemoteMailMetadata>,
     deletions: Option<SequenceSet>,
     exists: Option<u32>,
-    permanent_keywords: PermanentKeywords,
+    /// Whether the server lets clients create keywords. Servers not reporting permanent flags do.
+    new_keywords: bool,
 }
 
 impl ResponseHandler for SelectHandler<'_> {
@@ -376,10 +375,7 @@ impl SelectHandler<'_> {
                 }
                 imap_proto::ResponseCode::PermanentFlags(flags) => {
                     log::trace!("permanent flags {flags:?}");
-                    self.permanent_keywords = PermanentKeywords {
-                        any: flags.iter().any(|flag| flag == "\\*"),
-                        existing: Keywords::from_flags(flags),
-                    };
+                    self.new_keywords = flags.iter().any(|flag| flag == "\\*");
                 }
                 imap_proto::ResponseCode::UidNext(uid_next) => {
                     log::trace!("not handling Data response UidNext {uid_next:?}");
@@ -432,7 +428,7 @@ mod tests {
             updates: Vec::new(),
             deletions: None,
             exists: None,
-            permanent_keywords: PermanentKeywords::default(),
+            new_keywords: true,
         };
 
         assert_none!(assert_ok!(handler.handle_response(ResponseData::from_raw(

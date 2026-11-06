@@ -49,39 +49,13 @@ pub enum IdleStopReason {
 /// socket buffers while the other is still sending
 const MAX_PIPELINED_COMMANDS: usize = 64;
 
-/// Keywords the server stores permanently for the selected mailbox (RFC 3501 7.1)
-#[derive(Debug, Clone)]
-pub struct PermanentKeywords {
-    /// Whether new keywords can be created (`\*`)
-    pub any: bool,
-    /// Existing keywords, that can be stored
-    pub existing: Keywords,
-}
-
-impl Default for PermanentKeywords {
-    /// Servers not reporting permanent flags let clients store all flags
-    fn default() -> Self {
-        Self {
-            any: true,
-            existing: Keywords::default(),
-        }
+/// Whether `keyword` can be stored in `source`. Warns otherwise.
+fn is_storable(keyword: &str, source: KeywordSource) -> bool {
+    let storable = Keywords::is_storable(keyword, source);
+    if !storable {
+        log::warn!("server cannot store keyword {keyword}, not syncing it");
     }
-}
-
-impl PermanentKeywords {
-    /// Whether the server can store `keyword` of `source` when `added` to or removed from mails.
-    /// Warns otherwise.
-    fn can_store(&self, keyword: &str, source: KeywordSource, added: bool) -> bool {
-        let storable = Keywords::is_storable(keyword, source)
-            && (!added
-                || source != KeywordSource::Flags
-                || self.any
-                || self.existing.contains(keyword));
-        if !storable {
-            log::warn!("server cannot store keyword {keyword}, not syncing it");
-        }
-        storable
-    }
+    storable
 }
 
 /// Maximum length of sequence sets in commands, as servers limit the length of command lines.
@@ -97,7 +71,7 @@ pub struct SelectedClient {
     idle_stop_tx: Option<AsyncTx<Array<IdleStopReason>>>,
     own_modseqs: OwnModSeqs,
     uid_validity: UidValidity,
-    permanent_keywords: PermanentKeywords,
+    new_keywords: bool,
 }
 impl SelectedClient {
     /// Creates the client for a selected mailbox. Fails if the server lacks UIDPLUS.
@@ -110,7 +84,7 @@ impl SelectedClient {
         budget: ByteBudget,
         exists: u32,
         uid_validity: UidValidity,
-        permanent_keywords: PermanentKeywords,
+        new_keywords: bool,
     ) -> Result<Self, Error> {
         if !capabilities.contains(Capability::UidPlus) {
             return Err(Error::MissingCapability(Capability::UidPlus));
@@ -131,8 +105,13 @@ impl SelectedClient {
             idle_stop_tx: Some(idle_stop_tx),
             own_modseqs: OwnModSeqs::default(),
             uid_validity,
-            permanent_keywords,
+            new_keywords,
         })
+    }
+
+    /// Whether the server lets clients create new keywords. Gmail labels need no permission.
+    pub fn can_create_keywords(&self) -> bool {
+        self.keyword_source() == KeywordSource::GmailLabels || self.new_keywords
     }
 
     /// Where the server keeps keywords of mails
@@ -148,11 +127,11 @@ impl SelectedClient {
         storable
             .keywords
             .added
-            .retain(|keyword| self.permanent_keywords.can_store(keyword, source, true));
+            .retain(|keyword| is_storable(keyword, source));
         storable
             .keywords
             .removed
-            .retain(|keyword| self.permanent_keywords.can_store(keyword, source, false));
+            .retain(|keyword| is_storable(keyword, source));
 
         storable
     }
@@ -489,7 +468,7 @@ impl SelectedClient {
         let mut stores: Vec<ChangeStore> = changes
             .into_iter()
             .map(|(pending, change)| ChangeStore {
-                steps: store_items(&change, source, &self.permanent_keywords)
+                steps: store_items(&change, source)
                     .into_iter()
                     .map(StoreStep::Items)
                     .collect(),
@@ -1006,15 +985,11 @@ impl StoreItems {
 
 /// The `+`/`-` operations and their `FLAGS` or `X-GM-LABELS` items storing `change`.
 /// Keywords the server cannot store get dropped.
-fn store_items(
-    change: &FlagChange,
-    source: KeywordSource,
-    permanent_keywords: &PermanentKeywords,
-) -> Vec<StoreItems> {
-    let keywords = |keywords: &Keywords, added: bool| -> (Vec<String>, Vec<String>) {
+fn store_items(change: &FlagChange, source: KeywordSource) -> Vec<StoreItems> {
+    let keywords = |keywords: &Keywords| -> (Vec<String>, Vec<String>) {
         keywords
             .iter()
-            .filter(|keyword| permanent_keywords.can_store(keyword, source, added))
+            .filter(|keyword| is_storable(keyword, source))
             .map(|keyword| {
                 let formatted = match source {
                     KeywordSource::GmailLabels if !keyword.starts_with('\\') => {
@@ -1026,8 +1001,8 @@ fn store_items(
             })
             .unzip()
     };
-    let (added, added_originals) = keywords(&change.keywords.added, true);
-    let (removed, removed_originals) = keywords(&change.keywords.removed, false);
+    let (added, added_originals) = keywords(&change.keywords.added);
+    let (removed, removed_originals) = keywords(&change.keywords.removed);
     let flags = |flags: BitFlags<Flag>| flags.iter().map(|flag| flag.to_string()).collect();
     let item = |operation, flags, keywords, originals| StoreItems {
         operation,
@@ -1769,11 +1744,7 @@ mod tests {
 
     #[test]
     fn test_store_items_combine_flags_and_keywords() {
-        let items = joined(store_items(
-            &keyword_change(),
-            KeywordSource::Flags,
-            &PermanentKeywords::default(),
-        ));
+        let items = joined(store_items(&keyword_change(), KeywordSource::Flags));
 
         assert_eq!(
             items,
@@ -1785,32 +1756,8 @@ mod tests {
     }
 
     #[test]
-    fn test_store_items_skip_keywords_server_cannot_create() {
-        let permanent = PermanentKeywords {
-            any: false,
-            existing: Keywords::of(&["work"]),
-        };
-        let mut change = keyword_change();
-        change.keywords.added = Keywords::of(&["$Junk", "work"]);
-
-        let items = joined(store_items(&change, KeywordSource::Flags, &permanent));
-
-        assert_eq!(
-            items,
-            vec![
-                ("+FLAGS", "\\Seen work".to_string()),
-                ("-FLAGS", "\\Flagged work".to_string())
-            ]
-        );
-    }
-
-    #[test]
     fn test_store_items_store_gmail_labels_separately() {
-        let items = joined(store_items(
-            &keyword_change(),
-            KeywordSource::GmailLabels,
-            &PermanentKeywords::default(),
-        ));
+        let items = joined(store_items(&keyword_change(), KeywordSource::GmailLabels));
 
         assert_eq!(
             items,
