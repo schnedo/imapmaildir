@@ -1,4 +1,10 @@
-use std::{ffi::OsString, fmt, io, thread, time::Duration};
+use std::{
+    ffi::OsString,
+    fmt, io, mem,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    thread,
+    time::Duration,
+};
 
 use crossfire::{
     MTx, mpsc,
@@ -7,22 +13,30 @@ use crossfire::{
 
 use crate::sync::change_hook::{ChangeBatch, FailureHandler, HookError, run_batches};
 
-/// A batch of changes, that waits for its turn to be passed to the hook
-struct HookJob {
-    cmd: Vec<OsString>,
-    mailbox: String,
+/// Changes of a mailbox, that wait for their turn to be passed to the hook. Batches of the same
+/// mailbox, that queue while waiting, merge, so that waiting needs no more memory than its
+/// distinct mails.
+struct PendingJob {
+    mailbox: Arc<str>,
     batch: ChangeBatch,
-    timeout: Option<Duration>,
-    on_failure: FailureHandler,
-    /// Completes, once the hook handled the batch
-    done: TxOneshot<()>,
+    /// Complete, once the hook handled the batch
+    done: Vec<TxOneshot<()>>,
+}
+
+type Pending = Arc<Mutex<Vec<PendingJob>>>;
+
+fn lock(pending: &Pending) -> MutexGuard<'_, Vec<PendingJob>> {
+    pending.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Queues hooks of all mailboxes, which run one at a time. Batches waiting for their turn share the
 /// next run. Clones queue to the same [`HookThread`].
 #[derive(Clone)]
 pub struct HookRunner {
-    jobs: MTx<mpsc::List<HookJob>>,
+    pending: Pending,
+    /// Tells the thread about jobs, that got added to `pending`
+    wake: MTx<mpsc::List<()>>,
+    on_failure: FailureHandler,
 }
 
 impl fmt::Debug for HookRunner {
@@ -33,30 +47,39 @@ impl fmt::Debug for HookRunner {
 }
 
 impl HookRunner {
+    /// Called with the failure of a hook
+    pub(super) fn on_failure(&self) -> &FailureHandler {
+        &self.on_failure
+    }
+
     /// Queues `batch` for the hook. The returned receiver completes, once the hook handled it,
-    /// and fails if the runner stopped before.
+    /// and fails if the runner stopped before. A batch of a mailbox, that is still waiting,
+    /// merges with `batch`.
     ///
     /// # Errors
     /// If the runner stopped
     pub(super) fn queue(
         &self,
-        cmd: &[OsString],
-        mailbox: &str,
+        mailbox: &Arc<str>,
         batch: ChangeBatch,
-        timeout: Option<Duration>,
-        on_failure: &FailureHandler,
     ) -> Result<RxOneshot<()>, HookError> {
         let (done_tx, done_rx): (_, RxOneshot<()>) = oneshot();
-        let job = HookJob {
-            cmd: cmd.to_vec(),
-            mailbox: mailbox.to_string(),
+        let mut pending = lock(&self.pending);
+        if let Some(job) = pending.iter_mut().find(|job| job.mailbox == *mailbox) {
+            job.batch.absorb(batch);
+            job.done.push(done_tx);
+
+            return Ok(done_rx);
+        }
+        pending.push(PendingJob {
+            mailbox: Arc::clone(mailbox),
             batch,
-            timeout,
-            on_failure: on_failure.clone(),
-            done: done_tx,
-        };
-        // a mailbox queues as many jobs as it passes on, which the hook handles one by one
-        self.jobs.send(job).map_err(|_| HookError::RunnerStopped)?;
+            done: vec![done_tx],
+        });
+        if self.wake.send(()).is_err() {
+            pending.pop();
+            return Err(HookError::RunnerStopped);
+        }
 
         Ok(done_rx)
     }
@@ -72,36 +95,42 @@ pub struct HookThread {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-/// Runs the hook once for all `jobs`, which share the hook of the first one. Reports a failure to
-/// every job.
-async fn run_jobs(jobs: Vec<HookJob>) {
-    let mut hook = None;
+/// Runs `cmd` once for all `jobs`. Reports a failure once, as all jobs share the hook.
+async fn run_jobs(
+    cmd: &[OsString],
+    timeout: Option<Duration>,
+    on_failure: &FailureHandler,
+    jobs: Vec<PendingJob>,
+) {
     let mut batches = Vec::with_capacity(jobs.len());
-    let mut waiting = Vec::with_capacity(jobs.len());
+    let mut waiting = Vec::new();
     for job in jobs {
-        hook.get_or_insert((job.cmd, job.timeout));
         batches.push((job.mailbox, job.batch));
-        waiting.push((job.on_failure, job.done));
+        waiting.extend(job.done);
     }
-    let Some((cmd, timeout)) = hook else {
-        return;
-    };
-    let failure = run_batches(&cmd, batches, timeout).await.err();
-    for (on_failure, done) in waiting {
-        if let Some(failure) = &failure {
-            on_failure(failure);
-        }
+    if let Err(failure) = run_batches(cmd, batches, timeout).await {
+        on_failure(&failure);
+    }
+    for done in waiting {
         done.send(());
     }
 }
 
 impl HookThread {
-    /// Starts the thread, that runs the hooks
+    /// Starts the thread, that runs `cmd` with the changes queued by its runners. A hook running
+    /// longer than `timeout` gets killed and fails. `on_failure` handles failures.
     ///
     /// # Errors
     /// If the thread or its runtime cannot be created
-    pub fn start() -> io::Result<Self> {
-        let (jobs_tx, jobs_rx) = mpsc::unbounded_async::<HookJob>();
+    pub fn start(
+        cmd: Vec<OsString>,
+        timeout: Option<Duration>,
+        on_failure: FailureHandler,
+    ) -> io::Result<Self> {
+        let pending = Pending::default();
+        let (wake_tx, wake_rx) = mpsc::unbounded_async::<()>();
+        let thread_pending = Arc::clone(&pending);
+        let thread_failure = on_failure.clone();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("hooks".to_string())
@@ -109,13 +138,10 @@ impl HookThread {
                 Ok(rt) => {
                     let _ = started_tx.send(Ok(()));
                     rt.block_on(async {
-                        while let Ok(first) = jobs_rx.recv().await {
+                        while wake_rx.recv().await.is_ok() {
                             // batches queued while the previous hook ran share the next run
-                            let mut jobs = vec![first];
-                            while let Ok(job) = jobs_rx.try_recv() {
-                                jobs.push(job);
-                            }
-                            run_jobs(jobs).await;
+                            let jobs = mem::take(&mut *lock(&thread_pending));
+                            run_jobs(&cmd, timeout, &thread_failure, jobs).await;
                         }
                     });
                 }
@@ -128,7 +154,11 @@ impl HookThread {
             .unwrap_or_else(|_| Err(io::Error::other("hook thread stopped")))?;
 
         Ok(Self {
-            runner: Some(HookRunner { jobs: jobs_tx }),
+            runner: Some(HookRunner {
+                pending,
+                wake: wake_tx,
+                on_failure,
+            }),
             thread: Some(thread),
         })
     }

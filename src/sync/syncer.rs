@@ -206,9 +206,7 @@ impl Syncer {
             )
             .await?
             .is_continue()
-            {
-                repository.flush_changes().await?;
-            }
+            {}
 
             Ok(())
         };
@@ -353,9 +351,13 @@ impl Syncer {
                     "idle timed out after {} seconds. Reissuing...",
                     idle_timeout.as_secs()
                 );
+                // nothing happened, so there are no changes to pass on
+                return Ok(ControlFlow::Continue(()));
             }
             IdleStopReason::Shutdown => return Ok(ControlFlow::Break(())),
         }
+        // a round of syncing ends, once the session waits for changes again
+        repository.flush_changes().await?;
 
         Ok(ControlFlow::Continue(()))
     }

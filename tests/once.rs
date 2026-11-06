@@ -490,15 +490,12 @@ async fn test_batched_hook_gets_lines(#[future] mail_setup: MailSetup) {
         .into_iter()
         .map(OsString::from)
         .collect();
-    let hooks = assert_ok!(HookThread::start());
-    let (sink, hook_task) = batched_hook(
-        &cmd,
-        "INBOX",
-        DEFAULT_MAX_PENDING,
+    let hooks = assert_ok!(HookThread::start(
+        cmd,
         None,
-        Arc::new(|e| panic!("hook failed: {e}")),
-        hooks.runner(),
-    );
+        Arc::new(|e| panic!("hook failed: {e}"))
+    ));
+    let (sink, hook_task) = batched_hook("INBOX", DEFAULT_MAX_PENDING, hooks.runner());
 
     mail_setup
         .sync_with_changes("INBOX", Some(ChangeRecorder::new(vec![sink])))
