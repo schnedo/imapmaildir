@@ -112,12 +112,22 @@ fn is_ignored(signal_number: Signal) -> bool {
 
 /// Starts the thread running the `on_local_change` hooks of all mailboxes one at a time, unless no
 /// hook is configured
-fn start_hook_thread(config: &Account) -> Result<Option<HookThread>, Error> {
+fn start_hook_thread(config: &Account, shutdown: &Shutdown) -> Result<Option<HookThread>, Error> {
     if config.hooks().on_local_change().is_empty() {
         return Ok(None);
     }
 
-    HookThread::start().map(Some).map_err(Error::HookRunner)
+    let hooks = config.hooks();
+    let cmd = hooks.on_local_change().iter().map(OsString::from).collect();
+    let on_failure = failure_handler(
+        "on_local_change",
+        hooks.on_local_change_failure(),
+        shutdown.clone(),
+    );
+
+    HookThread::start(cmd, hooks.on_local_change_timeout(), on_failure)
+        .map(Some)
+        .map_err(Error::HookRunner)
 }
 
 /// How a mailbox session finds out about mails moved to or from other mailboxes
@@ -145,24 +155,10 @@ impl Session<'_> {
         &self,
         mailbox: &str,
     ) -> Option<(ChangeRecorder, compio::runtime::JoinHandle<()>)> {
-        let hooks = self.config.hooks();
-        if hooks.on_local_change().is_empty() {
-            return None;
-        }
+        // there is a runner, if and only if a hook is configured
         let runner = self.runner?;
-        let cmd: Vec<OsString> = hooks.on_local_change().iter().map(OsString::from).collect();
-        let (sink, task) = batched_hook(
-            &cmd,
-            mailbox,
-            hooks.max_pending(),
-            hooks.on_local_change_timeout(),
-            failure_handler(
-                "on_local_change",
-                hooks.on_local_change_failure(),
-                self.shutdown.clone(),
-            ),
-            runner.clone(),
-        );
+        let hooks = self.config.hooks();
+        let (sink, task) = batched_hook(mailbox, hooks.max_pending(), runner.clone());
 
         Some((ChangeRecorder::new(vec![sink]), task))
     }
@@ -329,7 +325,7 @@ pub fn sync_one(
     tags: Option<&TagSync>,
     shutdown: &Shutdown,
 ) -> Result<(), Error> {
-    let hook_thread = start_hook_thread(config)?;
+    let hook_thread = start_hook_thread(config, shutdown)?;
     let runner = hook_thread.as_ref().map(HookThread::runner);
 
     Session {
@@ -376,7 +372,7 @@ pub fn sync_all(
 ) -> Result<(), Error> {
     let config = Arc::new(config);
     let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
-    let hook_thread = start_hook_thread(&config)?;
+    let hook_thread = start_hook_thread(&config, shutdown)?;
     let mut sync_handles = Vec::new();
     let mut spawn_error = None;
     // exactly one of both is in use: the watchers of the sessions of continuous syncs report

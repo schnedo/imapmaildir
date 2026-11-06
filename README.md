@@ -117,7 +117,7 @@ mail, e.g. a downloaded mail flagged right after is reported as a single
 download. A mailbox collects its changes until its sync round ends, or until
 `change_hook_max_pending` (default 10000) changes are collected, and then
 queues them for the hook. Batches that wait for a running hook to finish share
-its next run.
+its next run, and batches of the same mailbox among them merge.
 
 Each line has the format
 
