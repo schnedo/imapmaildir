@@ -5,6 +5,10 @@ on:
   pull_request:
     branches:
       - "main"
+  # push to main only warms the rust-cache for PRs (test steps skipped)
+  push:
+    branches:
+      - "main"
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,18 +35,25 @@ jobs:
           cmd-format: nix develop -c {0}
       - name: Build
         run: nix develop -c cargo build --verbose
+      - name: Build tests (cache warm-up)
+        if: github.event_name == 'push'
+        run: nix develop -c cargo nextest run --profile ci --no-run
       - name: Run tests
+        if: github.event_name == 'pull_request'
         # todo: have a look at cargo mutants
         run: nix develop -c cargo nextest run --profile ci
       - name: Run integration tests without QRESYNC
+        if: github.event_name == 'pull_request'
         run: nix develop -c cargo nextest run --profile ci --test once --test continuous
         env:
           IMAPMAILDIR_TEST_NO_QRESYNC: 1
       - name: Run integration tests with LITERAL-
+        if: github.event_name == 'pull_request'
         run: nix develop -c cargo nextest run --profile ci --test once --test continuous
         env:
           IMAPMAILDIR_TEST_LITERAL_MINUS: 1
       - name: Run OAuth2 integration tests with XOAUTH2 without SASL-IR
+        if: github.event_name == 'pull_request'
         run: nix develop -c cargo nextest run --profile ci --test once oauth2
         env:
           IMAPMAILDIR_TEST_XOAUTH2: 1
