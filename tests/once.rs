@@ -423,12 +423,12 @@ async fn test_list_remote_mailboxes(#[future] mail_setup: MailSetup) {
 #[rstest]
 #[compio::test]
 #[awt]
-async fn test_initial_sync_records_single_overflow(#[future] mail_setup: MailSetup) {
+async fn test_initial_sync_records_single_initial(#[future] mail_setup: MailSetup) {
     mail_setup.client_mail().wipe();
 
     let changes = mail_setup.sync_recording("INBOX").await;
 
-    assert_eq!(changes, [MailChange::Overflow]);
+    assert_eq!(changes, [MailChange::Initial]);
 }
 
 #[rstest]
