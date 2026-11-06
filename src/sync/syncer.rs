@@ -194,6 +194,8 @@ impl Syncer {
             let changes = repository.detect_changes().await?;
             Self::handle_local(&mut client, &repository, changes, mailbox, moves, config).await?;
             Self::sync_tag_changes(&mut client, &repository, mailbox, config).await?;
+            // a round of syncing ends, once the session waits for changes again
+            repository.flush_changes().await?;
             while Self::handle_idle(
                 &mut client,
                 &repository,
@@ -204,7 +206,9 @@ impl Syncer {
             )
             .await?
             .is_continue()
-            {}
+            {
+                repository.flush_changes().await?;
+            }
 
             Ok(())
         };
@@ -1401,6 +1405,7 @@ impl Syncer {
             Task::UidsNotIn(uids, reply) => {
                 reply.send(maildir_repository.uids_not_in(uids).await?);
             }
+            Task::FlushChanges => maildir_repository.flush_changes(),
             Task::UpdateFlags(_) => unreachable!("flag updates should be handled in batches"),
         }
 

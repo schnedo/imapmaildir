@@ -43,6 +43,9 @@ pub enum MailChange {
 pub trait ChangeSink {
     /// Must not block, as it is called while syncing
     fn record(&self, change: MailChange);
+
+    /// Passes on changes the sink holds back, e.g. at the end of a sync round. Must not block.
+    fn flush(&self) {}
 }
 
 /// Passes changes on to all configured sinks
@@ -57,6 +60,13 @@ impl ChangeRecorder {
     pub fn new(sinks: Vec<Rc<dyn ChangeSink>>) -> Self {
         Self {
             sinks: sinks.into(),
+        }
+    }
+
+    /// Tells every sink to pass on the changes it holds back
+    pub fn flush(&self) {
+        for sink in self.sinks.iter() {
+            sink.flush();
         }
     }
 
@@ -76,5 +86,41 @@ impl Debug for ChangeRecorder {
         f.debug_struct("ChangeRecorder")
             .field("sinks", &self.sinks.len())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct CountingSink {
+        recorded: Cell<usize>,
+        flushed: Cell<usize>,
+    }
+
+    impl ChangeSink for CountingSink {
+        fn record(&self, _change: MailChange) {
+            self.recorded.set(self.recorded.get() + 1);
+        }
+
+        fn flush(&self) {
+            self.flushed.set(self.flushed.get() + 1);
+        }
+    }
+
+    #[test]
+    fn test_recorder_flushes_all_sinks() {
+        let first = Rc::new(CountingSink::default());
+        let second = Rc::new(CountingSink::default());
+        let recorder = ChangeRecorder::new(vec![first.clone(), second.clone()]);
+
+        recorder.record(MailChange::Overflow);
+        recorder.flush();
+
+        assert_eq!((first.recorded.get(), first.flushed.get()), (1, 1));
+        assert_eq!((second.recorded.get(), second.flushed.get()), (1, 1));
     }
 }

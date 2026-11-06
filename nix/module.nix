@@ -77,15 +77,10 @@
               default = null;
               description = "Time after which a running onChange command gets killed and counts as failed. Unlimited by default";
             };
-            changeHookThrottleMilliseconds = lib.mkOption {
-              type = lib.types.nullOr lib.types.ints.positive;
-              default = null;
-              description = "Time after the first change of a batch, until onChange runs. Defaults to 100";
-            };
             changeHookMaxPending = lib.mkOption {
               type = lib.types.nullOr lib.types.ints.positive;
               default = null;
-              description = "Changes queued per hook, beyond which they get dropped for a single overflow line. Defaults to 10000";
+              description = "Changes a mailbox collects, before it queues them for onChange. Defaults to 10000";
             };
             notmuch = lib.mkOption {
               type = lib.types.submodule {
@@ -269,9 +264,6 @@
                 }
                 // lib.optionalAttrs (!builtins.isNull account.imapmaildir.onChangeTimeoutSeconds) {
                   on_local_change_timeout = "${builtins.toString account.imapmaildir.onChangeTimeoutSeconds}s";
-                }
-                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookThrottleMilliseconds) {
-                  change_hook_throttle = "${builtins.toString account.imapmaildir.changeHookThrottleMilliseconds}ms";
                 }
                 // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookMaxPending) {
                   change_hook_max_pending = account.imapmaildir.changeHookMaxPending;

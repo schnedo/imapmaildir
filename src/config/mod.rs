@@ -7,7 +7,6 @@ pub use crate::imap::OAuth2Auth;
 pub use crate::imap::PlainAuth;
 pub use account::Account;
 pub use account::Error as AccountError;
-pub use hooks::Batching;
 pub use hooks::HookFailure;
 pub use hooks::Hooks;
 
