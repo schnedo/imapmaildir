@@ -142,7 +142,7 @@ impl Syncer {
 
         log::info!("listening for mail changes...");
         let folder = local_watcher.cur();
-        let local_change_rx = match local_watcher.watch(moves.map(MoveLink::tap)).await {
+        let local_change_rx = match local_watcher.watch(moves.map(MoveLink::tap)) {
             Ok(local_change_rx) => local_change_rx,
             Err(e) => {
                 return Err(Self::shut_down(e.into(), client, repository, task_handle).await);
