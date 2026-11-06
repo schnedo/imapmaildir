@@ -1,4 +1,4 @@
-use std::{fmt::Debug, path::PathBuf, sync::Arc};
+use std::{fmt::Debug, path::PathBuf, rc::Rc};
 
 use crate::repository::{Keywords, Uid};
 
@@ -40,7 +40,7 @@ pub enum MailChange {
 }
 
 /// Receiver of recorded mail changes, e.g. to forward them to hooks or notmuch
-pub trait ChangeSink: Send + Sync {
+pub trait ChangeSink {
     /// Must not block, as it is called while syncing
     fn record(&self, change: MailChange);
 }
@@ -48,13 +48,13 @@ pub trait ChangeSink: Send + Sync {
 /// Passes changes on to all configured sinks
 #[derive(Clone, Default)]
 pub struct ChangeRecorder {
-    sinks: Arc<[Arc<dyn ChangeSink>]>,
+    sinks: Rc<[Rc<dyn ChangeSink>]>,
 }
 
 impl ChangeRecorder {
     /// Creates a recorder forwarding to `sinks`
     #[must_use]
-    pub fn new(sinks: Vec<Arc<dyn ChangeSink>>) -> Self {
+    pub fn new(sinks: Vec<Rc<dyn ChangeSink>>) -> Self {
         Self {
             sinks: sinks.into(),
         }

@@ -2,6 +2,7 @@ mod byte_budget;
 mod change_hook;
 mod config;
 mod error;
+mod hook_runner;
 mod idle_timeout;
 mod moves;
 mod reconnect;
@@ -16,6 +17,7 @@ pub use change_hook::{
 };
 pub use config::Config;
 pub use error::Error;
+pub use hook_runner::{HookRunner, HookThread};
 pub use idle_timeout::IdleTimeout;
 pub use moves::{Detection, MoveLink, MoveReporter, planner};
 pub use reconnect::{Transient, reconnecting};

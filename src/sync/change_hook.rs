@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     ffi::OsString,
     fs::File,
@@ -7,7 +8,8 @@ use std::{
     os::fd::AsFd,
     pin::pin,
     process::{ExitStatus, Stdio},
-    sync::{Arc, Mutex, PoisonError},
+    rc::Rc,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -25,7 +27,7 @@ use thiserror::Error;
 use crate::{
     maildir::{ChangeSink, MailChange},
     repository::Uid,
-    sync::Shutdown,
+    sync::{HookRunner, Shutdown},
 };
 
 /// When batched changes get passed to a hook
@@ -78,6 +80,10 @@ pub enum HookError {
     Wait(io::Error),
     #[error("hook failed with {0}")]
     Status(ExitStatus),
+    #[error("hook did not finish within {0:?}")]
+    Timeout(Duration),
+    #[error("hook runner stopped")]
+    RunnerStopped,
 }
 
 /// Called with the failure of a hook. The hook keeps running, if it returns.
@@ -182,7 +188,7 @@ fn uid_of(change: &MailChange) -> Option<Uid> {
 /// Changes of a mailbox, merged per mail. Holds at most `max_pending` changes and drops all of
 /// them for a single overflow beyond that.
 #[derive(Debug)]
-struct ChangeBatch {
+pub(super) struct ChangeBatch {
     changes: Vec<Option<MailChange>>,
     positions: HashMap<Uid, usize>,
     len: usize,
@@ -204,7 +210,7 @@ impl ChangeBatch {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         !self.overflowed && self.len == 0
     }
 
@@ -286,7 +292,7 @@ impl ChangeBatch {
         }
     }
 
-    fn into_lines(self, mailbox: &str) -> String {
+    pub(super) fn into_lines(self, mailbox: &str) -> String {
         if self.overflowed {
             format_line(mailbox, &MailChange::Overflow)
         } else {
@@ -301,16 +307,13 @@ impl ChangeBatch {
 
 /// Collects changes into the batch and signals that it is not empty anymore
 struct BatchSink {
-    batch: Arc<Mutex<ChangeBatch>>,
+    batch: Rc<RefCell<ChangeBatch>>,
     changed: MTx<mpsc::Array<()>>,
 }
 
 impl ChangeSink for BatchSink {
     fn record(&self, change: MailChange) {
-        self.batch
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .add(change);
+        self.batch.borrow_mut().add(change);
         // a full channel already announces a change, a closed one has nobody to tell
         let _ = self.changed.try_send(());
     }
@@ -318,17 +321,20 @@ impl ChangeSink for BatchSink {
 
 /// Runs `cmd` once per batch of changes of `mailbox`, passing them on stdin. A batch gets handled
 /// the configured throttle after its first change got recorded. The returned task finishes after
-/// the sink got dropped and the last batch got handled.
+/// the sink got dropped and the last batch got handled. The hooks of all mailboxes sharing `runner`
+/// run one at a time. A hook running longer than `timeout` gets killed and fails.
 pub fn batched_hook(
     cmd: &[OsString],
     mailbox: &str,
     batching: Batching,
+    timeout: Option<Duration>,
     on_failure: FailureHandler,
-) -> (Arc<dyn ChangeSink>, JoinHandle<()>) {
+    runner: HookRunner,
+) -> (Rc<dyn ChangeSink>, JoinHandle<()>) {
     let (changed_tx, changed_rx) = mpsc::bounded_blocking_async(1);
     let max_pending = batching.max_pending();
-    let batch = Arc::new(Mutex::new(ChangeBatch::new(max_pending)));
-    let sink = Arc::new(BatchSink {
+    let batch = Rc::new(RefCell::new(ChangeBatch::new(max_pending)));
+    let sink = Rc::new(BatchSink {
         batch: batch.clone(),
         changed: changed_tx,
     });
@@ -337,10 +343,7 @@ pub fn batched_hook(
     let handle = compio::runtime::spawn(async move {
         loop {
             let mut closed = changed_rx.recv().await.is_err();
-            let first_recorded = batch
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .first_recorded;
+            let first_recorded = batch.borrow().first_recorded;
             if let Some(first_recorded) = first_recorded {
                 // changes recorded while the previous hook ran wait only for the rest of it
                 let deadline = first_recorded + batching.throttle();
@@ -355,11 +358,10 @@ pub fn batched_hook(
                 continue;
             }
             // changes recorded while the hook runs go into the next batch
-            let pending = mem::replace(
-                &mut *batch.lock().unwrap_or_else(PoisonError::into_inner),
-                ChangeBatch::new(max_pending),
-            );
-            run_batch(&cmd, &mailbox, pending, &on_failure).await;
+            let pending = mem::replace(&mut *batch.borrow_mut(), ChangeBatch::new(max_pending));
+            runner
+                .run(&cmd, &mailbox, pending, timeout, &on_failure)
+                .await;
             if closed {
                 break;
             }
@@ -369,10 +371,11 @@ pub fn batched_hook(
     (sink, handle)
 }
 
-async fn run_batch(
+pub(super) async fn run_batch(
     cmd: &[OsString],
     mailbox: &str,
     batch: ChangeBatch,
+    timeout: Option<Duration>,
     on_failure: &FailureHandler,
 ) {
     if batch.is_empty() {
@@ -382,7 +385,15 @@ async fn run_batch(
         return;
     };
     log::info!("calling on_local_change hook for {mailbox}");
-    if let Err(e) = call_with_input(executable, args, batch.into_lines(mailbox), mailbox).await {
+    if let Err(e) = call_with_input(
+        executable,
+        args,
+        batch.into_lines(mailbox),
+        mailbox,
+        timeout,
+    )
+    .await
+    {
         on_failure(e);
     }
 }
@@ -398,6 +409,7 @@ async fn call_with_input(
     args: &[OsString],
     input: String,
     mailbox: &str,
+    timeout: Option<Duration>,
 ) -> Result<(), HookError> {
     let mut command = compio::process::Command::new(executable);
     command.args(args);
@@ -424,10 +436,26 @@ async fn call_with_input(
         // closing stdin lets the hook see the end of its input
         written
     };
+    let pid = child.id();
     // processes started by a hook, that exited without reading its input, may keep stdin open
-    let (written, status) = match future::select(pin!(writing), pin!(child.wait())).await {
-        Either::Left((written, exited)) => (written, exited.await),
-        Either::Right((status, _)) => (Ok(()), status),
+    let mut exit = pin!(async {
+        match future::select(pin!(writing), pin!(child.wait())).await {
+            Either::Left((written, exited)) => (written, exited.await),
+            Either::Right((status, _)) => (Ok(()), status),
+        }
+    });
+    let (written, status, timed_out) = if let Some(limit) = timeout {
+        if let Ok((written, status)) = compio::time::timeout(limit, exit.as_mut()).await {
+            (written, status, false)
+        } else {
+            kill_group(pid);
+            // reaps the killed hook
+            let (written, status) = exit.await;
+            (written, status, true)
+        }
+    } else {
+        let (written, status) = exit.await;
+        (written, status, false)
     };
     // output written right before exiting, e.g. explaining a failure, belongs to this call, but
     // processes started by the hook may keep the output open
@@ -436,6 +464,9 @@ async fn call_with_input(
         future::join(stdout_logged, stderr_logged),
     )
     .await;
+    if timed_out && let Some(limit) = timeout {
+        return Err(HookError::Timeout(limit));
+    }
     let status = status.map_err(HookError::Wait)?;
     match written {
         // one-shot hooks may not care about the changes
@@ -447,6 +478,19 @@ async fn call_with_input(
         Ok(())
     } else {
         Err(HookError::Status(status))
+    }
+}
+
+/// Kills the process group of the hook `pid`, as hooks run in a group of their own
+fn kill_group(pid: u32) {
+    let Some(group) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return;
+    };
+    if let Err(e) = rustix::process::kill_process_group(group, rustix::process::Signal::KILL) {
+        log::warn!("cannot kill hook {pid}: {e}");
     }
 }
 
@@ -524,7 +568,7 @@ fn log_line(line: &[u8], mailbox: &str, level: log::Level) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, sync::Mutex};
 
     use assertables::*;
     use rstest::*;
@@ -532,6 +576,7 @@ mod tests {
 
     use super::*;
     use crate::repository::Keywords;
+    use crate::sync::HookThread;
 
     fn uid(value: u32) -> Uid {
         assert_ok!(Uid::try_from(value))
@@ -720,6 +765,7 @@ mod tests {
 
     #[compio::test]
     async fn test_batched_hook_passes_batch_on_stdin() {
+        let hooks = assert_ok!(HookThread::start());
         let dir = assert_ok!(TempDir::new());
         let output = dir.path().join("out");
         let (on_failure, failures) = collecting_handler();
@@ -727,7 +773,9 @@ mod tests {
             &command(&format!("cat >> '{}'", output.display())),
             "INBOX",
             Batching::default(),
+            None,
             on_failure,
+            hooks.runner(),
         );
 
         sink.record(downloaded(1));
@@ -746,9 +794,16 @@ mod tests {
 
     #[compio::test]
     async fn test_batched_hook_reports_failure() {
+        let hooks = assert_ok!(HookThread::start());
         let (on_failure, failures) = collecting_handler();
-        let (sink, handle) =
-            batched_hook(&command("exit 3"), "INBOX", Batching::default(), on_failure);
+        let (sink, handle) = batched_hook(
+            &command("exit 3"),
+            "INBOX",
+            Batching::default(),
+            None,
+            on_failure,
+            hooks.runner(),
+        );
 
         sink.record(downloaded(1));
         drop(sink);
@@ -761,6 +816,7 @@ mod tests {
 
     #[compio::test]
     async fn test_batched_hook_runs_throttled_during_continuous_changes() {
+        let hooks = assert_ok!(HookThread::start());
         let dir = assert_ok!(TempDir::new());
         let output = dir.path().join("out");
         let (on_failure, failures) = collecting_handler();
@@ -768,7 +824,9 @@ mod tests {
             &command(&format!("cat >> '{}'", output.display())),
             "INBOX",
             Batching::new(Duration::from_millis(100), 1000),
+            None,
             on_failure,
+            hooks.runner(),
         );
 
         let mut id = 0;
@@ -788,12 +846,15 @@ mod tests {
 
     #[compio::test]
     async fn test_batched_hook_ignores_hook_not_reading_stdin() {
+        let hooks = assert_ok!(HookThread::start());
         let (on_failure, failures) = collecting_handler();
         let (sink, handle) = batched_hook(
             &command("true"),
             "INBOX",
             Batching::new(Duration::from_millis(100), 100_000),
+            None,
             on_failure,
+            hooks.runner(),
         );
 
         for id in 1..=10_000 {
@@ -809,6 +870,7 @@ mod tests {
 
     #[compio::test]
     async fn test_batched_hook_does_not_wait_for_processes_keeping_its_output_open() {
+        let hooks = assert_ok!(HookThread::start());
         let dir = assert_ok!(TempDir::new());
         let marker = dir.path().join("written late");
         let (on_failure, failures) = collecting_handler();
@@ -819,7 +881,9 @@ mod tests {
             )),
             "INBOX",
             Batching::new(Duration::ZERO, 100),
+            None,
             on_failure,
+            hooks.runner(),
         );
         let started = Instant::now();
 
@@ -838,13 +902,16 @@ mod tests {
 
     #[compio::test]
     async fn test_batched_hook_does_not_wait_for_processes_keeping_its_input_open() {
+        let hooks = assert_ok!(HookThread::start());
         let (on_failure, failures) = collecting_handler();
         let (sink, handle) = batched_hook(
             // background jobs get /dev/null as stdin without redirecting it explicitly
             &command("exec 3<&0; sleep 3 <&3 & exit 0"),
             "INBOX",
             Batching::new(Duration::ZERO, 100_000),
+            None,
             on_failure,
+            hooks.runner(),
         );
         let started = Instant::now();
 
@@ -859,5 +926,80 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_is_empty!(assert_ok!(failures.lock()).as_slice());
+    }
+
+    #[compio::test]
+    async fn test_batched_hooks_of_mailboxes_sharing_a_runner_do_not_overlap() {
+        let hooks = assert_ok!(HookThread::start());
+        let dir = assert_ok!(TempDir::new());
+        let log = dir.path().join("log");
+        let (on_failure, failures) = collecting_handler();
+        let shared = hooks.runner();
+        let script = format!(
+            "cat > /dev/null; echo start >> '{0}'; sleep 0.3; echo end >> '{0}'",
+            log.display()
+        );
+        let hooks: Vec<_> = ["INBOX", "DRAFT", "SENT"]
+            .into_iter()
+            .map(|mailbox| {
+                let (sink, handle) = batched_hook(
+                    &command(&script),
+                    mailbox,
+                    Batching::new(Duration::ZERO, 100),
+                    None,
+                    on_failure.clone(),
+                    shared.clone(),
+                );
+                sink.record(downloaded(1));
+                handle
+            })
+            .collect();
+        for handle in hooks {
+            handle
+                .await
+                .unwrap_or_else(|_| panic!("hook task panicked"));
+        }
+
+        assert_eq!(
+            assert_ok!(fs::read_to_string(&log)),
+            "start\nend\nstart\nend\nstart\nend\n"
+        );
+        assert_is_empty!(assert_ok!(failures.lock()).as_slice());
+    }
+
+    #[test]
+    fn test_hook_thread_stops_after_dropping_runners() {
+        let hooks = assert_ok!(HookThread::start());
+        let runner = hooks.runner();
+
+        drop(runner);
+        // would hang, if the thread did not stop
+        drop(hooks);
+    }
+
+    #[compio::test]
+    async fn test_batched_hook_kills_hook_running_too_long() {
+        let hooks = assert_ok!(HookThread::start());
+        let (on_failure, failures) = collecting_handler();
+        let (sink, handle) = batched_hook(
+            &command("sleep 30"),
+            "INBOX",
+            Batching::new(Duration::ZERO, 100),
+            Some(Duration::from_millis(200)),
+            on_failure,
+            hooks.runner(),
+        );
+        let started = Instant::now();
+
+        sink.record(downloaded(1));
+        drop(sink);
+        handle
+            .await
+            .unwrap_or_else(|_| panic!("hook task panicked"));
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let failures = assert_ok!(failures.lock());
+        assert_len_eq_x!(failures.as_slice(), 1);
+        assert_starts_with!(failures[0], "hook did not finish within");
     }
 }

@@ -72,6 +72,11 @@
               default = "exit";
               description = "Whether a failing onChange command stops syncing or only logs a warning";
             };
+            onChangeTimeoutSeconds = lib.mkOption {
+              type = lib.types.nullOr lib.types.ints.positive;
+              default = null;
+              description = "Time after which a running onChange command gets killed and counts as failed. Unlimited by default";
+            };
             changeHookThrottleMilliseconds = lib.mkOption {
               type = lib.types.nullOr lib.types.ints.positive;
               default = null;
@@ -261,6 +266,9 @@
                         # todo: assert passwordCommand not null
                         password_cmd = toCmd account.passwordCommand;
                       };
+                }
+                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.onChangeTimeoutSeconds) {
+                  on_local_change_timeout = "${builtins.toString account.imapmaildir.onChangeTimeoutSeconds}s";
                 }
                 // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookThrottleMilliseconds) {
                   change_hook_throttle = "${builtins.toString account.imapmaildir.changeHookThrottleMilliseconds}ms";

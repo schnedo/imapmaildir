@@ -1661,7 +1661,7 @@ impl Drop for CloseOnDrop {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     use assertables::*;
     use crossfire::MAsyncTx;
@@ -1697,7 +1697,7 @@ mod tests {
             )
             .await
         );
-        let sink = Arc::new(RecordingSink::default());
+        let sink = std::rc::Rc::new(RecordingSink::default());
         let (task_tx, task_rx) = queue(tasks).await;
         drop(task_tx);
 

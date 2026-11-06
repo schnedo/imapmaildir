@@ -29,6 +29,8 @@ struct AccountConfigFile {
     #[serde(default)]
     on_local_change_failure: HookFailure,
     #[serde(default, with = "humantime_serde")]
+    on_local_change_timeout: Option<Duration>,
+    #[serde(default, with = "humantime_serde")]
     change_hook_throttle: Option<Duration>,
     change_hook_max_pending: Option<NonZeroUsize>,
     store_batch_size: Option<NonZeroUsize>,
@@ -117,15 +119,20 @@ impl Account {
             maildir_base_path,
             state_dir,
             idle_timout: config.idle_timeout.unwrap_or(Duration::from_mins(29)),
-            hooks: Hooks::new(config.on_local_change, config.on_local_change_failure, {
-                let default = Batching::default();
-                Batching::new(
-                    config.change_hook_throttle.unwrap_or(default.throttle()),
-                    config
-                        .change_hook_max_pending
-                        .map_or(default.max_pending(), NonZeroUsize::get),
-                )
-            }),
+            hooks: Hooks::new(
+                config.on_local_change,
+                config.on_local_change_failure,
+                config.on_local_change_timeout,
+                {
+                    let default = Batching::default();
+                    Batching::new(
+                        config.change_hook_throttle.unwrap_or(default.throttle()),
+                        config
+                            .change_hook_max_pending
+                            .map_or(default.max_pending(), NonZeroUsize::get),
+                    )
+                },
+            ),
             sync: {
                 let default = sync::Config::default();
                 sync::Config::new(

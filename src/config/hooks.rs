@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use derive_getters::Getters;
 
 pub use crate::sync::{Batching, HookFailure};
@@ -9,6 +11,9 @@ pub struct Hooks {
     on_local_change: Vec<String>,
     #[getter(copy)]
     on_local_change_failure: HookFailure,
+    /// Time after which a running hook gets killed and fails. Unlimited if unset.
+    #[getter(copy)]
+    on_local_change_timeout: Option<Duration>,
     #[getter(copy)]
     batching: Batching,
 }
@@ -19,11 +24,13 @@ impl Hooks {
     pub fn new(
         on_local_change: Vec<String>,
         on_local_change_failure: HookFailure,
+        on_local_change_timeout: Option<Duration>,
         batching: Batching,
     ) -> Self {
         Self {
             on_local_change,
             on_local_change_failure,
+            on_local_change_timeout,
             batching,
         }
     }
@@ -31,6 +38,11 @@ impl Hooks {
 
 impl Default for Hooks {
     fn default() -> Self {
-        Self::new(Vec::new(), HookFailure::default(), Batching::default())
+        Self::new(
+            Vec::new(),
+            HookFailure::default(),
+            None,
+            Batching::default(),
+        )
     }
 }
