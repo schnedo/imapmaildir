@@ -98,6 +98,11 @@ impl NewLocalMailMetadata {
             fileprefix,
         }
     }
+
+    /// Unique part of the file name before the flags
+    pub fn fileprefix(&self) -> &str {
+        &self.fileprefix
+    }
 }
 
 impl From<LocalMailMetadata> for NewLocalMailMetadata {

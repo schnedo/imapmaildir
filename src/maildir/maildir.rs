@@ -23,7 +23,7 @@ use thiserror::Error;
 use crate::{
     imap::RemoteMail,
     maildir::{
-        LocalMailMetadata,
+        LocalMailMetadata, MoveTap,
         local_mail::{NewLocalMailMetadata, OtherFlags, ParseLocalMailMetadataError},
         watcher::{self, Watch},
     },
@@ -193,9 +193,14 @@ impl Maildir {
     }
 
     /// Starts watching for changes and returns a stream of them. Replaces an existing watch.
-    pub async fn watch(self, buffer_size: usize) -> Result<AsyncRx<Array<Change>>, Error> {
+    /// Reports renames into or out of the maildir to `tap`.
+    pub async fn watch(
+        self,
+        buffer_size: usize,
+        tap: Option<MoveTap>,
+    ) -> Result<AsyncRx<Array<Change>>, Error> {
         let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
-        let (watch, rx) = Watch::new(self.new.clone(), &self.cur, buffer_size)?;
+        let (watch, rx) = Watch::new(self.new.clone(), &self.cur, buffer_size, tap)?;
         let mut my_watch = self.watch.lock().await;
         *my_watch = Some(watch);
         drop(my_watch);
@@ -1361,7 +1366,7 @@ mod tests {
         renamed.set_flags(Flag::Seen | Flag::Flagged);
         assert_ok!(fs::write(maildir.get_path_of(&entry), "content"));
         assert_ok!(fs::write(maildir.get_path_of(&renamed), "content"));
-        let changes = assert_ok!(maildir.clone().watch(8).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None).await);
 
         assert_ok!(maildir.update_flags(&mut entry, renamed.flags()).await);
 
@@ -1377,7 +1382,7 @@ mod tests {
         metadata: LocalMailMetadata,
     ) {
         let maildir = maildir.maildir;
-        let changes = assert_ok!(maildir.clone().watch(8).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None).await);
         assert_ok!(maildir.delete(&metadata).await);
 
         assert_ok!(fs::write(maildir.tmp.join("x"), "content"));
@@ -1397,7 +1402,7 @@ mod tests {
     #[awt]
     async fn test_watch_detects_mail_linked_into_new(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
-        let changes = assert_ok!(maildir.clone().watch(8).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None).await);
         // initially moving mails from new to cur would hide missing link events
         compio::time::sleep(Duration::from_millis(100)).await;
 
@@ -1419,7 +1424,7 @@ mod tests {
     #[awt]
     async fn test_watch_detects_mail_linked_into_cur(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
-        let changes = assert_ok!(maildir.clone().watch(8).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None).await);
 
         assert_ok!(fs::write(maildir.tmp.join("copied"), "content"));
         assert_ok!(fs::hard_link(

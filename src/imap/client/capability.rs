@@ -18,6 +18,7 @@ pub enum Capability {
     Imap4rev1,
     LiteralMinus, // rfc7888
     LiteralPlus,  // rfc7888
+    Move,         // rfc6851
     Multiappend,  // rfc3502
     QResync,      // rfc7162
     SaslIr,       // rfc4959
@@ -62,6 +63,9 @@ impl Capabilities {
                 }
                 "LITERAL+" => {
                     self.supported.insert(Capability::LiteralPlus);
+                }
+                "MOVE" => {
+                    self.supported.insert(Capability::Move);
                 }
                 "MULTIAPPEND" => {
                     self.supported.insert(Capability::Multiappend);
@@ -229,6 +233,16 @@ mod tests {
         capabilities.replace(&[imap_proto::Capability::Atom(Cow::Borrowed("X-GM-EXT-1"))]);
 
         assert_eq!(capabilities.keyword_source(), KeywordSource::GmailLabels);
+    }
+
+    #[test]
+    fn test_move_capability_is_parsed() {
+        let mut capabilities = Capabilities::default();
+        assert!(!capabilities.contains(Capability::Move));
+
+        capabilities.insert(&imap_proto::Capability::Atom(Cow::Borrowed("MOVE")));
+
+        assert!(capabilities.contains(Capability::Move));
     }
 
     #[rstest]

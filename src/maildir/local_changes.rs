@@ -107,6 +107,8 @@ impl LocalFlagChangesBuilder {
 pub struct LocalChanges {
     pub updates: LocalFlagChangesBuilder,
     pub deletions: Vec<Uid>,
+    /// File name prefixes of deleted mails, which may have moved to another mailbox
+    pub deleted_prefixes: HashMap<Uid, String>,
     pub news: Vec<NewLocalMailMetadata>,
     /// Flags without IMAP equivalent changed by other clients, which only need storing
     pub other_flags: Vec<(Uid, OtherFlags)>,
@@ -115,6 +117,13 @@ pub struct LocalChanges {
 }
 
 impl LocalChanges {
+    /// Sets the file name prefixes of the deleted mails
+    #[must_use]
+    pub fn with_deleted_prefixes(mut self, deleted_prefixes: HashMap<Uid, String>) -> Self {
+        self.deleted_prefixes = deleted_prefixes;
+        self
+    }
+
     /// Creates changes from deletions, new mails and flag updates, leaving the rest empty
     pub fn new(
         deletions: Vec<Uid>,

@@ -3,6 +3,7 @@ mod local_changes;
 mod local_mail;
 mod maildir;
 mod maildir_repository;
+mod move_registry;
 mod state;
 mod watcher;
 
@@ -29,4 +30,6 @@ pub use maildir_repository::LocalWatcher;
 pub use maildir_repository::MaildirRepository;
 pub use maildir_repository::StoreError;
 pub use maildir_repository::TagsError;
+pub(crate) use move_registry::Pair;
+pub use move_registry::{MoveRegistry, MoveTap};
 pub use state::Error as StateError;

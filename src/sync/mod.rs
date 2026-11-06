@@ -3,6 +3,7 @@ mod change_hook;
 mod config;
 mod error;
 mod idle_timeout;
+mod moves;
 mod reconnect;
 mod repository_handle;
 mod shutdown;
@@ -16,6 +17,7 @@ pub use change_hook::{
 pub use config::Config;
 pub use error::Error;
 pub use idle_timeout::IdleTimeout;
+pub use moves::{Detection, MoveLink, MoveReporter, planner};
 pub use reconnect::{Transient, reconnecting};
 pub use repository_handle::RepositoryHandle;
 pub use shutdown::Shutdown;

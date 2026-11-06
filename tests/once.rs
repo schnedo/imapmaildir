@@ -1,6 +1,6 @@
 pub mod fixtures;
 
-use std::{collections::HashSet, ffi::OsString, fs, sync::Arc};
+use std::{collections::HashSet, ffi::OsString, fs, path::PathBuf, sync::Arc};
 
 use assertables::*;
 use imapmaildir::{Batching, ChangeRecorder, MailChange, batched_hook};
@@ -513,4 +513,171 @@ async fn test_batched_hook_gets_lines(#[future] mail_setup: MailSetup) {
     assert_starts_with!(fields[3], "uid=");
     assert_ends_with!(fields[3], " flags=");
     assert_eq!(fields[4], "");
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_mail_between_mailboxes_syncing_them_separately_uploads_it(
+    #[future] mail_setup: MailSetup,
+) {
+    mail_setup.sync("DRAFT").await;
+    let client_mail = mail_setup.client_mail();
+    let client_inbox = client_mail.mailbox("INBOX");
+    let initial_inbox = client_inbox.mails().await.len();
+    let client_draft = client_mail.mailbox("DRAFT");
+    let initial_draft = client_draft.mails().await.len();
+    let mail = assert_some!(client_inbox.mails().await.into_iter().next());
+    mail_setup.relocate_client_mail(mail.path(), "DRAFT", Relocation::Move);
+
+    mail_setup.sync("INBOX").await;
+    mail_setup.sync("DRAFT").await;
+
+    let server_inbox = mail_setup.server_mail().mailbox("INBOX");
+    let client_inbox_mails: HashSet<_> = client_inbox.mails().await.into_iter().collect();
+    let client_draft_mails: HashSet<_> = client_draft.mails().await.into_iter().collect();
+    let server_inbox_mails: HashSet<_> = server_inbox.mails().await.into_iter().collect();
+    assert_eq!(server_inbox_mails.len(), initial_inbox - 1);
+    assert_eq!(server_inbox_mails, client_inbox_mails);
+    assert_eq!(client_draft_mails.len(), initial_draft + 1);
+}
+
+/// A mail of INBOX, which is about to move to DRAFT, with the mailbox sizes before
+struct MoveSetup {
+    path: PathBuf,
+    uid: u64,
+    content: Vec<u8>,
+    initial_inbox: usize,
+    initial_draft: usize,
+}
+
+/// Syncs DRAFT, gives the mails on the server an old INTERNALDATE and picks a mail to move
+async fn prepare_move(mail_setup: &MailSetup) -> MoveSetup {
+    mail_setup.sync("DRAFT").await;
+    age_server_mails(mail_setup);
+    let client_mail = mail_setup.client_mail();
+    let (client_inbox, client_draft) = (client_mail.mailbox("INBOX"), client_mail.mailbox("DRAFT"));
+    let inbox = client_inbox.mails().await;
+    let initial_draft = client_draft.mails().await.len();
+    let mail = assert_some!(inbox.first());
+
+    MoveSetup {
+        path: mail.path().to_path_buf(),
+        uid: mail.uid(),
+        content: mail.content().to_vec(),
+        initial_inbox: inbox.len(),
+        initial_draft,
+    }
+}
+
+/// Asserts that the mail moved from INBOX to DRAFT on the server
+fn assert_moved_on_server(mail_setup: &MailSetup, setup: &MoveSetup) {
+    assert_eq!(
+        server_files(mail_setup, "INBOX").len(),
+        setup.initial_inbox - 1
+    );
+    assert_eq!(
+        server_files(mail_setup, "DRAFT").len(),
+        setup.initial_draft + 1
+    );
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_mail_between_mailboxes_moves_it_on_server(#[future] mail_setup: MailSetup) {
+    let setup = prepare_move(&mail_setup).await;
+    mail_setup.relocate_client_mail(&setup.path, "DRAFT", Relocation::Move);
+
+    mail_setup.sync_together(&MAILBOXES).await;
+
+    assert_moved_on_server(&mail_setup, &setup);
+    // uploading the mail would have given it a new INTERNALDATE
+    assert_eq!(
+        aged_server_files(&mail_setup, "DRAFT"),
+        setup.initial_draft + 1
+    );
+    let client_mail = mail_setup.client_mail();
+    let (client_inbox, client_draft) = (client_mail.mailbox("INBOX"), client_mail.mailbox("DRAFT"));
+    let client_draft_mails = client_draft.mails().await;
+    assert!(
+        client_draft_mails
+            .iter()
+            .any(|mail| mail.content() == setup.content)
+    );
+    assert!(server_file_with(&mail_setup, "DRAFT", &setup.content).is_some());
+    let client_inbox_mails: HashSet<_> = client_inbox.mails().await.into_iter().collect();
+    let server_inbox = mail_setup.server_mail().mailbox("INBOX");
+    let server_inbox_mails: HashSet<_> = server_inbox.mails().await.into_iter().collect();
+    assert_eq!(client_inbox_mails, server_inbox_mails);
+
+    // the next sync has nothing left to do
+    mail_setup.sync_together(&MAILBOXES).await;
+    assert_moved_on_server(&mail_setup, &setup);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_mail_with_remote_flag_change_keeps_it_in_destination(
+    #[future] mail_setup: MailSetup,
+) {
+    let setup = prepare_move(&mail_setup).await;
+    let server_inbox = mail_setup.server_mail().mailbox("INBOX");
+    let mut server_mails = server_inbox.mails().await;
+    let server_mail = assert_some!(server_mails.iter_mut().find(|mail| mail.uid() == setup.uid));
+    assert!(server_mail.add_flag('F'));
+    mail_setup.relocate_client_mail(&setup.path, "DRAFT", Relocation::Move);
+
+    mail_setup.sync_together(&MAILBOXES).await;
+
+    assert_moved_on_server(&mail_setup, &setup);
+    assert_eq!(
+        aged_server_files(&mail_setup, "DRAFT"),
+        setup.initial_draft + 1
+    );
+    // the server's flag change reaches the moved mail with the next sync
+    mail_setup.sync_together(&MAILBOXES).await;
+    let client_mail = mail_setup.client_mail();
+    let client_draft = client_mail.mailbox("DRAFT");
+    let client_draft_mails = client_draft.mails().await;
+    let moved = assert_some!(
+        client_draft_mails
+            .iter()
+            .find(|mail| mail.content() == setup.content)
+    );
+    assert!(moved.has_flag('F'));
+    let server_file = assert_some!(server_file_with(&mail_setup, "DRAFT", &setup.content));
+    let name = server_file.to_string_lossy();
+    let (_, flags) = assert_some!(name.rsplit_once(":2,"));
+    assert_contains!(flags, "F");
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_mail_with_dropped_planner_uploads_it(#[future] mail_setup: MailSetup) {
+    let setup = prepare_move(&mail_setup).await;
+    mail_setup.relocate_client_mail(&setup.path, "DRAFT", Relocation::Move);
+
+    mail_setup.sync_with_dropped_planner("INBOX").await;
+    mail_setup.sync_with_dropped_planner("DRAFT").await;
+
+    assert_moved_on_server(&mail_setup, &setup);
+    // uploading gives the mail a new INTERNALDATE
+    assert_eq!(aged_server_files(&mail_setup, "DRAFT"), setup.initial_draft);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_syncing_unchanged_mailboxes_together_does_nothing(#[future] mail_setup: MailSetup) {
+    mail_setup.sync("DRAFT").await;
+    let inbox_files = server_files(&mail_setup, "INBOX").len();
+    let draft_files = server_files(&mail_setup, "DRAFT").len();
+
+    mail_setup.sync_together(&MAILBOXES).await;
+
+    assert_eq!(server_files(&mail_setup, "INBOX").len(), inbox_files);
+    assert_eq!(server_files(&mail_setup, "DRAFT").len(), draft_files);
 }

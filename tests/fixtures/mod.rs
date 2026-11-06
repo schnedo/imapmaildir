@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use assertables::*;
@@ -19,8 +19,9 @@ use crossfire::{
 };
 use derivative::Derivative;
 use imapmaildir::{
-    ChangeRecorder, ChangeSink, Client, ClientError, MailChange, Shutdown, SyncError, Syncer,
-    TagSync, Tls, Transient, config as config_m, logging, reconnecting,
+    ChangeRecorder, ChangeSink, Client, ClientError, Detection, MailChange, MoveLink, MoveReporter,
+    Shutdown, SyncError, Syncer, TagSync, Tls, Transient, config as config_m, logging, planner,
+    reconnecting,
 };
 use rstest::fixture;
 use tempfile::{TempDir, tempdir};
@@ -132,6 +133,11 @@ impl MailFile<'_> {
     #[must_use]
     pub fn uid(&self) -> u64 {
         self.uid
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     #[must_use]
@@ -310,7 +316,7 @@ impl Maildir for ServerMaildir<'_> {
             "user",
             "'*'"
         ])));
-        let uidlist = UidList::new(&self.storage.dir().join("dovecot-uidlist"));
+        let uidlist = UidList::new(&index_location.join("dovecot-uidlist"));
 
         std::future::ready(
             all_mails
@@ -401,6 +407,15 @@ pub trait MailStorage: Sized {
     }
 }
 
+/// How a mail gets to another mailbox
+#[derive(Clone, Copy)]
+pub enum Relocation {
+    /// The file moves, like `mv`
+    Move,
+    /// The file stays, like `cp`
+    Copy,
+}
+
 pub struct MailSetup {
     config: Arc<config_m::Account>,
     #[expect(unused)]
@@ -426,6 +441,25 @@ impl MailSetup {
         }
     }
 
+    /// Moves or copies the client's mail `file` into `cur` of `mailbox`, keeping its name
+    ///
+    /// # Panics
+    /// If the file operation fails
+    pub fn relocate_client_mail(&self, file: &Path, mailbox: &str, relocation: Relocation) {
+        let target = self
+            .config
+            .maildir_base_path()
+            .join(mailbox)
+            .join("cur")
+            .join(assert_some!(file.file_name()));
+        match relocation {
+            Relocation::Move => assert_ok!(fs::rename(file, target)),
+            Relocation::Copy => {
+                assert_ok!(fs::copy(file, target));
+            }
+        }
+    }
+
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync(&self, mailbox: &str) -> () {
@@ -447,7 +481,7 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_with_changes(&self, mailbox: &str, changes: Option<ChangeRecorder>) {
-        self.sync_with(mailbox, changes, None).await;
+        self.sync_with(mailbox, changes, None, None).await;
     }
 
     /// Syncs `mailbox` once, syncing keywords with `tags`
@@ -455,7 +489,55 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_with_tags(&self, mailbox: &str, tags: &TagSync) {
-        self.sync_with(mailbox, None, Some(tags)).await;
+        self.sync_with(mailbox, None, Some(tags), None).await;
+    }
+
+    /// Syncs all `mailboxes` once at the same time, recognizing mails moved between them
+    ///
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_together(&self, mailboxes: &[&str]) {
+        let (reporter, planner) = planner();
+        // the planner blocks, but the detections run on this thread
+        let planning = thread::spawn(move || planner.plan());
+        let detections = futures::future::join_all(
+            mailboxes
+                .iter()
+                .map(|mailbox| self.detect(reporter.clone(), mailbox)),
+        )
+        .await;
+        drop(reporter);
+        assert_ok!(planning.join().map_err(|_| "planner panicked"));
+        let syncs = mailboxes
+            .iter()
+            .zip(detections)
+            .map(|(mailbox, detection)| self.sync_with(mailbox, None, None, detection));
+        futures::future::join_all(syncs).await;
+    }
+
+    /// Syncs `mailbox` once with its local changes detected like [`Self::sync_together`] does,
+    /// but its planner gave up, so the session continues without moves
+    ///
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_with_dropped_planner(&self, mailbox: &str) {
+        let (reporter, planner) = planner();
+        drop(planner);
+        let detection = self.detect(reporter, mailbox).await;
+        self.sync_with(mailbox, None, None, detection).await;
+    }
+
+    async fn detect(&self, reporter: MoveReporter, mailbox: &str) -> Option<Detection> {
+        let config = self.config();
+        reporter
+            .detect(
+                mailbox,
+                config.maildir_base_path(),
+                config.state_dir(),
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("detecting changes failed: {e}"))
     }
 
     async fn sync_with(
@@ -463,6 +545,7 @@ impl MailSetup {
         mailbox: &str,
         changes: Option<ChangeRecorder>,
         tags: Option<&TagSync>,
+        detection: Option<Detection>,
     ) {
         let config = self.config();
         let client = Client::login(
@@ -481,6 +564,7 @@ impl MailSetup {
             config.sync(),
             changes,
             tags,
+            detection,
             &Shutdown::new(),
         )
         .await
@@ -554,6 +638,7 @@ impl MailSetup {
             config.sync(),
             None,
             None,
+            None,
             &Shutdown::new(),
         )
         .await
@@ -576,6 +661,37 @@ impl MailSetup {
         &self,
         mailbox: &str,
         tags: Option<TagSync>,
+    ) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
+        self.sync_continuous_with_moves(mailbox, tags, None).await
+    }
+
+    /// Syncs both mailboxes continuously, letting them agree on moved mails
+    ///
+    /// # Panics
+    /// If logging in or syncing fails
+    pub async fn sync_continuous_both(
+        &self,
+        first: &str,
+        second: &str,
+    ) -> [(JoinHandle<()>, AsyncRx<Array<()>>); 2] {
+        let mailboxes = [first.to_string(), second.to_string()];
+        let mut links = MoveLink::connect(&mailboxes);
+        let first_link = assert_some!(links.remove(first));
+        let second_link = assert_some!(links.remove(second));
+
+        [
+            self.sync_continuous_with_moves(first, None, Some(first_link))
+                .await,
+            self.sync_continuous_with_moves(second, None, Some(second_link))
+                .await,
+        ]
+    }
+
+    async fn sync_continuous_with_moves(
+        &self,
+        mailbox: &str,
+        tags: Option<TagSync>,
+        moves: Option<MoveLink>,
     ) -> (JoinHandle<()>, AsyncRx<Array<()>>) {
         let (call_tx, call_rx) = mpsc::bounded_blocking_async(1);
         let config = self.config();
@@ -601,6 +717,7 @@ impl MailSetup {
                 sync_config,
                 Some(ChangeRecorder::new(vec![Arc::new(NotifyingSink(call_tx))])),
                 tags.as_ref(),
+                moves.as_ref(),
                 &Shutdown::new(),
             )
             .await;
@@ -719,6 +836,7 @@ impl MailSetup {
                         client,
                         config.idle_timout(),
                         config.sync(),
+                        None,
                         None,
                         None,
                         &session_shutdown,
@@ -868,4 +986,78 @@ pub async fn mail_setup(__setup_logging: ()) -> MailSetup {
             container,
         },
     }
+}
+
+/// The mailboxes of the mock server, which mails move between
+pub const MAILBOXES: [&str; 2] = ["INBOX", "DRAFT"];
+
+/// A server file's modification time is the mail's INTERNALDATE, which moving keeps and uploading
+/// resets
+const OLD_INTERNAL_DATE_SECS: u64 = 1_500_000_000;
+
+/// Modification time of server files that were not uploaded since aging them
+#[must_use]
+pub fn old_internal_date() -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(OLD_INTERNAL_DATE_SECS)
+}
+
+/// Files of the server mailbox. Moved mails may be in `new`, which the fixtures do not list.
+///
+/// # Panics
+/// If listing the files fails
+#[must_use]
+pub fn server_files(mail_setup: &MailSetup, mailbox: &str) -> Vec<PathBuf> {
+    let root = mail_setup.server_mail().dir();
+    let root = if mailbox == "INBOX" {
+        root.to_path_buf()
+    } else {
+        root.join(mailbox)
+    };
+    let mut files = Vec::new();
+    for folder in ["cur", "new"] {
+        for entry in assert_ok!(root.join(folder).read_dir()) {
+            files.push(assert_ok!(entry).path());
+        }
+    }
+
+    files
+}
+
+/// Gives all mails on the server an old INTERNALDATE
+///
+/// # Panics
+/// If setting the modification time fails
+pub fn age_server_mails(mail_setup: &MailSetup) {
+    for mailbox in MAILBOXES {
+        for file in server_files(mail_setup, mailbox) {
+            assert_ok!(File::open(file).and_then(|file| file.set_modified(old_internal_date())));
+        }
+    }
+}
+
+/// Modification time of `file`
+///
+/// # Panics
+/// If reading the metadata fails
+#[must_use]
+pub fn modified(file: &Path) -> SystemTime {
+    assert_ok!(assert_ok!(fs::metadata(file)).modified())
+}
+
+/// Number of server files of `mailbox` that still have the old INTERNALDATE, so were not uploaded
+/// since aging them
+#[must_use]
+pub fn aged_server_files(mail_setup: &MailSetup, mailbox: &str) -> usize {
+    server_files(mail_setup, mailbox)
+        .into_iter()
+        .filter(|file| modified(file) == old_internal_date())
+        .count()
+}
+
+/// The server file of `mailbox` with `content`
+#[must_use]
+pub fn server_file_with(mail_setup: &MailSetup, mailbox: &str, content: &[u8]) -> Option<PathBuf> {
+    server_files(mail_setup, mailbox)
+        .into_iter()
+        .find(|file| fs::read(file).is_ok_and(|read| read == content))
 }
