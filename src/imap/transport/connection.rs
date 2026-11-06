@@ -21,6 +21,7 @@ use crate::imap::transport::{
     tag_generator::TagGenerator,
 };
 
+/// Size of the buffer for reading from the socket
 const READ_BUFFER_SIZE: usize = 256 * 1024;
 
 /// Size of the chunks, in which commands with file contents get written
@@ -41,6 +42,7 @@ pub enum CommandPart<'a> {
     Continuation,
 }
 
+/// Where to connect to
 #[derive(Getters, Debug)]
 pub struct Config {
     host: String,
@@ -49,6 +51,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Creates a config for `host`, `port` and an optional additional trusted certificate
     #[must_use]
     pub fn new(host: String, port: u16, server_certificate_file: Option<PathBuf>) -> Self {
         Self {
@@ -59,6 +62,7 @@ impl Config {
     }
 }
 
+/// TLS connection to the server speaking IMAP
 pub struct Connection {
     tag_generator: TagGenerator,
     stream: Framed<TlsStream<TcpStream>, ImapCodec>,
@@ -72,6 +76,7 @@ impl Debug for Connection {
     }
 }
 
+/// Configured TLS connector
 #[derive(Debug, Clone)]
 pub struct Tls(TlsConnector);
 
@@ -98,6 +103,7 @@ impl Tls {
 }
 
 impl Connection {
+    /// Connects and sets up TLS
     pub async fn start(connection_config: &Config, tls: &Tls) -> Result<Self, Error> {
         log::debug!("Connecting to server");
         let tls = &tls.0;
@@ -138,6 +144,7 @@ impl Connection {
         Ok(())
     }
 
+    /// Waits for the next response from the server
     pub async fn next_response(&mut self) -> Result<ResponseData, Error> {
         self.stream
             .next()
@@ -146,6 +153,7 @@ impl Connection {
             .map_err(Error::Receive)
     }
 
+    /// Sends `command` and handles responses until its completion
     pub async fn send<H: ResponseHandler>(
         &mut self,
         command: Vec<u8>,
@@ -154,6 +162,7 @@ impl Connection {
         self.send_parts(&[&command], handler).await
     }
 
+    /// Sends `parts` as one command and handles responses until its completion
     pub async fn send_parts<H: ResponseHandler>(
         &mut self,
         parts: &[&[u8]],
@@ -222,12 +231,14 @@ impl Connection {
         }
     }
 
+    /// Sends `command` without waiting for the completion and returns its tag
     pub async fn write_command(&mut self, command: Vec<u8>) -> Result<String, Error> {
         let tag = self.tag_generator.next();
         self.write(&tag, &[&command]).await?;
         Ok(tag)
     }
 
+    /// Sends `data` as continuation of a command
     pub async fn write_continuation(&mut self, data: Vec<u8>) -> Result<(), Error> {
         self.write("", &[&data]).await
     }
@@ -281,6 +292,7 @@ impl Connection {
         Ok(completions.into_results())
     }
 
+    /// Handles responses until the completion of the command with `tag`
     pub async fn receive_completion<H: ResponseHandler>(
         &mut self,
         tag: &str,
@@ -368,6 +380,7 @@ pub enum Continued {
     Done(ResponseData),
 }
 
+/// Next significant response while waiting for completions
 enum Received {
     /// Continuation request with its text, e.g. a SASL challenge
     Continuation(Option<String>),
@@ -425,6 +438,7 @@ impl Completions {
     }
 }
 
+/// Failure to set up TLS
 #[derive(Debug, Error)]
 pub enum TlsError {
     #[error("Cannot read server certificate file: {0}")]
@@ -439,6 +453,7 @@ pub enum TlsError {
     Validation(io::Error),
 }
 
+/// Failure of the connection to the server
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0}")]

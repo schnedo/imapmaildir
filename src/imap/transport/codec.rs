@@ -7,8 +7,10 @@ use nom::{self, Needed};
 
 use imap_proto::Response;
 
+/// Number of bytes of a failed response shown in the error
 const ERROR_CONTEXT_SIZE: usize = 64;
 
+/// Decodes IMAP responses incrementally
 #[derive(Default)]
 pub struct ImapCodec {
     decode_need_message_bytes: usize,
@@ -88,6 +90,7 @@ impl Encoder for ImapCodec {
     }
 }
 
+/// Parsed response together with the bytes it borrows from
 #[derive(Debug)]
 pub struct ResponseData {
     raw: Bytes,
@@ -103,10 +106,12 @@ pub struct ResponseData {
 }
 
 impl ResponseData {
+    /// Parsed response
     pub fn parsed(&self) -> &Response<'_> {
         &self.response
     }
 
+    /// Response code of a tagged response. Panics if the response is not tagged.
     pub fn unsafe_get_tagged_response_code(&self) -> Option<&imap_proto::ResponseCode<'_>> {
         if let Response::Done {
             outcome: imap_proto::Outcome { code, .. },
@@ -119,10 +124,12 @@ impl ResponseData {
         }
     }
 
+    /// Consumes the response and returns its bytes
     pub fn raw(self) -> Bytes {
         self.raw
     }
 
+    /// Returns the sub-slice `data` of the response as `Bytes` without copying
     pub fn bytes_of(&self, data: &[u8]) -> Bytes {
         self.raw.slice_ref(data)
     }

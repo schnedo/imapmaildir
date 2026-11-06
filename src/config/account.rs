@@ -11,6 +11,7 @@ use crate::{
     notmuch, sync,
 };
 
+/// Account config as written in the config file, before defaults and paths are resolved
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccountConfigFile {
@@ -37,6 +38,7 @@ struct AccountConfigFile {
     notmuch: Option<notmuch::ConfigFile>,
 }
 
+/// Resolved settings of an account
 // todo: why 2 structs? custom logic should be configurable in serde/derive_getters
 #[derive(Getters, Debug)]
 pub struct Account {
@@ -55,6 +57,7 @@ pub struct Account {
 }
 
 impl Account {
+    /// Creates an account from its resolved settings
     #[expect(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -178,6 +181,7 @@ fn data_home() -> Result<PathBuf, Error> {
     Ok(data_home)
 }
 
+/// Failures of locating, reading and validating the account config
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("HOME is not set")]

@@ -6,13 +6,16 @@ use std::{
 
 use thiserror::Error;
 
+/// Unique identifier of a mail in a mailbox, which is never zero
 #[derive(Debug, PartialEq, Clone, Copy, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Uid(NonZeroU32);
 
 impl Uid {
+    /// Largest possible UID
     pub const MAX: Self = Self(NonZeroU32::MAX);
 
+    /// Iterates from `self` to `end`, both included
     pub fn range_inclusive(self, end: Self) -> UidRangeInclusiveIterator {
         UidRangeInclusiveIterator::new(self, end)
     }
@@ -46,6 +49,7 @@ impl Display for Uid {
     }
 }
 
+/// Error for a number that is no valid UID
 #[derive(Debug, Error)]
 #[error("Cannot convert {value} to Uid")]
 pub struct UidConversionError {
@@ -74,6 +78,7 @@ impl From<&Uid> for u32 {
     }
 }
 
+/// Iterator over a UID range, see [`Uid::range_inclusive`]
 pub struct UidRangeInclusiveIterator {
     current: u32,
     end: u32,

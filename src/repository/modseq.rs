@@ -1,5 +1,6 @@
 use std::{fmt::Display, num::NonZeroI64};
 
+/// Modification sequence of a mail or mailbox (`MODSEQ` of CONDSTORE)
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ModSeq(NonZeroI64); // actually needs to be positive u63

@@ -9,6 +9,7 @@ use crate::{imap::client::encoding::LiteralMode, repository::KeywordSource};
 #[derive(Copy, Clone, Debug)]
 // todo: check https://datatracker.ietf.org/doc/html/rfc5550#section-12 and update readme regarding
 // compatibility to lemonade mail stores
+/// IMAP extensions the client cares about
 pub enum Capability {
     Condstore, // rfc7162
     Enable,    // rfc5161
@@ -22,6 +23,7 @@ pub enum Capability {
     SaslIr,       // rfc4959
     UidPlus,      // rfc4315
 }
+/// Capabilities announced by the server, restricted to the supported ones
 #[derive(Debug, Default)]
 pub struct Capabilities {
     supported: BitFlags<Capability>,
@@ -33,6 +35,7 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
+    /// Records `capability` if it is supported
     pub fn insert(&mut self, capability: &imap_proto::Capability) {
         match capability {
             imap_proto::Capability::Imap4rev1 => {
@@ -90,6 +93,7 @@ impl Capabilities {
         }
     }
 
+    /// Whether the server supports `other`
     pub fn contains(&self, other: Capability) -> bool {
         self.supported.contains(other)
     }
@@ -114,6 +118,7 @@ impl Capabilities {
         log::trace!("updated capabilities to {self:?}");
     }
 
+    /// Maximum size of appended mails, if the server announces one
     pub fn append_limit(&self) -> Option<NonZeroU64> {
         self.append_limit
     }
@@ -133,6 +138,7 @@ impl Capabilities {
         }
     }
 
+    /// Most efficient literal mode supported by the server
     pub fn literal_mode(&self) -> LiteralMode {
         if self.contains(Capability::LiteralPlus) {
             LiteralMode::Plus
@@ -144,6 +150,7 @@ impl Capabilities {
     }
 }
 
+/// Authentication mechanisms the client can use
 #[bitflags]
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
@@ -152,12 +159,14 @@ pub enum AuthCapability {
     Plain,
     XOAuth2,
 }
+/// Authentication mechanisms announced by the server
 #[derive(Debug, Default)]
 pub struct AuthCapabilities {
     supported: BitFlags<AuthCapability>,
 }
 
 impl AuthCapabilities {
+    /// Records `capability` if it is a supported authentication mechanism
     pub fn insert(&mut self, capability: &imap_proto::Capability) {
         match capability {
             imap_proto::Capability::Auth(cow) => match cow.as_ref() {
@@ -180,6 +189,7 @@ impl AuthCapabilities {
         }
     }
 
+    /// Whether the server offers the `other` mechanism
     pub fn contains(&self, other: AuthCapability) -> bool {
         self.supported.contains(other)
     }

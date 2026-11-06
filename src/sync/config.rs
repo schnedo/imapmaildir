@@ -18,6 +18,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Creates sync settings
     #[must_use]
     pub fn new(
         store_batch_size: usize,

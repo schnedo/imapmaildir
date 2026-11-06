@@ -26,8 +26,11 @@ use crate::{
     repository::{Flag, KeywordSource, Keywords, ModSeq, Uid, UidValidity},
 };
 
+/// Name of the state database file
 const STATE_FILE_NAME: &str = "imapmaildir.db";
+/// Embedded SQL migrations, one directory each
 const MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+/// Contents of the `up.sql` of all migrations in version order
 static MIGRATIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut dirs: Vec<_> = MIGRATIONS_DIR.dirs().collect();
     dirs.sort_by_key(|dir| dir.path());
@@ -39,12 +42,17 @@ static MIGRATIONS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         })
         .collect()
 });
+/// Capacity of the queue of jobs for the state thread
 const JOB_QUEUE_SIZE: usize = 64;
+/// Number of uids queried per statement in `get_all_by_id`
 const GET_ALL_BY_ID_CHUNK_SIZE: usize = 256;
+/// Placeholder list for a full chunk of `get_all_by_id`
 static GET_ALL_BY_ID_PARAMS: LazyLock<String> =
     LazyLock::new(|| vec!["?"; GET_ALL_BY_ID_CHUNK_SIZE].join(","));
+/// Query for a page of mails pending a tag sync
 static GET_TAGS_PENDING_PAGE_QUERY: LazyLock<String> =
     LazyLock::new(|| format!("{TAGS_PENDING_QUERY} uid > ?1 order by uid limit ?2"));
+/// Select of mails pending a tag sync, to be completed with a further condition
 const TAGS_PENDING_QUERY: &str = "select uid,flags,fileprefix,other_flags,keywords,notmuch_keywords \
     from mail_metadata where (notmuch_keywords is null or notmuch_keywords != keywords) and";
 
@@ -81,13 +89,16 @@ fn apply_migrations(db: &mut Connection) -> Result<(), InitError> {
     Ok(())
 }
 
+/// Database operation executed on the state thread
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
+/// Message for the state thread
 enum Command {
     Run(Job),
     Close(TxOneshot<()>),
 }
 
+/// Handle to the state database, whose access is serialized on a dedicated thread
 pub struct State {
     jobs: MAsyncTx<Array<Command>>,
 }
@@ -171,6 +182,7 @@ impl State {
         .await
     }
 
+    /// Stops the state thread after finishing queued jobs
     pub async fn close(self) -> Result<(), Error> {
         let (closed_tx, closed_rx) = oneshot();
         self.jobs
@@ -180,6 +192,7 @@ impl State {
         closed_rx.await.map_err(|_| Error::ThreadStopped)
     }
 
+    /// Opens the existing state in `state_dir`
     pub async fn load(state_dir: &Path) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir).await?;
         log::debug!(
@@ -204,6 +217,7 @@ impl State {
         }
     }
 
+    /// Creates the state in `state_dir`, storing `uid_validity`
     pub async fn init(state_dir: &Path, uid_validity: UidValidity) -> Result<Self, InitError> {
         let state_file = Self::prepare_state_file(state_dir).await?;
         log::debug!("creating new state file {}", state_file.to_string_lossy());
@@ -255,6 +269,7 @@ impl State {
         .await
     }
 
+    /// Stores where keywords are synced from
     pub async fn set_keyword_source(&self, keyword_source: KeywordSource) -> Result<(), Error> {
         self.call(move |db| {
             let transaction = db.transaction()?;
@@ -407,6 +422,7 @@ impl State {
         .await
     }
 
+    /// Stores the notmuch revision up to which tags are synced, with the used keyword mapping
     pub async fn set_tags_revision(
         &self,
         revision: Revision,
@@ -438,6 +454,7 @@ impl State {
         .await
     }
 
+    /// Forgets pending notmuch removals of `paths`
     pub async fn delete_notmuch_removals(&self, paths: Vec<PathBuf>) -> Result<(), Error> {
         self.execute_all(
             "delete from notmuch_removals where path = ?1",
@@ -448,6 +465,7 @@ impl State {
         .await
     }
 
+    /// Updates the cached keywords of the given mails
     pub async fn update_keywords_all(&self, data: Vec<(Uid, Keywords)>) -> Result<(), Error> {
         log::trace!("updating keywords of {} mail caches", data.len());
         self.execute_all(
@@ -457,6 +475,7 @@ impl State {
         .await
     }
 
+    /// Whether the first full sync finished, i.e. a highest modseq is stored
     pub async fn is_initial_sync_complete(&self) -> Result<bool, Error> {
         self.call(|db| {
             db.query_one("select exists (select 1 from highest_modseq)", [], |row| {
@@ -467,6 +486,7 @@ impl State {
         .await
     }
 
+    /// Deletes the state file in `state_dir` if it exists
     pub async fn remove_from(state_dir: &Path) -> io::Result<()> {
         if try_exists(state_dir).await? {
             let state_file = state_dir.join(STATE_FILE_NAME);
@@ -492,6 +512,7 @@ impl State {
         Ok(state_dir.join(STATE_FILE_NAME))
     }
 
+    /// Uid validity the cached mails belong to
     pub async fn uid_validity(&self) -> Result<UidValidity, Error> {
         log::trace!("getting cached uid_validity");
         self.call(|db| {
@@ -504,6 +525,7 @@ impl State {
         .await
     }
 
+    /// Stores `value` if it is higher than the current highest modseq
     pub async fn update_highest_modseq(&self, value: ModSeq) -> Result<(), Error> {
         log::trace!("check for updating highest_modseq with {value:?}");
         self.call(move |db| {
@@ -519,6 +541,7 @@ impl State {
         .await
     }
 
+    /// Highest modseq synced so far
     pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {
         log::trace!("getting cached highest_modseq");
         self.call(|db| get_highest_modseq(db)).await
@@ -571,6 +594,7 @@ impl State {
         .await
     }
 
+    /// Looks up the metadata of the mail with `uid`
     pub async fn get_by_id(&self, uid: Uid) -> Result<Option<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata with {uid:?}");
         self.call(move |db| {
@@ -585,6 +609,7 @@ impl State {
         .await
     }
 
+    /// Looks up the metadata of all existing mails among `uids`
     pub async fn get_all_by_id(&self, uids: Vec<Uid>) -> Result<Vec<LocalMailMetadata>, Error> {
         log::trace!("get existing metadata of {} mails", uids.len());
         self.call(move |db| {
@@ -604,6 +629,7 @@ impl State {
         .await
     }
 
+    /// Inserts or updates the metadata of the given mails
     pub async fn update_all(&self, data: Vec<LocalMailMetadata>) -> Result<(), Error> {
         log::trace!("updating {} mail caches", data.len());
         self.call(move |db| {
@@ -663,6 +689,7 @@ impl State {
         .await
     }
 
+    /// Deletes the mails with the given uids
     pub async fn delete_all_by_id(&self, uids: Vec<Uid>) -> Result<(), Error> {
         self.delete_all_by_id_removing(uids, Vec::new(), 0).await
     }
@@ -697,6 +724,7 @@ impl State {
         .await
     }
 
+    /// Uids of all stored mails
     pub async fn uids(&self) -> Result<HashSet<Uid>, Error> {
         log::trace!("getting all stored uids");
         self.call(|db| {
@@ -731,6 +759,7 @@ impl State {
         .await
     }
 
+    /// Calls `cb` for every stored mail and returns the highest modseq as of the read
     pub async fn fore_each(&self, mut cb: impl FnMut(LocalMailMetadata)) -> Result<ModSeq, Error> {
         log::trace!("getting all stored mail metadata");
         let (entries, current_highest_modseq) = self
@@ -785,6 +814,7 @@ impl TryFrom<&Row<'_>> for LocalMailMetadata {
     }
 }
 
+/// Error accessing the state
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Could not parse cached data")]
@@ -807,6 +837,7 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+/// Error opening or creating the state
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error("{0}")]
@@ -819,6 +850,7 @@ pub enum InitError {
     Migrations(MigrationError),
 }
 
+/// Error migrating the state database
 #[derive(Debug, Error)]
 pub enum MigrationError {
     #[error("database schema version {current} is newer than latest known version {latest}")]

@@ -11,6 +11,7 @@ pub enum KeywordSource {
 }
 
 impl KeywordSource {
+    /// Name of the source as stored in the state
     pub fn as_str(self) -> &'static str {
         match self {
             KeywordSource::Flags => "flags",
@@ -18,6 +19,7 @@ impl KeywordSource {
         }
     }
 
+    /// Inverse of `as_str`. `None` for unknown names
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "flags" => Some(KeywordSource::Flags),
@@ -52,6 +54,7 @@ impl Keywords {
         Self::from_unsorted(labels.iter().map(AsRef::as_ref))
     }
 
+    /// Reads keywords from their stored representation
     pub fn from_stored(stored: &str) -> Self {
         Self::from_unsorted(stored.split(STORED_SEPARATOR))
     }

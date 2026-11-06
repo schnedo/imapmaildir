@@ -8,6 +8,7 @@ use std::{
 use enumflags2::{BitFlags, bitflags};
 use thiserror::Error;
 
+/// Standard IMAP system flags, that map to maildir flags
 #[bitflags]
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
@@ -22,6 +23,7 @@ pub enum Flag {
 }
 
 impl Flag {
+    /// Collects the known flags, ignoring unknown ones
     pub fn into_bitflags(flags: &Vec<Cow<str>>) -> BitFlags<Self, u8> {
         flags
             .iter()
@@ -29,6 +31,7 @@ impl Flag {
             .collect()
     }
 
+    /// Formats flags space separated as in IMAP. `None` if there are no flags
     pub fn format(flags: BitFlags<Self>) -> Option<String> {
         let mut flags = flags.iter();
         let first = flags.next()?;
@@ -81,6 +84,7 @@ impl From<Flag> for char {
     }
 }
 
+/// Error for a flag name that is not a known system flag
 #[derive(Error, Debug)]
 #[error("unknown flag {flag}")]
 pub struct UnknownFlagError {

@@ -39,6 +39,7 @@ pub enum MailChange {
     Overflow,
 }
 
+/// Receiver of recorded mail changes, e.g. to forward them to hooks or notmuch
 pub trait ChangeSink: Send + Sync {
     /// Must not block, as it is called while syncing
     fn record(&self, change: MailChange);
@@ -51,6 +52,7 @@ pub struct ChangeRecorder {
 }
 
 impl ChangeRecorder {
+    /// Creates a recorder forwarding to `sinks`
     #[must_use]
     pub fn new(sinks: Vec<Arc<dyn ChangeSink>>) -> Self {
         Self {
@@ -58,6 +60,7 @@ impl ChangeRecorder {
         }
     }
 
+    /// Hands the change to every sink
     pub fn record(&self, change: MailChange) {
         if let Some((last, others)) = self.sinks.split_last() {
             for sink in others {

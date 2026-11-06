@@ -16,11 +16,13 @@ use crate::{
     sync::{Error, Task},
 };
 
+/// Async handle to the task, that owns the maildir repository of a mailbox
 pub struct RepositoryHandle {
     task_tx: MAsyncTx<Array<Task>>,
 }
 
 impl RepositoryHandle {
+    /// Creates a handle that sends tasks to `task_tx`
     pub fn new(task_tx: MAsyncTx<Array<Task>>) -> Self {
         Self { task_tx }
     }
@@ -38,10 +40,12 @@ impl RepositoryHandle {
         reply_rx.await.map_err(|_| Error::TaskProcessingStopped)
     }
 
+    /// Deletes the mails with these UIDs
     pub async fn delete(&self, uids: SequenceSet) -> Result<(), Error> {
         self.send(Task::Delete(uids)).await
     }
 
+    /// Applies updates fetched from the server. Returns the UIDs of mails, that are missing locally
     pub async fn apply_remote_updates(
         &self,
         updates: Vec<RemoteMailMetadata>,
@@ -75,6 +79,7 @@ impl RepositoryHandle {
         self.send(Task::ApplyFlagChanges(changes)).await
     }
 
+    /// Stores flags, that are not synced as maildir flags
     pub async fn update_other_flags(
         &self,
         other_flags: Vec<(Uid, OtherFlags)>,
@@ -82,6 +87,7 @@ impl RepositoryHandle {
         self.send(Task::UpdateOtherFlags(other_flags)).await
     }
 
+    /// Opens the mail of new metadata, if it exists locally
     pub async fn open_mail(
         &self,
         metadata: NewLocalMailMetadata,
@@ -97,6 +103,7 @@ impl RepositoryHandle {
         self.request(|reply| Task::Flags(uids, reply)).await
     }
 
+    /// Detects mails changed locally since the last sync
     pub async fn detect_changes(&self) -> Result<LocalChanges, Error> {
         self.request(Task::DetectChanges).await
     }
@@ -106,14 +113,17 @@ impl RepositoryHandle {
         self.request(Task::DetectTagChanges).await
     }
 
+    /// Marks tag changes up to `revision` as synced
     pub async fn complete_tag_changes(&self, revision: Revision) -> Result<(), Error> {
         self.send(Task::CompleteTagChanges(revision)).await
     }
 
+    /// Sets where keywords come from on the server
     pub async fn set_keyword_source(&self, source: KeywordSource) -> Result<(), Error> {
         self.send(Task::SetKeywordSource(source)).await
     }
 
+    /// Highest `MODSEQ` synced so far
     pub async fn highest_modseq(&self) -> Result<ModSeq, Error> {
         self.request(Task::HighestModseq).await
     }

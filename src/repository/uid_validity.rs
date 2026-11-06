@@ -1,10 +1,12 @@
 use std::{fmt::Display, num::NonZeroU32};
 
+/// `UIDVALIDITY` of a mailbox, which changes if its UIDs got reset
 #[derive(Clone, Debug, PartialEq, Copy)]
 #[repr(transparent)]
 pub struct UidValidity(NonZeroU32);
 
 impl UidValidity {
+    /// Wraps a non-zero `UIDVALIDITY`
     pub fn new(validity: NonZeroU32) -> Self {
         Self(validity)
     }

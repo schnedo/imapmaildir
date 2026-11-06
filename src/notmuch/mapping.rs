@@ -92,6 +92,7 @@ pub struct TagMapping {
 }
 
 impl TagMapping {
+    /// Builds the mapping of `config` for keywords of `source`
     pub fn new(config: &TagConfig, source: KeywordSource) -> Self {
         let mut ignored: HashSet<String> = config.ignored_tags.iter().cloned().collect();
         let mut to_tag: HashMap<String, String> = HashMap::new();
@@ -218,6 +219,7 @@ impl TagMapping {
         (self.tag(&keyword).as_deref() == Some(tag)).then_some(keyword)
     }
 
+    /// Whether the tag corresponds to a keyword and so gets synced
     pub fn is_synced(&self, tag: &str) -> bool {
         self.keyword(tag).is_some()
     }

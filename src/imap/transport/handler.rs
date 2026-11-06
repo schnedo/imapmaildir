@@ -1,13 +1,17 @@
 use crate::imap::transport::{ResponseData, connection};
 
+/// Handles untagged responses while waiting for a command's completion
 pub trait ResponseHandler {
+    /// Error of handling a response
     type Error: From<connection::Error>;
 
+    /// Handles `response`, or returns it back if it is not of interest
     fn handle(
         &mut self,
         response: ResponseData,
     ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>>;
 
+    /// Like [`Self::handle`], but logs responses that were not handled
     fn handle_or_log(
         &mut self,
         response: ResponseData,
@@ -22,6 +26,7 @@ pub trait ResponseHandler {
     }
 }
 
+/// Tries `A` first and passes unhandled responses on to `B`
 pub struct Chain<A, B>(pub A, pub B);
 
 impl<A: ResponseHandler<Error = B::Error>, B: ResponseHandler> ResponseHandler for Chain<A, B> {

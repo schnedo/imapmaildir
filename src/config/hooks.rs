@@ -14,6 +14,7 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    /// Creates hook settings
     #[must_use]
     pub fn new(
         on_local_change: Vec<String>,

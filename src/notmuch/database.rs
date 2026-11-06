@@ -29,6 +29,7 @@ pub struct Revision {
     pub number: u64,
 }
 
+/// Failure of a notmuch call, with the status it returned
 #[derive(Debug, Error)]
 pub struct Error {
     status: ffi::Status,
@@ -168,6 +169,7 @@ impl std::fmt::Debug for Database {
     }
 }
 
+/// Open notmuch database, loaded at runtime
 pub struct Database {
     lib: &'static ffi::Library,
     raw: *mut ffi::Database,
@@ -257,6 +259,7 @@ impl Database {
         )
     }
 
+    /// Current revision of the database, which increases with every write
     pub fn revision(&self) -> Revision {
         let mut uuid = ptr::null();
         // SAFETY: the database is valid, notmuch owns the returned uuid
@@ -276,6 +279,7 @@ impl Database {
         (!path.is_null()).then(|| to_path(unsafe { CStr::from_ptr(path) }))
     }
 
+    /// Mail root as configured in notmuch, if set
     pub fn mail_root(&self) -> Option<PathBuf> {
         // SAFETY: the database is valid, notmuch owns the returned string
         let root = unsafe { (self.lib.notmuch_config_get)(self.raw, ffi::CONFIG_MAIL_ROOT) };
@@ -495,6 +499,7 @@ impl std::fmt::Debug for Message<'_> {
     }
 }
 
+/// Message of a notmuch database, that cannot outlive it
 pub struct Message<'db> {
     lib: &'static ffi::Library,
     raw: *mut ffi::Message,

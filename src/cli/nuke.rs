@@ -2,6 +2,7 @@ use std::{fs::remove_dir_all, io};
 
 use imapmaildir::config::Account;
 
+/// Removes the maildir of the account including all mails
 pub fn nuke(config: &Account) -> io::Result<()> {
     let mails = config.maildir_base_path();
     if mails.try_exists()? {

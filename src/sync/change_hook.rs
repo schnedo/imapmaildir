@@ -40,6 +40,7 @@ pub struct Batching {
 }
 
 impl Batching {
+    /// Creates batching settings
     #[must_use]
     pub fn new(throttle: Duration, max_pending: usize) -> Self {
         Self {
@@ -66,6 +67,7 @@ pub enum HookFailure {
     Warn,
 }
 
+/// Failures of running the change hook
 #[derive(Debug, Error)]
 pub enum HookError {
     #[error("cannot start hook: {0}")]
@@ -297,6 +299,7 @@ impl ChangeBatch {
     }
 }
 
+/// Collects changes into the batch and signals that it is not empty anymore
 struct BatchSink {
     batch: Arc<Mutex<ChangeBatch>>,
     changed: MTx<mpsc::Array<()>>,

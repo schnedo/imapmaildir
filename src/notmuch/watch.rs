@@ -22,6 +22,7 @@ use super::{Error, Job, OwnChanges, Revision, call_blocking, only_own_changes, t
 
 /// Name of the Xapian file, that gets replaced by every commit
 const VERSION_FILE: &str = "iamglass";
+/// Directory of the Xapian files in a notmuch database
 const XAPIAN_DIR: &str = "xapian";
 
 /// Watches the Xapian files of a database, as long as anybody subscribed to its changes
@@ -103,6 +104,7 @@ impl Changes {
 }
 
 impl DatabaseWatch {
+    /// Creates a watch of the Xapian directory, that reports changes as jobs
     pub fn new(xapian: PathBuf, jobs: MTx<Array<Job>>) -> Self {
         Self {
             xapian,
@@ -219,10 +221,12 @@ impl DatabaseWatch {
     }
 }
 
+/// Events of the parent directory, that indicate the database got replaced or removed
 const XAPIAN_MASK: WatchMask = WatchMask::MOVED_TO
     .union(WatchMask::DELETE_SELF)
     .union(WatchMask::MOVE_SELF);
 
+/// Watches the Xapian files via inotify and notifies subscribers about new revisions
 struct Watcher {
     inotify: Inotify,
     xapian: PathBuf,

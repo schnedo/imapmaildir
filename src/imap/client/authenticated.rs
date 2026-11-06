@@ -21,6 +21,7 @@ use crate::{
     sync::{ByteBudget, Task},
 };
 
+/// Connection after login, before a mailbox is selected
 pub struct AuthenticatedClient {
     connection: Connection,
     capabilities: Capabilities,
@@ -28,6 +29,7 @@ pub struct AuthenticatedClient {
 }
 
 impl AuthenticatedClient {
+    /// Wraps a logged-in connection. Fails if the server lacks CONDSTORE.
     pub fn new(connection: Connection, capabilities: Capabilities) -> Result<Self, Error> {
         if !capabilities.contains(Capability::Condstore) {
             return Err(Error::MissingCapability(Capability::Condstore));
@@ -45,6 +47,7 @@ impl AuthenticatedClient {
         })
     }
 
+    /// Fails if the server does not support IDLE
     pub fn require_idle(&self) -> Result<(), Error> {
         if self.capabilities.contains(Capability::Idle) {
             Ok(())
@@ -53,6 +56,7 @@ impl AuthenticatedClient {
         }
     }
 
+    /// Selects `mailbox` and returns the client for it with the changes since the cached state
     pub async fn select(
         mut self,
         task_tx: MAsyncTx<Array<Task>>,
@@ -276,6 +280,7 @@ impl ListHandler {
     }
 }
 
+/// Collects the mailbox state and changes reported by SELECT
 struct SelectHandler<'a> {
     cached_uid_validity: Option<UidValidity>,
     capabilities: &'a mut Capabilities,

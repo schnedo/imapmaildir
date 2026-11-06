@@ -1,5 +1,6 @@
 use std::{cell::Cell, time::Duration};
 
+/// Lower bound for the timeout, as shorter ones would reissue IDLE needlessly often
 const MIN_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Timeout for reissuing IDLE, which shrinks when the server ends IDLE earlier, as servers do
@@ -11,6 +12,7 @@ pub struct IdleTimeout {
 }
 
 impl IdleTimeout {
+    /// Starts with the configured timeout
     #[must_use]
     pub fn new(configured: Duration) -> Self {
         Self {
@@ -18,6 +20,7 @@ impl IdleTimeout {
         }
     }
 
+    /// Current timeout
     #[must_use]
     pub fn get(&self) -> Duration {
         self.current.get()

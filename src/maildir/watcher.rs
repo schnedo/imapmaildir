@@ -18,12 +18,14 @@ use rustix::{
 };
 use thiserror::Error;
 
+/// Sender of changes detected by the watcher
 type ChangeTx = MAsyncTx<mpsc::Array<Change>>;
 
 /// Time to wait for the second event of a rename, before treating the first one as a move into or
 /// out of the watched directory
 const MOVE_MATCH_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// Event from the inotify reader
 enum WatchEvent {
     Inotify(inotify::Event<OsString>),
     Error(Error),
@@ -231,6 +233,7 @@ fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Erro
     Ok(())
 }
 
+/// Handle to a running watch of a `cur` directory
 #[derive(Debug, Clone)]
 pub struct Watch {
     ignore_files: Arc<Mutex<HashSet<OsString>>>,
@@ -468,6 +471,7 @@ impl Watch {
         Ok(())
     }
 
+    /// Ignores the next change event of `file`, because we caused it ourselves
     pub async fn ignore_next_update_for_file(&self, file: &Path) {
         if let Some(name) = file.file_name() {
             log::trace!("ignoring next update of {}", file.display());
@@ -475,6 +479,7 @@ impl Watch {
         }
     }
 
+    /// Stops ignoring `file`, e.g. because the operation failed
     pub async fn unignore_file(&self, file: &Path) {
         if let Some(name) = file.file_name() {
             self.ignore_files.lock().await.remove(name);
@@ -535,6 +540,7 @@ fn into_string(filename: OsString) -> Result<String, Error> {
         .map_err(|filename| Error::InvalidFilename(filename.to_string_lossy().into_owned()))
 }
 
+/// Error watching a maildir
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Cannot watch {0}: {1}")]
@@ -553,6 +559,7 @@ pub enum Error {
     MoveToCur(io::Error),
 }
 
+/// Change of a mail in `cur` identified by file name
 #[derive(Debug)]
 pub enum Change {
     Deletion(String),
