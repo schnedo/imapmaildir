@@ -71,6 +71,11 @@ impl RepositoryHandle {
         }
     }
 
+    /// Has the recorded changes passed on, e.g. to the hook, after the tasks queued before
+    pub async fn flush_changes(&self) -> Result<(), Error> {
+        self.send(Task::FlushChanges).await
+    }
+
     /// Applies stored changes, each of its mails
     pub async fn apply_flag_changes(
         &self,

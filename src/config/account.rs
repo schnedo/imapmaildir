@@ -6,9 +6,10 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
-    config::{Auth, Batching, HookFailure, Hooks, NotmuchConfig},
+    config::{Auth, HookFailure, Hooks, NotmuchConfig},
     imap::ConnectionConfig,
     notmuch, sync,
+    sync::DEFAULT_MAX_PENDING,
 };
 
 /// Account config as written in the config file, before defaults and paths are resolved
@@ -30,8 +31,6 @@ struct AccountConfigFile {
     on_local_change_failure: HookFailure,
     #[serde(default, with = "humantime_serde")]
     on_local_change_timeout: Option<Duration>,
-    #[serde(default, with = "humantime_serde")]
-    change_hook_throttle: Option<Duration>,
     change_hook_max_pending: Option<NonZeroUsize>,
     store_batch_size: Option<NonZeroUsize>,
     store_batch_max_bytes: Option<NonZeroUsize>,
@@ -123,15 +122,9 @@ impl Account {
                 config.on_local_change,
                 config.on_local_change_failure,
                 config.on_local_change_timeout,
-                {
-                    let default = Batching::default();
-                    Batching::new(
-                        config.change_hook_throttle.unwrap_or(default.throttle()),
-                        config
-                            .change_hook_max_pending
-                            .map_or(default.max_pending(), NonZeroUsize::get),
-                    )
-                },
+                config
+                    .change_hook_max_pending
+                    .map_or(DEFAULT_MAX_PENDING, NonZeroUsize::get),
             ),
             sync: {
                 let default = sync::Config::default();

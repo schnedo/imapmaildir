@@ -111,10 +111,13 @@ Configure using the home-manager module:
 [notmuch](https://notmuchmail.org) or notification daemons, about changes of
 the remote state, that got applied to the local maildir. `onChange`
 (`on_local_change` in the account config) runs once per batch of changes of a
-mailbox and gets them as tab-separated lines on stdin. Changes get merged per
+mailbox, or once for the batches of several mailboxes, see below, and gets them
+as tab-separated lines on stdin. Changes get merged per
 mail, e.g. a downloaded mail flagged right after is reported as a single
-download. A batch gets passed to the hook `change_hook_throttle` (default
-`100ms`) after its first change.
+download. A mailbox collects its changes until its sync round ends, or until
+`change_hook_max_pending` (default 10000) changes are collected, and then
+queues them for the hook. Batches that wait for a running hook to finish share
+its next run.
 
 Each line has the format
 
@@ -128,7 +131,7 @@ Each line has the format
 | `uploaded`   | local mail now on remote, file renamed with UID | `uid=7 flags=S`           |
 | `deleted`    | mail deleted on remote, removed locally         | `uid=3`                   |
 | `flags`      | flags changed on remote, applied locally        | `uid=5 added=F removed=S` |
-| `overflow`   | too many changes, rescan the mailbox            |                           |
+| `overflow`   | changes were not tracked, rescan the mailbox    |                           |
 
 - `path` is the absolute current path of the mail, or the removed one for
   `deleted`. `old_path` is the previous path for `uploaded` and `flags`, as
@@ -142,9 +145,7 @@ Each line has the format
   lines may become stale, if other programs changed them before the hook fired.
 - The first download into an empty maildir gets reported as a single
   `overflow` line instead of one line per mail.
-- At most `change_hook_max_pending` (default 10000) changes get queued per
-  mailbox. Beyond that, changes of the mailbox get dropped and a single
-  `overflow` line asks for a rescan. Syncing never waits for the hook.
+- Syncing never waits for the hook. Batches queue up while it runs.
 
 Hooks run without the terminal in their own process group, so pressing Ctrl-C
 does not interrupt them. Their output gets logged, stdout as info and stderr as
@@ -158,7 +159,9 @@ with an error. Set `onChangeFailure` (`on_local_change_failure`) to `"warn"` to
 only log a warning instead.
 
 The hooks of all mailboxes run one at a time, so a hook never overlaps with
-another one. A hook that hangs delays all others. Set `onChangeTimeoutSeconds`
+another one. The batches of mailboxes, that wait for a running hook to finish,
+are passed to the next run together, which tells them apart by the mailbox
+column. A hook that hangs delays all others. Set `onChangeTimeoutSeconds`
 (`on_local_change_timeout`, e.g. `"30s"`) to kill hooks, together with the
 processes in their process group, that run longer, and treat them as failed.
 There is no limit by default.

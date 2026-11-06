@@ -180,6 +180,13 @@ impl MaildirRepository {
         self.changes.borrow().is_some()
     }
 
+    /// Has the recorder pass on the changes it holds back
+    pub fn flush_changes(&self) {
+        if let Some(changes) = &*self.changes.borrow() {
+            changes.flush();
+        }
+    }
+
     pub fn record_changes(&self, changes: Option<ChangeRecorder>) {
         *self.changes.borrow_mut() = changes;
     }

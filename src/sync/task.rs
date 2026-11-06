@@ -32,4 +32,6 @@ pub enum Task {
     DetectChanges(TxOneshot<LocalChanges>),
     DetectTagChanges(TxOneshot<LocalChanges>),
     CompleteTagChanges(Revision),
+    /// Passes on the changes recorded so far, e.g. to the hook
+    FlushChanges,
 }

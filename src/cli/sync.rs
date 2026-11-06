@@ -154,7 +154,7 @@ impl Session<'_> {
         let (sink, task) = batched_hook(
             &cmd,
             mailbox,
-            hooks.batching(),
+            hooks.max_pending(),
             hooks.on_local_change_timeout(),
             failure_handler(
                 "on_local_change",

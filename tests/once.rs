@@ -3,7 +3,7 @@ pub mod fixtures;
 use std::{collections::HashSet, ffi::OsString, fs, path::PathBuf, sync::Arc};
 
 use assertables::*;
-use imapmaildir::{Batching, ChangeRecorder, HookThread, MailChange, batched_hook};
+use imapmaildir::{ChangeRecorder, DEFAULT_MAX_PENDING, HookThread, MailChange, batched_hook};
 use rstest::*;
 
 use crate::fixtures::*;
@@ -494,7 +494,7 @@ async fn test_batched_hook_gets_lines(#[future] mail_setup: MailSetup) {
     let (sink, hook_task) = batched_hook(
         &cmd,
         "INBOX",
-        Batching::default(),
+        DEFAULT_MAX_PENDING,
         None,
         Arc::new(|e| panic!("hook failed: {e}")),
         hooks.runner(),

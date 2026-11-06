@@ -24,6 +24,6 @@ pub use crate::sync::Syncer;
 pub use crate::sync::Transient;
 pub use crate::sync::reconnecting;
 pub use crate::sync::{
-    Batching, Detection, FailureHandler, HookError, HookFailure, HookRunner, HookThread,
+    DEFAULT_MAX_PENDING, Detection, FailureHandler, HookError, HookFailure, HookRunner, HookThread,
     MoveReporter, batched_hook, failure_handler, planner,
 };

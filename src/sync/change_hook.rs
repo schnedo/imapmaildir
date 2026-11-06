@@ -11,12 +11,11 @@ use std::{
     rc::Rc,
     sync::Arc,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use compio::{io::AsyncWriteExt as _, runtime::JoinHandle};
-use crossfire::{MTx, mpsc};
-use derive_getters::Getters;
+use crossfire::{MTx, mpsc, oneshot::RxOneshot};
 use futures::{
     channel::oneshot,
     future::{self, Either},
@@ -30,33 +29,8 @@ use crate::{
     sync::{HookRunner, Shutdown},
 };
 
-/// When batched changes get passed to a hook
-#[derive(Getters, Debug, Clone, Copy)]
-pub struct Batching {
-    /// Time after the first change of a batch got recorded, until the hook runs
-    #[getter(copy)]
-    throttle: Duration,
-    /// Changes queued, beyond which they get dropped for a single overflow
-    #[getter(copy)]
-    max_pending: usize,
-}
-
-impl Batching {
-    /// Creates batching settings
-    #[must_use]
-    pub fn new(throttle: Duration, max_pending: usize) -> Self {
-        Self {
-            throttle,
-            max_pending,
-        }
-    }
-}
-
-impl Default for Batching {
-    fn default() -> Self {
-        Self::new(Duration::from_millis(100), 10_000)
-    }
-}
+/// Changes a mailbox collects before it queues them for the hook, unless set otherwise
+pub const DEFAULT_MAX_PENDING: usize = 10_000;
 
 /// What to do, if a change hook fails
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -87,7 +61,7 @@ pub enum HookError {
 }
 
 /// Called with the failure of a hook. The hook keeps running, if it returns.
-pub type FailureHandler = Arc<dyn Fn(HookError) + Send + Sync>;
+pub type FailureHandler = Arc<dyn Fn(&HookError) + Send + Sync>;
 
 /// Handles hook failures according to `failure`. Fails `shutdown` to stop syncing.
 #[must_use]
@@ -185,8 +159,8 @@ fn uid_of(change: &MailChange) -> Option<Uid> {
     }
 }
 
-/// Changes of a mailbox, merged per mail. Holds at most `max_pending` changes and drops all of
-/// them for a single overflow beyond that.
+/// Changes of a mailbox, merged per mail. Is full at `max_pending` changes. Reports a single
+/// overflow instead of its changes, if it got told so.
 #[derive(Debug)]
 pub(super) struct ChangeBatch {
     changes: Vec<Option<MailChange>>,
@@ -194,8 +168,6 @@ pub(super) struct ChangeBatch {
     len: usize,
     overflowed: bool,
     max_pending: usize,
-    /// When the first change of the batch got recorded
-    first_recorded: Option<Instant>,
 }
 
 impl ChangeBatch {
@@ -206,12 +178,16 @@ impl ChangeBatch {
             len: 0,
             overflowed: false,
             max_pending,
-            first_recorded: None,
         }
     }
 
     pub(super) fn is_empty(&self) -> bool {
         !self.overflowed && self.len == 0
+    }
+
+    /// Whether the batch reached the limit of changes it should hold
+    fn is_full(&self) -> bool {
+        self.len >= self.max_pending
     }
 
     fn overflow(&mut self) {
@@ -226,7 +202,6 @@ impl ChangeBatch {
         if self.overflowed || matches!(change, MailChange::KeywordsChanged { .. }) {
             return;
         }
-        self.first_recorded.get_or_insert_with(Instant::now);
         let Some(uid) = uid_of(&change) else {
             self.overflow();
             return;
@@ -246,9 +221,6 @@ impl ChangeBatch {
         } else {
             self.changes[position] = Some(change);
             self.len += 1;
-            if self.len > self.max_pending {
-                self.overflow();
-            }
         }
     }
 
@@ -305,65 +277,94 @@ impl ChangeBatch {
     }
 }
 
-/// Collects changes into the batch and signals that it is not empty anymore
+/// Collects changes into a batch, which it passes on to the hook runner, once it is full or got
+/// flushed. Flushes when dropped.
 struct BatchSink {
-    batch: Rc<RefCell<ChangeBatch>>,
-    changed: MTx<mpsc::Array<()>>,
+    batch: RefCell<ChangeBatch>,
+    cmd: Vec<OsString>,
+    mailbox: String,
+    timeout: Option<Duration>,
+    on_failure: FailureHandler,
+    runner: HookRunner,
+    /// Tells the task awaiting the hook about batches, that got passed on
+    passed_on: MTx<mpsc::List<RxOneshot<()>>>,
+}
+
+impl BatchSink {
+    /// Passes the batch on to the runner, if it has changes
+    fn pass_on(&self) {
+        let max_pending = self.batch.borrow().max_pending;
+        let batch = mem::replace(&mut *self.batch.borrow_mut(), ChangeBatch::new(max_pending));
+        if batch.is_empty() {
+            return;
+        }
+        match self.runner.queue(
+            &self.cmd,
+            &self.mailbox,
+            batch,
+            self.timeout,
+            &self.on_failure,
+        ) {
+            Ok(handled) => {
+                // closed, if the task got dropped, which has nobody to tell then
+                let _ = self.passed_on.send(handled);
+            }
+            Err(e) => (self.on_failure)(&e),
+        }
+    }
 }
 
 impl ChangeSink for BatchSink {
     fn record(&self, change: MailChange) {
-        self.batch.borrow_mut().add(change);
-        // a full channel already announces a change, a closed one has nobody to tell
-        let _ = self.changed.try_send(());
+        let full = {
+            let mut batch = self.batch.borrow_mut();
+            batch.add(change);
+            batch.is_full()
+        };
+        if full {
+            self.pass_on();
+        }
+    }
+
+    fn flush(&self) {
+        self.pass_on();
     }
 }
 
-/// Runs `cmd` once per batch of changes of `mailbox`, passing them on stdin. A batch gets handled
-/// the configured throttle after its first change got recorded. The returned task finishes after
-/// the sink got dropped and the last batch got handled. The hooks of all mailboxes sharing `runner`
-/// run one at a time. A hook running longer than `timeout` gets killed and fails.
+impl Drop for BatchSink {
+    fn drop(&mut self) {
+        self.pass_on();
+    }
+}
+
+/// Collects the changes of `mailbox` and runs `cmd` with them on stdin, once a batch is full, got
+/// flushed or the sink got dropped. The hooks of all mailboxes sharing `runner` run one at a time,
+/// and share the next run, if they wait. A hook running longer than `timeout` gets killed and
+/// fails. A batch is full at `max_pending` changes. The returned task finishes after the sink got
+/// dropped and the hook handled the last batch.
 pub fn batched_hook(
     cmd: &[OsString],
     mailbox: &str,
-    batching: Batching,
+    max_pending: usize,
     timeout: Option<Duration>,
     on_failure: FailureHandler,
     runner: HookRunner,
 ) -> (Rc<dyn ChangeSink>, JoinHandle<()>) {
-    let (changed_tx, changed_rx) = mpsc::bounded_blocking_async(1);
-    let max_pending = batching.max_pending();
-    let batch = Rc::new(RefCell::new(ChangeBatch::new(max_pending)));
+    let (passed_on_tx, passed_on_rx) = mpsc::unbounded_async::<RxOneshot<()>>();
     let sink = Rc::new(BatchSink {
-        batch: batch.clone(),
-        changed: changed_tx,
+        batch: RefCell::new(ChangeBatch::new(max_pending)),
+        cmd: cmd.to_vec(),
+        mailbox: mailbox.to_string(),
+        timeout,
+        on_failure: on_failure.clone(),
+        runner,
+        passed_on: passed_on_tx,
     });
-    let cmd = cmd.to_vec();
-    let mailbox = mailbox.to_string();
     let handle = compio::runtime::spawn(async move {
-        loop {
-            let mut closed = changed_rx.recv().await.is_err();
-            let first_recorded = batch.borrow().first_recorded;
-            if let Some(first_recorded) = first_recorded {
-                // changes recorded while the previous hook ran wait only for the rest of it
-                let deadline = first_recorded + batching.throttle();
-                while !closed {
-                    match compio::time::timeout_at(deadline, changed_rx.recv()).await {
-                        Err(_) => break,
-                        Ok(received) => closed = received.is_err(),
-                    }
-                }
-            } else if !closed {
-                // notified of a change, that got handled with the previous batch already
-                continue;
-            }
-            // changes recorded while the hook runs go into the next batch
-            let pending = mem::replace(&mut *batch.borrow_mut(), ChangeBatch::new(max_pending));
-            runner
-                .run(&cmd, &mailbox, pending, timeout, &on_failure)
-                .await;
-            if closed {
-                break;
+        // ends with the sink, after all batches it passed on got handled
+        while let Ok(handled) = passed_on_rx.recv().await {
+            if handled.await.is_err() {
+                on_failure(&HookError::RunnerStopped);
             }
         }
     });
@@ -371,31 +372,31 @@ pub fn batched_hook(
     (sink, handle)
 }
 
-pub(super) async fn run_batch(
+/// Calls the hook once with the changes of all `batches`, each of a mailbox. Does nothing, if they
+/// are empty.
+pub(super) async fn run_batches(
     cmd: &[OsString],
-    mailbox: &str,
-    batch: ChangeBatch,
+    batches: Vec<(String, ChangeBatch)>,
     timeout: Option<Duration>,
-    on_failure: &FailureHandler,
-) {
-    if batch.is_empty() {
-        return;
-    }
+) -> Result<(), HookError> {
     let Some((executable, args)) = cmd.split_first() else {
-        return;
+        return Ok(());
     };
-    log::info!("calling on_local_change hook for {mailbox}");
-    if let Err(e) = call_with_input(
-        executable,
-        args,
-        batch.into_lines(mailbox),
-        mailbox,
-        timeout,
-    )
-    .await
-    {
-        on_failure(e);
+    let (mailboxes, input): (Vec<_>, String) = batches
+        .into_iter()
+        .filter(|(_, batch)| !batch.is_empty())
+        .map(|(mailbox, batch)| {
+            let lines = batch.into_lines(&mailbox);
+            (mailbox, lines)
+        })
+        .unzip();
+    if input.is_empty() {
+        return Ok(());
     }
+    let mailboxes = mailboxes.join(", ");
+    log::info!("calling on_local_change hook for {mailboxes}");
+
+    call_with_input(executable, args, input, &mailboxes, timeout).await
 }
 
 /// Lines of hook output get logged in parts of at most this many bytes
@@ -568,7 +569,7 @@ fn log_line(line: &[u8], mailbox: &str, level: log::Level) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, sync::Mutex};
+    use std::{fs, path::PathBuf, sync::Mutex, time::Instant};
 
     use assertables::*;
     use rstest::*;
@@ -738,29 +739,29 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_overflows_beyond_max_pending() {
+    fn test_batch_is_full_at_max_pending() {
         let mut batch = ChangeBatch::new(2);
 
         batch.add(downloaded(1));
+        assert!(!batch.is_full());
         batch.add(downloaded(2));
-        batch.add(downloaded(3));
-        batch.add(downloaded(4));
 
-        assert!(!batch.is_empty());
-        assert_eq!(batch.into_lines("INBOX"), "INBOX\toverflow\t\t\t\n");
+        assert!(batch.is_full());
+        assert_eq!(
+            batch.into_lines("INBOX"),
+            "INBOX\tdownloaded\t/m/cur/1:2,S\tuid=1 flags=S\t\nINBOX\tdownloaded\t/m/cur/2:2,S\tuid=2 flags=S\t\n"
+        );
     }
 
     #[test]
-    fn test_batch_remembers_first_change() {
+    fn test_batch_reports_overflow_instead_of_changes() {
         let mut batch = ChangeBatch::new(10);
-        assert_none!(batch.first_recorded);
 
-        batch.add(flags_changed(1, "S", "FS"));
-        let first = assert_some!(batch.first_recorded);
-        batch.add(flags_changed(1, "FS", "S"));
+        batch.add(downloaded(1));
+        batch.add(MailChange::Overflow);
         batch.add(downloaded(2));
 
-        assert_eq!(batch.first_recorded, Some(first));
+        assert_eq!(batch.into_lines("INBOX"), "INBOX\toverflow\t\t\t\n");
     }
 
     #[compio::test]
@@ -772,7 +773,7 @@ mod tests {
         let (sink, handle) = batched_hook(
             &command(&format!("cat >> '{}'", output.display())),
             "INBOX",
-            Batching::default(),
+            10_000,
             None,
             on_failure,
             hooks.runner(),
@@ -799,7 +800,7 @@ mod tests {
         let (sink, handle) = batched_hook(
             &command("exit 3"),
             "INBOX",
-            Batching::default(),
+            10_000,
             None,
             on_failure,
             hooks.runner(),
@@ -815,7 +816,7 @@ mod tests {
     }
 
     #[compio::test]
-    async fn test_batched_hook_runs_throttled_during_continuous_changes() {
+    async fn test_batched_hook_passes_full_batch_on_without_waiting_for_the_sink() {
         let hooks = assert_ok!(HookThread::start());
         let dir = assert_ok!(TempDir::new());
         let output = dir.path().join("out");
@@ -823,24 +824,56 @@ mod tests {
         let (sink, handle) = batched_hook(
             &command(&format!("cat >> '{}'", output.display())),
             "INBOX",
-            Batching::new(Duration::from_millis(100), 1000),
+            2,
             None,
             on_failure,
             hooks.runner(),
         );
 
-        let mut id = 0;
-        while fs::read_to_string(&output).unwrap_or_default().is_empty() {
-            id += 1;
-            // a debounce would never run the hook, as changes keep coming
-            assert_lt!(id, 250);
+        for id in 1..=3 {
             sink.record(downloaded(id));
-            compio::time::sleep(Duration::from_millis(20)).await;
+        }
+        while fs::read_to_string(&output).unwrap_or_default().is_empty() {
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // the third change is still held back
+        assert_eq!(assert_ok!(fs::read_to_string(&output)).lines().count(), 2);
+        drop(sink);
+        handle
+            .await
+            .unwrap_or_else(|_| panic!("hook task panicked"));
+
+        assert_eq!(assert_ok!(fs::read_to_string(&output)).lines().count(), 3);
+        assert_is_empty!(assert_ok!(failures.lock()).as_slice());
+    }
+
+    #[compio::test]
+    async fn test_batched_hook_passes_changes_on_when_flushed() {
+        let hooks = assert_ok!(HookThread::start());
+        let dir = assert_ok!(TempDir::new());
+        let output = dir.path().join("out");
+        let (on_failure, failures) = collecting_handler();
+        let (sink, handle) = batched_hook(
+            &command(&format!("cat >> '{}'", output.display())),
+            "INBOX",
+            100,
+            None,
+            on_failure,
+            hooks.runner(),
+        );
+
+        sink.record(downloaded(1));
+        assert!(!output.exists());
+        sink.flush();
+        while fs::read_to_string(&output).unwrap_or_default().is_empty() {
+            compio::time::sleep(Duration::from_millis(10)).await;
         }
         drop(sink);
         handle
             .await
             .unwrap_or_else(|_| panic!("hook task panicked"));
+
+        assert_eq!(assert_ok!(fs::read_to_string(&output)).lines().count(), 1);
         assert_is_empty!(assert_ok!(failures.lock()).as_slice());
     }
 
@@ -851,7 +884,7 @@ mod tests {
         let (sink, handle) = batched_hook(
             &command("true"),
             "INBOX",
-            Batching::new(Duration::from_millis(100), 100_000),
+            100_000,
             None,
             on_failure,
             hooks.runner(),
@@ -880,7 +913,7 @@ mod tests {
                 marker.display()
             )),
             "INBOX",
-            Batching::new(Duration::ZERO, 100),
+            100,
             None,
             on_failure,
             hooks.runner(),
@@ -908,7 +941,7 @@ mod tests {
             // background jobs get /dev/null as stdin without redirecting it explicitly
             &command("exec 3<&0; sleep 3 <&3 & exit 0"),
             "INBOX",
-            Batching::new(Duration::ZERO, 100_000),
+            100_000,
             None,
             on_failure,
             hooks.runner(),
@@ -928,42 +961,93 @@ mod tests {
         assert_is_empty!(assert_ok!(failures.lock()).as_slice());
     }
 
+    /// A hook, that logs when it starts and ends, and keeps its input
+    fn logging_hook(dir: &TempDir) -> (Vec<OsString>, PathBuf, PathBuf) {
+        let log = dir.path().join("log");
+        let input = dir.path().join("input");
+        let script = format!(
+            "echo start >> '{0}'; cat >> '{1}'; sleep 0.3; echo end >> '{0}'",
+            log.display(),
+            input.display()
+        );
+
+        (command(&script), log, input)
+    }
+
     #[compio::test]
     async fn test_batched_hooks_of_mailboxes_sharing_a_runner_do_not_overlap() {
-        let hooks = assert_ok!(HookThread::start());
+        let thread = assert_ok!(HookThread::start());
         let dir = assert_ok!(TempDir::new());
-        let log = dir.path().join("log");
+        let (cmd, log, input) = logging_hook(&dir);
         let (on_failure, failures) = collecting_handler();
-        let shared = hooks.runner();
-        let script = format!(
-            "cat > /dev/null; echo start >> '{0}'; sleep 0.3; echo end >> '{0}'",
-            log.display()
-        );
-        let hooks: Vec<_> = ["INBOX", "DRAFT", "SENT"]
+        let tasks: Vec<_> = ["INBOX", "DRAFT", "SENT"]
             .into_iter()
             .map(|mailbox| {
-                let (sink, handle) = batched_hook(
-                    &command(&script),
+                let (sink, task) = batched_hook(
+                    &cmd,
                     mailbox,
-                    Batching::new(Duration::ZERO, 100),
+                    100,
                     None,
                     on_failure.clone(),
-                    shared.clone(),
+                    thread.runner(),
                 );
                 sink.record(downloaded(1));
-                handle
+                task
             })
             .collect();
-        for handle in hooks {
-            handle
-                .await
-                .unwrap_or_else(|_| panic!("hook task panicked"));
+        for task in tasks {
+            task.await.unwrap_or_else(|_| panic!("hook task panicked"));
+        }
+
+        let log = assert_ok!(fs::read_to_string(&log));
+        assert!(!log.contains("start\nstart"), "hooks overlapped: {log}");
+        assert!(!log.contains("end\nend"), "hooks overlapped: {log}");
+        let input = assert_ok!(fs::read_to_string(&input));
+        for mailbox in ["INBOX", "DRAFT", "SENT"] {
+            assert_contains!(input, &format!("{mailbox}\tdownloaded"));
+        }
+        assert_is_empty!(assert_ok!(failures.lock()).as_slice());
+    }
+
+    #[compio::test]
+    async fn test_batched_hooks_of_mailboxes_waiting_for_a_hook_share_the_next_run() {
+        let thread = assert_ok!(HookThread::start());
+        let dir = assert_ok!(TempDir::new());
+        let (cmd, log, input) = logging_hook(&dir);
+        let (on_failure, failures) = collecting_handler();
+        let hook = |mailbox: &str| {
+            batched_hook(
+                &cmd,
+                mailbox,
+                100,
+                None,
+                on_failure.clone(),
+                thread.runner(),
+            )
+        };
+        let (first_sink, first_task) = hook("INBOX");
+        first_sink.record(downloaded(1));
+        first_sink.flush();
+        while !fs::read_to_string(&log).is_ok_and(|log| log.contains("start")) {
+            compio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // the first hook is running, so these two have to wait for it
+        let (draft_sink, draft_task) = hook("DRAFT");
+        let (sent_sink, sent_task) = hook("SENT");
+        draft_sink.record(downloaded(2));
+        sent_sink.record(downloaded(3));
+        drop((first_sink, draft_sink, sent_sink));
+
+        for task in [first_task, draft_task, sent_task] {
+            task.await.unwrap_or_else(|_| panic!("hook task panicked"));
         }
 
         assert_eq!(
             assert_ok!(fs::read_to_string(&log)),
-            "start\nend\nstart\nend\nstart\nend\n"
+            "start\nend\nstart\nend\n"
         );
+        let input = assert_ok!(fs::read_to_string(&input));
+        assert_eq!(input.lines().count(), 3);
         assert_is_empty!(assert_ok!(failures.lock()).as_slice());
     }
 
@@ -984,7 +1068,7 @@ mod tests {
         let (sink, handle) = batched_hook(
             &command("sleep 30"),
             "INBOX",
-            Batching::new(Duration::ZERO, 100),
+            100,
             Some(Duration::from_millis(200)),
             on_failure,
             hooks.runner(),
