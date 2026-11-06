@@ -1,5 +1,7 @@
+/// Account configuration
 pub mod config;
 mod imap;
+/// Logging setup
 pub mod logging;
 mod maildir;
 mod notmuch;

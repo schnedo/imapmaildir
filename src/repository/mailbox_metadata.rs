@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::repository::{ModSeq, UidValidity};
 
+/// Mailbox state that must match the server to continue syncing
 #[derive(Debug)]
 pub struct MailboxMetadata {
     uid_validity: UidValidity,
@@ -11,15 +12,18 @@ pub struct MailboxMetadata {
 }
 
 impl MailboxMetadata {
+    /// `UIDVALIDITY` of the mailbox the local mails belong to
     pub fn uid_validity(&self) -> UidValidity {
         self.uid_validity
     }
 
+    /// Highest `MODSEQ` synced from the server
     pub fn highest_modseq(&self) -> ModSeq {
         self.highest_modseq
     }
 }
 
+/// Collects the fields of [`MailboxMetadata`]
 #[derive(Default, Debug)]
 pub struct MailboxMetadataBuilder {
     uid_validity: Option<UidValidity>,
@@ -27,6 +31,7 @@ pub struct MailboxMetadataBuilder {
 }
 
 impl MailboxMetadataBuilder {
+    /// Fails if any field is missing
     pub fn build(self) -> Result<MailboxMetadata, MailboxMetadataBuilderError> {
         match (self.uid_validity, self.highest_modseq) {
             (Some(uid_validity), Some(highest_modseq)) => Ok(MailboxMetadata {
@@ -46,15 +51,18 @@ impl MailboxMetadataBuilder {
             }
         }
     }
+    /// Sets `UIDVALIDITY`
     pub fn uid_validity(&mut self, uid_validity: UidValidity) {
         self.uid_validity = Some(uid_validity);
     }
 
+    /// Sets the highest `MODSEQ`
     pub fn highest_modseq(&mut self, highest_modseq: ModSeq) {
         self.highest_modseq = Some(highest_modseq);
     }
 }
 
+/// Error for a [`MailboxMetadata`] that lacks fields
 #[derive(Debug, Error)]
 pub struct MailboxMetadataBuilderError {
     missing_fields: Vec<String>,

@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::repository::{Uid, uid::UidRangeInclusiveIterator};
 
+/// Single UID or inclusive range of UIDs, as in an IMAP sequence set
 #[derive(Debug, PartialEq, Clone)]
 pub struct SequenceRange {
     start: Uid,
@@ -89,20 +90,24 @@ impl TryFrom<&imap_proto::rfc4315::UidSetMember> for SequenceRange {
     }
 }
 
+/// Error for building a sequence set without UIDs
 #[derive(Debug, Error, Default)]
 #[error("No numbers in sequence set")]
 pub struct EmptySetError {}
 
+/// Collects UIDs into a [`SequenceSet`], deduplicating and merging them into ranges
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct SequenceSetBuilder {
     nums: HashSet<Uid>,
 }
 
 impl SequenceSetBuilder {
+    /// Adds a UID to the set
     pub fn add(&mut self, uid: Uid) {
         self.nums.insert(uid);
     }
 
+    /// Fails if no UID got added
     pub fn build(mut self) -> std::result::Result<SequenceSet, EmptySetError> {
         let mut sorted_nums: Vec<Uid> = self.nums.drain().collect();
         sorted_nums.sort_unstable();
@@ -140,6 +145,7 @@ impl SequenceSet {
     }
 }
 
+/// Non-empty, sorted set of UIDs stored as ranges, as in an IMAP sequence set
 #[derive(Debug, PartialEq)]
 pub struct SequenceSet {
     ranges: Vec<SequenceRange>,
@@ -152,10 +158,12 @@ impl SequenceSet {
         }
     }
 
+    /// Set of all valid UIDs
     pub fn all() -> Self {
         Self::with_range(1u32.try_into().expect("1 should be nonzero"), Uid::MAX)
     }
 
+    /// Iterates all UIDs of the set in ascending order
     pub fn iter(&self) -> impl Iterator<Item = Uid> {
         self.ranges.iter().flat_map(SequenceRange::iter)
     }

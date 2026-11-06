@@ -15,6 +15,7 @@ use crate::imap::{
     transport::{self, Connection, Continued, ResponseData, ResponseHandler},
 };
 
+/// Credentials for LOGIN/AUTHENTICATE PLAIN, with the password read from a command
 #[derive(Deserialize, Getters, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct PlainAuth {
@@ -24,6 +25,7 @@ pub struct PlainAuth {
 }
 
 impl PlainAuth {
+    /// Creates credentials from the user and the command printing the password
     #[must_use]
     pub fn new(user: String, password_cmd: Vec<String>) -> Self {
         Self { user, password_cmd }
@@ -36,6 +38,7 @@ impl PlainAuth {
     }
 }
 
+/// Credentials for OAuth 2.0 login, with the access token read from a command
 #[derive(Deserialize, Getters, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct OAuth2Auth {
@@ -46,6 +49,7 @@ pub struct OAuth2Auth {
 }
 
 impl OAuth2Auth {
+    /// Creates credentials from the user and the command printing the access token
     #[must_use]
     pub fn new(user: String, token_cmd: Vec<String>) -> Self {
         Self { user, token_cmd }
@@ -76,6 +80,7 @@ async fn run_secret_cmd(cmd: &[String], field: &'static str) -> Result<String, E
         .to_string())
 }
 
+/// Failure to obtain a secret from a configured command
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0} should specify a program")]
@@ -103,6 +108,7 @@ impl Error {
     }
 }
 
+/// Configured way to log in to the server
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum Auth {

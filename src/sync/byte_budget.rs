@@ -16,6 +16,7 @@ pub struct ByteBudget {
     inner: Rc<Inner>,
 }
 
+/// Shared state of a [`ByteBudget`]
 #[derive(Debug)]
 struct Inner {
     capacity: usize,
@@ -25,10 +26,12 @@ struct Inner {
     waker: RefCell<Option<Waker>>,
 }
 
+/// Error for acquiring bytes after the budget got closed
 #[derive(Debug, PartialEq, Eq)]
 pub struct Closed;
 
 impl ByteBudget {
+    /// Creates a budget of `capacity` bytes
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Rc::new(Inner {

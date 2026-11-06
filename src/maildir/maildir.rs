@@ -30,12 +30,19 @@ use crate::{
     repository::{Flag, Uid},
 };
 
+/// Common access to file name related data of mails in a maildir
 pub trait MaildirFile {
+    /// Complete file name including uid (if any) and flags
     fn filename(&self) -> String;
+    /// Assigns `uid` and returns the resulting metadata
     fn set_uid(self, uid: Uid) -> LocalMailMetadata;
+    /// Flags with IMAP equivalent
     fn flags(&self) -> BitFlags<Flag>;
+    /// Replaces the flags with IMAP equivalent
     fn set_flags(&mut self, flags: BitFlags<Flag>);
+    /// Flags without IMAP equivalent
     fn other_flags(&self) -> &OtherFlags;
+    /// Replaces the flags without IMAP equivalent
     fn set_other_flags(&mut self, other_flags: OtherFlags);
     /// Prepends `prefix` to the file prefix to resolve name clashes
     fn prepend_to_fileprefix(&mut self, prefix: &str);
@@ -56,12 +63,14 @@ pub trait MaildirFile {
             .map(|(_, info)| info.to_string())
             .unwrap_or_default()
     }
+    /// Flags set on `self`, but not on `other`
     fn additional_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
         let mut additional_flags = self.flags();
         additional_flags.remove(other.flags());
 
         additional_flags
     }
+    /// Flags set on `other`, but not on `self`
     fn removed_flags_compared_to(&self, other: &Self) -> BitFlags<Flag> {
         let mut removed_flags = other.flags();
         removed_flags.remove(self.flags());
@@ -70,6 +79,7 @@ pub trait MaildirFile {
     }
 }
 
+/// Maildir directory with its `new`, `cur` and `tmp` subdirectories
 #[derive(Debug, Clone)]
 pub struct Maildir {
     new: PathBuf,
@@ -79,6 +89,7 @@ pub struct Maildir {
 }
 
 impl Maildir {
+    /// Creates the maildir directories, failing if some already exist
     pub async fn try_init(mail_dir: &Path) -> Result<Self, InitError> {
         match Self::load(mail_dir).await {
             // e.g. left by a crash during initialization
@@ -138,6 +149,7 @@ impl Maildir {
         }
     }
 
+    /// Opens an existing maildir, failing if it is missing or incomplete
     pub async fn load(mail_dir: &Path) -> Result<Self, LoadError> {
         let mail = Self::unchecked(mail_dir);
         log::trace!("loading maildir {mail:?}");
@@ -180,6 +192,7 @@ impl Maildir {
         }
     }
 
+    /// Starts watching for changes and returns a stream of them. Replaces an existing watch.
     pub async fn watch(self, buffer_size: usize) -> Result<AsyncRx<Array<Change>>, Error> {
         let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
         let (watch, rx) = Watch::new(self.new.clone(), &self.cur, buffer_size)?;
@@ -325,6 +338,7 @@ impl Maildir {
     // Technically the program should chdir into maildir_root to prevent issues if the path of
     // maildir_root changes. Setting current_dir is a process wide operation though and will mess
     // up relative file operations in the spawn_blocking threads.
+    /// Writes the mail content durably into `tmp` and returns its metadata
     pub async fn write_tmp(&self, mail: &RemoteMail) -> Result<LocalMailMetadata, Error> {
         let new_local_metadata = LocalMailMetadata::from(mail.metadata());
         let file_path = self.tmp_path_of(&new_local_metadata);
@@ -344,6 +358,7 @@ impl Maildir {
         Ok(new_local_metadata)
     }
 
+    /// Moves a mail from `tmp` to `cur`, without reporting it as a change
     pub async fn move_from_tmp(&self, mail: &LocalMailMetadata) -> Result<(), Error> {
         let file_path = self.tmp_path_of(mail);
         let new_path = self.get_path_of(mail);
@@ -359,6 +374,7 @@ impl Maildir {
         Ok(())
     }
 
+    /// Moves the mail from `tmp` to `cur` if it is still there. Returns whether it was.
     pub async fn recover_from_tmp(&self, mail: &LocalMailMetadata) -> Result<bool, Error> {
         if try_exists(&self.tmp_path_of(mail)).await? {
             self.move_from_tmp(mail).await?;
@@ -373,10 +389,12 @@ impl Maildir {
         self.tmp.join(mail.fileprefix())
     }
 
+    /// Moves mail delivered to `new` into `cur`
     pub async fn move_new_to_cur(&self) -> io::Result<()> {
         watcher::move_new_to_cur(&self.new, &self.cur).await
     }
 
+    /// Lists the contents of `cur` as entries or errors
     pub async fn list_cur(
         &self,
     ) -> io::Result<AsyncRx<Array<Result<MaildirEntry, MaildirListError>>>> {
@@ -461,18 +479,22 @@ impl Maildir {
         Ok((file, size))
     }
 
+    /// Path of the `cur` directory
     pub fn cur(&self) -> &Path {
         &self.cur
     }
 
+    /// Path of the mail in `cur`
     pub fn get_path_of(&self, mail: &impl MaildirFile) -> PathBuf {
         self.cur.join(mail.filename())
     }
 
+    /// Flushes the `cur` directory to disk
     pub async fn sync_cur(&self) -> Result<(), Error> {
         Self::sync_dir(&self.cur).await
     }
 
+    /// Flushes the `tmp` directory to disk
     pub async fn sync_tmp(&self) -> Result<(), Error> {
         Self::sync_dir(&self.tmp).await
     }
@@ -483,6 +505,7 @@ impl Maildir {
         Ok(())
     }
 
+    /// Resolves a uid collision, removing the new mail from `tmp` if its content equals `current`
     pub async fn handle_uid_conflict(
         &self,
         current: &LocalMailMetadata,
@@ -617,6 +640,7 @@ impl Maildir {
         }
     }
 
+    /// Removes the uid from the file name of the mail, so it is treated as new
     pub async fn remove_uid(
         &self,
         entry: LocalMailMetadata,
@@ -748,6 +772,7 @@ async fn try_exists(path: &Path) -> io::Result<bool> {
     }
 }
 
+/// Change of the maildir content detected by the watcher
 #[derive(Debug)]
 pub enum Change {
     Deletion(LocalMailMetadata),
@@ -760,6 +785,7 @@ pub enum Change {
     Error(Error),
 }
 
+/// Error opening an existing maildir
 #[derive(Debug, Error, PartialEq)]
 pub enum LoadError {
     #[error("Found partially existing maildir at {0}")]
@@ -770,6 +796,7 @@ pub enum LoadError {
     Io(PathBuf, io::ErrorKind),
 }
 
+/// Error creating a maildir
 #[derive(Debug, Error, PartialEq)]
 pub enum InitError {
     #[error("Found preexisting cur, tmp and/or new directories at {0}")]
@@ -778,6 +805,7 @@ pub enum InitError {
     Io(PathBuf, io::ErrorKind),
 }
 
+/// Error listing mails of a maildir
 #[derive(Debug, Error, PartialEq)]
 pub enum MaildirListError {
     #[error("Non utf-8 filename {0}")]
@@ -806,6 +834,7 @@ impl From<io::Error> for MaildirListError {
     }
 }
 
+/// Error manipulating mails of a maildir
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Missing mail {0}")]
@@ -830,6 +859,7 @@ impl From<io::Error> for Error {
     }
 }
 
+/// Listed mail, which may already have a uid assigned by this tool or another client
 #[derive(Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq, Hash))]
 pub enum MaildirEntry {

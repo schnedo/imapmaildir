@@ -5,6 +5,7 @@ use std::{
 
 use futures::channel::oneshot;
 
+/// State shared by all clones of [`Shutdown`]
 #[derive(Default)]
 struct State {
     /// When shutting down got triggered first
@@ -18,6 +19,7 @@ struct State {
 pub struct Shutdown(Arc<(Mutex<State>, Condvar)>);
 
 impl Shutdown {
+    /// Creates a handle that is not triggered
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -27,6 +29,7 @@ impl Shutdown {
         self.0.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Shuts down, e.g. due to a signal
     pub fn trigger(&self) {
         self.stop(false);
     }
@@ -47,6 +50,7 @@ impl Shutdown {
         self.0.1.notify_all();
     }
 
+    /// Whether shutting down got triggered
     #[must_use]
     pub fn is_triggered(&self) -> bool {
         self.state().triggered.is_some()

@@ -29,6 +29,7 @@ use crate::{
     sync::{ByteBudget, Task},
 };
 
+/// Why idling ended
 pub enum IdleStopReason {
     Timeout,
     Remote,
@@ -87,6 +88,7 @@ impl PermanentKeywords {
 /// RFC 7162 4 recommends limiting them to 8192 octets.
 const MAX_SEQUENCE_SET_LEN: usize = 8000;
 
+/// Connection with a selected mailbox, used to sync mails
 #[derive(Debug)]
 pub struct SelectedClient {
     connection: Connection,
@@ -98,6 +100,7 @@ pub struct SelectedClient {
     permanent_keywords: PermanentKeywords,
 }
 impl SelectedClient {
+    /// Creates the client for a selected mailbox. Fails if the server lacks UIDPLUS.
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         connection: Connection,
@@ -162,6 +165,7 @@ impl SelectedClient {
         }
     }
 
+    /// Whether VANISHED and FETCH responses carry UIDs, i.e. QRESYNC is in use
     pub fn supports_qresync(&self) -> bool {
         self.mailbox_handler.tracking.is_none()
     }
@@ -210,6 +214,7 @@ impl SelectedClient {
         Ok(uids)
     }
 
+    /// Fetches metadata and content of the mails in `sequence_set`, which get passed on for storing
     pub async fn fetch_mail(&mut self, sequence_set: &SequenceSet) -> Result<(), Error> {
         for sequence_set in sequence_set.chunks(MAX_SEQUENCE_SET_LEN) {
             let command = format!(
@@ -225,6 +230,7 @@ impl SelectedClient {
         Ok(())
     }
 
+    /// Fetches metadata and content of all mails, which get passed on for storing
     pub async fn fetch_all(&mut self) -> Result<(), Error> {
         let command = format!("UID FETCH 1:* ({} BODY.PEEK[])", self.metadata_items());
         log::debug!("{command}");
@@ -235,6 +241,7 @@ impl SelectedClient {
         Ok(())
     }
 
+    /// Fetches metadata of mails changed since `modseq`
     pub async fn fetch_changes_since(
         &mut self,
         modseq: ModSeq,
@@ -255,6 +262,7 @@ impl SelectedClient {
         self.collect_metadata(command, None).await
     }
 
+    /// Fetches the metadata of the mails in `sequence_set`
     pub async fn fetch_metadata(
         &mut self,
         sequence_set: &SequenceSet,
@@ -273,6 +281,7 @@ impl SelectedClient {
         Ok(metadata)
     }
 
+    /// Fetches the metadata of all mails
     pub async fn fetch_all_metadata(&mut self) -> Result<Vec<RemoteMailMetadata>, Error> {
         self.collect_metadata(format!("UID FETCH 1:* ({})", self.metadata_items()), None)
             .await
@@ -316,6 +325,7 @@ impl SelectedClient {
         Ok(metadata)
     }
 
+    /// Completes the initial sync after all mails got stored, and commits `modseq` as highest
     pub async fn complete_initial_sync(&mut self, modseq: ModSeq) -> Result<(), Error> {
         let (done_tx, done_rx) = oneshot();
         let source = self.keyword_source();
@@ -327,6 +337,7 @@ impl SelectedClient {
         done_rx.await.map_err(|_| Error::TaskProcessingStopped)
     }
 
+    /// Persists `modseq` as the highest synced modseq once earlier changes got stored
     pub async fn commit_highest_modseq(&mut self, modseq: ModSeq) -> Result<(), Error> {
         self.own_modseqs.prune(modseq);
         self.mailbox_handler
@@ -336,6 +347,7 @@ impl SelectedClient {
             .map_err(|_| Error::TaskProcessingStopped)
     }
 
+    /// Appends `mails` to `mailbox` and returns their UIDs with the metadata to store locally
     pub async fn store(
         &mut self,
         mailbox: &str,
@@ -659,6 +671,7 @@ impl SelectedClient {
         Ok((results, modseqs))
     }
 
+    /// Deletes mails unchanged since `highest_modseq` and returns the UIDs rejected due to remote changes
     pub async fn delete(
         &mut self,
         highest_modseq: ModSeq,
@@ -698,6 +711,7 @@ impl SelectedClient {
         Ok(modified)
     }
 
+    /// Logs out and ends the session
     pub async fn logout(mut self) -> Result<(), Error> {
         let command = "LOGOUT";
         log::debug!("{command}");
@@ -718,6 +732,7 @@ impl SelectedClient {
             .expect("idle stop sender should only be taken once")
     }
 
+    /// Idles until a stop reason occurs or `timeout` passed
     pub async fn idle(&mut self, timeout: Duration) -> Result<IdleStopReason, Error> {
         if self.mailbox_handler.needs_remote_sync() {
             log::debug!("not idling due to unsynced remote changes");
@@ -787,11 +802,13 @@ impl SelectedClient {
     }
 }
 
+/// Event while idling, either a stop request or a server response
 enum IdleEvent {
     Stop(Option<IdleStopReason>),
     Response(Result<ResponseData, transport::Error>),
 }
 
+/// Collects metadata of FETCH responses
 #[derive(Default)]
 struct MetadataCollector {
     keyword_source: KeywordSource,
@@ -1124,6 +1141,7 @@ impl OwnModSeqs {
     }
 }
 
+/// Collects modseqs of STORE responses
 #[derive(Default)]
 struct StoreHandler {
     modseqs: HashMap<Uid, ModSeq>,
@@ -1207,6 +1225,7 @@ fn parse_uid_set(uids: &str) -> Result<Vec<RangeInclusive<u32>>, Error> {
     Ok(parsed)
 }
 
+/// Handles untracked responses, passing mails and changes on and tracking the mailbox state
 #[derive(Debug)]
 struct MailboxHandler {
     task_tx: MAsyncTx<mpsc::Array<Task>>,

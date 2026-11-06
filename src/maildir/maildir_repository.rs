@@ -29,6 +29,7 @@ use crate::{
 
 use super::Maildir;
 
+/// Limit of file operations running concurrently
 const MAX_CONCURRENT_FILE_OPS: usize = 64;
 /// Mails synced to notmuch per change of its database, which blocks other writers meanwhile
 const TAG_SYNC_BATCH_SIZE: usize = 512;

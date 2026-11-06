@@ -7,28 +7,46 @@ use std::{
     sync::OnceLock,
 };
 
+/// Status code returned by notmuch functions
 pub type Status = c_uint;
+/// C boolean
 pub type Bool = c_int;
 
+/// Call succeeded
 pub const STATUS_SUCCESS: Status = 0;
+/// Xapian raised an exception
 pub const STATUS_XAPIAN_EXCEPTION: Status = 3;
+/// File could not be read
 pub const STATUS_FILE_ERROR: Status = 4;
+/// File is not an email
 pub const STATUS_FILE_NOT_EMAIL: Status = 5;
+/// Message with this ID is already indexed
 pub const STATUS_DUPLICATE_MESSAGE_ID: Status = 6;
 
+/// Whether a database is opened read-only or read-write
 pub type DatabaseMode = c_uint;
+/// Opens the database for reading only
 pub const DATABASE_MODE_READ_ONLY: DatabaseMode = 0;
+/// Opens the database for reading and writing
 pub const DATABASE_MODE_READ_WRITE: DatabaseMode = 1;
 
+/// Key of a notmuch config item
 pub type ConfigKey = c_uint;
+/// Key of `database.mail_root`
 pub const CONFIG_MAIL_ROOT: ConfigKey = 1;
+/// Key of `new.tags`
 pub const CONFIG_NEW_TAGS: ConfigKey = 5;
+/// Key of `maildir.synchronize_flags`
 pub const CONFIG_SYNC_MAILDIR_FLAGS: ConfigKey = 7;
 
+/// Whether a query excludes messages with excluded tags
 pub type Exclude = c_uint;
+/// Does not exclude any messages
 pub const EXCLUDE_FALSE: Exclude = 2;
 
+/// Sort order of query results
 pub type Sort = c_uint;
+/// Returns results in no particular order, which is fastest
 pub const SORT_UNSORTED: Sort = 3;
 
 macro_rules! opaque {

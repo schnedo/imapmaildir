@@ -11,6 +11,7 @@ use crate::{
     repository::UidValidity,
 };
 
+/// Failures while syncing a mailbox
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0}")]

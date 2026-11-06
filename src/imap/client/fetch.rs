@@ -5,6 +5,7 @@ use crate::{
     repository::{Flag, KeywordSource, Keywords, Uid},
 };
 
+/// Attributes of a FETCH response, as far as they are used
 #[derive(Debug, Default)]
 pub struct FetchAttributes<'a> {
     pub uid: Option<&'a u32>,
@@ -15,6 +16,7 @@ pub struct FetchAttributes<'a> {
 }
 
 impl<'a> FetchAttributes<'a> {
+    /// Extracts the used attributes and ignores the others
     pub fn parse(attributes: &'a [imap_proto::AttributeValue<'a>]) -> Self {
         let mut parsed = Self::default();
         for attribute in attributes {

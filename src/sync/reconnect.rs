@@ -8,11 +8,14 @@ use crate::{
     sync::{Error, Shutdown},
 };
 
+/// Delay before the first reconnect attempt
 const MIN_DELAY: Duration = Duration::from_secs(1);
+/// Upper bound for the delay between reconnect attempts
 const MAX_DELAY: Duration = Duration::from_mins(5);
 
 /// Errors, that may vanish by reconnecting
 pub trait Transient: Display {
+    /// Whether reconnecting may resolve the error
     fn is_transient(&self) -> bool;
 }
 

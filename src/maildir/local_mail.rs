@@ -23,6 +23,7 @@ use crate::{
 /// Distinguishes file prefixes generated within the same nanosecond
 static DELIVERY_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Process id and hostname used to make generated file prefixes unique
 static PID_AND_HOSTNAME: LazyLock<(u32, String)> = LazyLock::new(|| {
     (
         process::id(),
@@ -40,6 +41,7 @@ pub struct LocalMail {
 }
 
 impl LocalMail {
+    /// Wraps an opened mail file of `size` bytes with its metadata
     pub fn new(metadata: NewLocalMailMetadata, file: File, size: usize) -> Self {
         Self {
             metadata,
@@ -48,10 +50,12 @@ impl LocalMail {
         }
     }
 
+    /// Metadata of the mail
     pub fn metadata(&self) -> &NewLocalMailMetadata {
         &self.metadata
     }
 
+    /// Open file holding the mail content
     pub fn file(&self) -> &File {
         &self.file
     }
@@ -61,6 +65,7 @@ impl LocalMail {
         self.size
     }
 
+    /// Drops the file and returns the metadata
     pub fn into_metadata(self) -> NewLocalMailMetadata {
         self.metadata
     }
@@ -75,6 +80,7 @@ impl Debug for LocalMail {
     }
 }
 
+/// Metadata of a mail in the maildir that has no uid yet
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct NewLocalMailMetadata {
     // todo: add modseq to handle highest_modseq transactional
@@ -84,6 +90,7 @@ pub struct NewLocalMailMetadata {
 }
 
 impl NewLocalMailMetadata {
+    /// Creates metadata without other flags
     pub fn new(flags: BitFlags<Flag>, fileprefix: String) -> Self {
         Self {
             flags,
@@ -162,6 +169,7 @@ impl FromStr for NewLocalMailMetadata {
     }
 }
 
+/// Metadata of a mail with uid, as stored in the state and encoded in its file name
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct LocalMailMetadata {
     uid: Uid,
@@ -172,6 +180,7 @@ pub struct LocalMailMetadata {
 }
 
 impl LocalMailMetadata {
+    /// Creates metadata, generating a unique file prefix if none is given
     pub fn new(uid: Uid, flags: BitFlags<Flag>, fileprefix: Option<String>) -> Self {
         let fileprefix = fileprefix.unwrap_or_else(Self::generate_file_prefix);
 
@@ -183,10 +192,12 @@ impl LocalMailMetadata {
         }
     }
 
+    /// Unique part of the file name before the uid and flags
     pub fn fileprefix(&self) -> &str {
         &self.fileprefix
     }
 
+    /// Generates a unique maildir file prefix from time, pid, delivery count and hostname
     fn generate_file_prefix() -> String {
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -198,10 +209,12 @@ impl LocalMailMetadata {
         format!("{secs}.P{pid}N{nanos}Q{count}.{hostname}")
     }
 
+    /// Uid of the mail
     pub fn uid(&self) -> Uid {
         self.uid
     }
 
+    /// Whether the mail has `flag` set
     pub fn has_flag(&self, flag: Flag) -> bool {
         self.flags.contains(flag)
     }
@@ -252,10 +265,12 @@ impl Display for LocalMailMetadata {
 pub struct OtherFlags(String);
 
 impl OtherFlags {
+    /// Flags as written in the file name
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Consumes the flags into their file name representation
     pub fn into_string(self) -> String {
         self.0
     }
@@ -294,6 +309,7 @@ fn write_flags(
     all.into_iter().try_for_each(|flag| f.write_char(flag))
 }
 
+/// Error parsing a maildir file name into mail metadata
 #[derive(Debug, Error)]
 #[error("Missing mail {message}")]
 pub struct ParseLocalMailMetadataError {

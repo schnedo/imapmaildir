@@ -68,6 +68,7 @@ pub struct SyncArgs {
     idle: bool,
 }
 
+/// Runs the CLI command against the account given by `--account`
 pub fn run(cli: &Cli) -> Result<(), Error> {
     logging::init(cli.log_level);
     let config = Account::load_from_file(&cli.account).map_err(Error::Config)?;
@@ -157,6 +158,7 @@ impl Transient for Error {
     }
 }
 
+/// Failures of CLI commands
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0}")]

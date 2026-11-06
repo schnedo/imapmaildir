@@ -2,6 +2,7 @@ use imapmaildir::{Client, Tls, config::Account};
 
 use crate::cli::Error;
 
+/// Prints all selectable mailboxes of the server
 pub fn list(config: &Account) -> Result<(), Error> {
     let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
     let rt = compio::runtime::Runtime::new().map_err(Error::Runtime)?;

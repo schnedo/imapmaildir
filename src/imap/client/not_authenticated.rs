@@ -7,6 +7,7 @@ use crate::imap::{
     transport::{Connection, ConnectionConfig, ResponseData, ResponseHandler, Tls},
 };
 
+/// Connection before login
 pub struct Client {
     connection: Connection,
     capabilities: Capabilities,
@@ -140,6 +141,7 @@ async fn request_capabilities(
     Ok(())
 }
 
+/// Collects the capabilities of CAPABILITY responses
 struct CapabilityHandler<'a> {
     capabilities: &'a mut Capabilities,
     auth_capabilities: &'a mut AuthCapabilities,

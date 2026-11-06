@@ -35,10 +35,13 @@ use crate::{
     maildir::{LoadError, MaildirRepository},
 };
 
+/// Syncs a mailbox between server and local maildir
 pub struct Syncer {}
 
+/// Task that processes the requests for the maildir repository
 type TaskHandle = JoinHandle<Result<(), Error>>;
 
+/// Resources of a finished initial sync
 struct Synced {
     client: SelectedClient,
     task_handle: TaskHandle,
@@ -1333,6 +1336,7 @@ impl Syncer {
     }
 }
 
+/// Closes the byte budget on drop, so that waiting downloads stop
 struct CloseOnDrop(ByteBudget);
 
 /// Writes of tags and renamed files to notmuch, see [`MaildirRepository::flush_tags`]

@@ -8,6 +8,7 @@ use crate::{
     repository::{Flag, KeywordChange, SequenceSet, SequenceSetBuilder, Uid},
 };
 
+/// Flag and keyword changes applied to a mail
 #[derive(Debug, Default, PartialEq, Eq, Hash, Clone)]
 pub struct FlagChange {
     pub added: BitFlags<Flag>,
@@ -16,6 +17,7 @@ pub struct FlagChange {
 }
 
 impl FlagChange {
+    /// Creates a change of system flags without keyword changes
     pub fn new(added: BitFlags<Flag>, removed: BitFlags<Flag>) -> Self {
         Self {
             added,
@@ -24,6 +26,7 @@ impl FlagChange {
         }
     }
 
+    /// Creates a change consisting only of keyword changes
     pub fn of_keywords(keywords: KeywordChange) -> Self {
         Self {
             keywords,
@@ -31,6 +34,7 @@ impl FlagChange {
         }
     }
 
+    /// Combines this change with `next`, which happened afterwards
     pub fn then(&self, next: &Self) -> Self {
         Self {
             added: (self.added & !next.removed) | next.added,
@@ -39,28 +43,33 @@ impl FlagChange {
         }
     }
 
+    /// Whether the change neither adds nor removes anything
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.keywords.is_empty()
     }
 }
 
+/// Flag changes grouped by identical change, with the uids they apply to
 #[derive(Debug)]
 pub struct LocalFlagChanges {
     changes: HashMap<FlagChange, SequenceSet>,
 }
 
 impl LocalFlagChanges {
+    /// Iterates over each distinct change with the uids it applies to
     pub fn iter(&self) -> impl Iterator<Item = (&FlagChange, &SequenceSet)> {
         self.changes.iter()
     }
 }
 
+/// Collects pending flag changes per uid before grouping them
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct LocalFlagChangesBuilder {
     changes: HashMap<Uid, FlagChange>,
 }
 
 impl LocalFlagChangesBuilder {
+    /// Groups uids by change, dropping empty changes
     pub fn build(self) -> LocalFlagChanges {
         let mut grouped: HashMap<FlagChange, SequenceSetBuilder> = HashMap::new();
         for (uid, change) in self.changes {
@@ -77,6 +86,7 @@ impl LocalFlagChangesBuilder {
         }
     }
 
+    /// Records `change` for `uid`, merging it with an already recorded one
     pub fn insert(&mut self, uid: Uid, change: FlagChange) {
         self.changes
             .entry(uid)
@@ -84,6 +94,7 @@ impl LocalFlagChangesBuilder {
             .or_insert(change);
     }
 
+    /// Forgets changes recorded for `uid`
     pub fn remove(&mut self, uid: Uid) {
         if self.changes.remove(&uid).is_some() {
             log::debug!("removed {uid} from local changes");
@@ -91,6 +102,7 @@ impl LocalFlagChangesBuilder {
     }
 }
 
+/// All changes of the local maildir, which still need to be synced to the remote
 #[derive(Debug, Default, PartialEq)]
 pub struct LocalChanges {
     pub updates: LocalFlagChangesBuilder,
@@ -103,6 +115,7 @@ pub struct LocalChanges {
 }
 
 impl LocalChanges {
+    /// Creates changes from deletions, new mails and flag updates, leaving the rest empty
     pub fn new(
         deletions: Vec<Uid>,
         news: Vec<NewLocalMailMetadata>,

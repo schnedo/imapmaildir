@@ -4,6 +4,7 @@ use std::fmt::{Debug, Formatter, Result};
 
 use crate::repository::{Flag, Keywords, ModSeq, Uid};
 
+/// Metadata of a mail on the server
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct RemoteMailMetadata {
     uid: Uid,
@@ -14,6 +15,7 @@ pub struct RemoteMailMetadata {
 }
 
 impl RemoteMailMetadata {
+    /// Creates metadata without keywords
     pub fn new(uid: Uid, flags: BitFlags<Flag>, modseq: ModSeq) -> Self {
         Self {
             uid,
@@ -23,38 +25,46 @@ impl RemoteMailMetadata {
         }
     }
 
+    /// Sets the keywords, if reported
     #[must_use]
     pub fn with_keywords(mut self, keywords: Option<Keywords>) -> Self {
         self.keywords = keywords;
         self
     }
 
+    /// Keywords, if the server reported them
     pub fn keywords(&self) -> Option<&Keywords> {
         self.keywords.as_ref()
     }
 
+    /// Modification sequence of the last change
     pub fn modseq(&self) -> ModSeq {
         self.modseq
     }
 
+    /// UID of the mail
     pub fn uid(&self) -> Uid {
         self.uid
     }
 
+    /// System flags of the mail
     pub fn flags(&self) -> BitFlags<Flag> {
         self.flags
     }
 }
 
+/// Content of a mail on the server
 pub struct RemoteContent {
     content: Bytes,
 }
 
 impl RemoteContent {
+    /// Wraps the downloaded content
     pub fn new(content: Bytes) -> Self {
         Self { content }
     }
 
+    /// Raw message bytes
     pub fn content(&self) -> &Bytes {
         &self.content
     }

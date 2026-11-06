@@ -51,6 +51,7 @@ fn format_panic_info(info: &PanicHookInfo) -> String {
     format!("{thread}panicked at {location}:{payload}{backtrace}")
 }
 
+/// Installs the logger, which logs to the journal if connected to it, else to stderr
 pub fn init(level: LevelFilter) {
     let mut builder = Builder::new();
     builder.filter_module(env!("CARGO_CRATE_NAME"), level);

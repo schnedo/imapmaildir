@@ -1,3 +1,4 @@
+/// Tracks the number of messages and how many of them are known locally, to detect unsolicited new messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageCount {
     exists: u32,
@@ -7,6 +8,7 @@ pub struct MessageCount {
 }
 
 impl MessageCount {
+    /// Starts with all `exists` messages known
     pub fn new(exists: u32) -> Self {
         Self {
             exists,
@@ -15,10 +17,12 @@ impl MessageCount {
         }
     }
 
+    /// Handles an EXISTS response
     pub fn on_exists(&mut self, exists: u32) {
         self.exists = exists;
     }
 
+    /// Handles a FETCH response, which proves that messages up to `sequence` exist
     pub fn on_fetch(&mut self, sequence: u32) {
         self.known = self.known.max(sequence);
     }
@@ -41,20 +45,24 @@ impl MessageCount {
         self.known = self.known.max(known).min(self.exists);
     }
 
+    /// Handles `count` expunged messages
     pub fn on_expunge(&mut self, count: u32) {
         self.expunged_in_command = self.expunged_in_command.saturating_add(count);
         self.exists = self.exists.saturating_sub(count);
         self.known = self.known.saturating_sub(count).min(self.exists);
     }
 
+    /// Handles `count` messages appended by this client
     pub fn on_append(&mut self, count: u32) {
         self.known = self.known.saturating_add(count);
     }
 
+    /// Number of messages in the mailbox
     pub fn exists(self) -> u32 {
         self.exists
     }
 
+    /// Whether messages exist, of which no FETCH response was seen
     pub fn has_unknown(self) -> bool {
         self.exists > self.known
     }

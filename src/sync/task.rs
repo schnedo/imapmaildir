@@ -10,6 +10,7 @@ use crate::{
     repository::{Flag, KeywordSource, Keywords, ModSeq, SequenceSet, Uid},
 };
 
+/// Request to the task, that owns the maildir repository. Variants with `TxOneshot` answer through it
 pub enum Task {
     NewMail(RemoteMail),
     Delete(SequenceSet),

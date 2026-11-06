@@ -20,6 +20,7 @@ use rustix::process::Signal;
 
 use crate::cli::Error;
 
+/// Exits the process if any thread panics, instead of running on without it
 pub fn exit_on_panic() {
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
@@ -257,6 +258,7 @@ fn sync_once(
     })
 }
 
+/// Syncs all configured mailboxes of the account, each on its own thread, until done or shut down
 pub fn sync_all(
     config: Account,
     idle: bool,

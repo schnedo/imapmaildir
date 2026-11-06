@@ -13,6 +13,7 @@ use crate::{
     repository::{MailboxMetadataBuilderError, UidConversionError, UidValidity},
 };
 
+/// Failure of an IMAP client operation
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("{0}")]

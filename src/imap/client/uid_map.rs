@@ -22,6 +22,7 @@ pub struct UidMap {
 }
 
 impl UidMap {
+    /// Creates a map of `exists` mails with unknown UIDs
     pub fn new(exists: u32) -> Self {
         Self {
             slots: vec![None; exists as usize],

@@ -5,6 +5,7 @@ use compio::fs::File;
 
 use crate::imap::transport::CommandPart;
 
+/// Alphabet of modified base64 as used by modified UTF-7 (RFC 3501 5.1.3)
 const MODIFIED_BASE64: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
 
@@ -42,6 +43,7 @@ pub struct CommandBuilder<'a> {
     pending: usize,
 }
 
+/// Part of a command, in order
 enum Segment<'a> {
     Bytes(Range<usize>),
     File { file: &'a File, len: usize },
@@ -49,6 +51,7 @@ enum Segment<'a> {
 }
 
 impl<'a> CommandBuilder<'a> {
+    /// Starts a command with the text `command`
     pub fn new(mode: LiteralMode, command: &str) -> Self {
         Self {
             mode,
@@ -58,6 +61,7 @@ impl<'a> CommandBuilder<'a> {
         }
     }
 
+    /// Appends `value` as is
     pub fn push_str(&mut self, value: &str) {
         self.bytes.extend_from_slice(value.as_bytes());
     }
@@ -97,6 +101,7 @@ impl<'a> CommandBuilder<'a> {
         }
     }
 
+    /// Command parts to send, splitting where literals require a continuation request
     pub fn parts(&self) -> Vec<CommandPart<'_>> {
         let mut parts: Vec<_> = self
             .segments
@@ -133,6 +138,7 @@ pub fn quote(value: &str) -> Option<String> {
         })
 }
 
+/// Encodes and quotes a mailbox name for use in a command
 pub fn mailbox(name: &str) -> String {
     quote(&encode_modified_utf7(name))
         .expect("modified utf-7 encoded mailbox names should be quotable")
@@ -146,6 +152,7 @@ pub fn decode_mailbox(name: &str) -> String {
     })
 }
 
+/// Decodes modified UTF-7 (RFC 3501 5.1.3), or `None` if it is invalid
 pub fn decode_modified_utf7(encoded: &str) -> Option<String> {
     let mut decoded = String::with_capacity(encoded.len());
     let mut rest = encoded;
@@ -192,6 +199,7 @@ fn decode_modified_base64(encoded: &str) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
+/// Encodes a mailbox name as modified UTF-7 (RFC 3501 5.1.3)
 pub fn encode_modified_utf7(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     let mut pending = Vec::new();
