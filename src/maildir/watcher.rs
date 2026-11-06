@@ -1,16 +1,16 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     io,
     os::fd::AsFd as _,
     path::{Path, PathBuf},
-    sync::Arc,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
 use compio::runtime::fd::PollFd;
 use crossfire::{AsyncRx, MAsyncTx, SendError, mpsc};
-use futures::lock::Mutex;
 use inotify::{EventMask, Inotify, WatchMask};
 use rustix::{
     fs::{CWD, RenameFlags},
@@ -238,7 +238,7 @@ fn watch_new(new: PathBuf, cur: PathBuf, change_tx: ChangeTx) -> Result<(), Erro
 /// Handle to a running watch of a `cur` directory
 #[derive(Debug, Clone)]
 pub struct Watch {
-    ignore_files: Arc<Mutex<HashSet<OsString>>>,
+    ignore_files: Rc<RefCell<HashSet<OsString>>>,
 }
 impl Watch {
     /// Watches `cur` for changes and moves mail delivered to `new` into `cur`. Reports renames
@@ -250,7 +250,7 @@ impl Watch {
         tap: Option<MoveTap>,
     ) -> Result<(Self, AsyncRx<mpsc::Array<Change>>), Error> {
         let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
-        let ignore_files = Arc::new(Mutex::new(HashSet::new()));
+        let ignore_files = Rc::new(RefCell::new(HashSet::new()));
         let inotify = init_inotify(
             cur,
             WatchMask::CREATE
@@ -329,7 +329,7 @@ impl Watch {
         move_matches: &mut HashMap<u32, PendingMove>,
         created: &mut Created,
         change_tx: &ChangeTx,
-        ignored: &Arc<Mutex<HashSet<OsString>>>,
+        ignored: &Rc<RefCell<HashSet<OsString>>>,
         tap: Option<&MoveTap>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         for filename in created.take_linked() {
@@ -358,7 +358,7 @@ impl Watch {
             // renames without second half may be moves to or from other mailboxes. Our own, e.g.
             // moving deliveries to `cur`, are not.
             if let Some(tap) = tap
-                && !ignored.lock().await.contains(&filename)
+                && !ignored.borrow().contains(&filename)
             {
                 let name = filename.to_string_lossy();
                 if mask == EventMask::MOVED_FROM {
@@ -382,7 +382,7 @@ impl Watch {
         move_matches: &mut HashMap<u32, PendingMove>,
         created: &mut Created,
         change_tx: &ChangeTx,
-        ignored: &Arc<Mutex<HashSet<OsString>>>,
+        ignored: &Rc<RefCell<HashSet<OsString>>>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         match watch_event {
             WatchEvent::Error(e) => Err(e),
@@ -430,7 +430,7 @@ impl Watch {
                         move_matches.clear();
                         created.clear();
                         // events of ignored updates may be lost, so they would hide later ones
-                        ignored.lock().await.clear();
+                        ignored.borrow_mut().clear();
                         Ok(change_tx.send(Change::Overflow).await)
                     }
                     EventMask::IGNORED => Err(Error::WatchedDirRemoved(cur.to_path_buf())),
@@ -442,11 +442,11 @@ impl Watch {
 
     async fn send_unless_ignored(
         filename: OsString,
-        ignored: &Arc<Mutex<HashSet<OsString>>>,
+        ignored: &Rc<RefCell<HashSet<OsString>>>,
         change_tx: &ChangeTx,
         change: fn(String) -> Change,
     ) -> Result<Result<(), SendError<Change>>, Error> {
-        if ignored.lock().await.remove(&filename) {
+        if ignored.borrow_mut().remove(&filename) {
             Ok(Ok(()))
         } else {
             let filename = into_string(filename)?;
@@ -495,17 +495,17 @@ impl Watch {
     }
 
     /// Ignores the next change event of `file`, because we caused it ourselves
-    pub async fn ignore_next_update_for_file(&self, file: &Path) {
+    pub fn ignore_next_update_for_file(&self, file: &Path) {
         if let Some(name) = file.file_name() {
             log::trace!("ignoring next update of {}", file.display());
-            self.ignore_files.lock().await.insert(name.to_os_string());
+            self.ignore_files.borrow_mut().insert(name.to_os_string());
         }
     }
 
     /// Stops ignoring `file`, e.g. because the operation failed
-    pub async fn unignore_file(&self, file: &Path) {
+    pub fn unignore_file(&self, file: &Path) {
         if let Some(name) = file.file_name() {
-            self.ignore_files.lock().await.remove(name);
+            self.ignore_files.borrow_mut().remove(name);
         }
     }
 
@@ -513,7 +513,7 @@ impl Watch {
         event: inotify::Event<OsString>,
         move_matches: &mut HashMap<u32, PendingMove>,
         change_tx: &ChangeTx,
-        ignored: &Arc<Mutex<HashSet<OsString>>>,
+        ignored: &Rc<RefCell<HashSet<OsString>>>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         let filename = event.name.ok_or(Error::MissingName(event.mask))?;
         if let Some(PendingMove {
@@ -521,10 +521,10 @@ impl Watch {
             ..
         }) = move_matches.remove(&event.cookie)
         {
-            let mut ignored = ignored.lock().await;
-            let filename_ignored = ignored.remove(&filename);
-            let stored_name_ignored = ignored.remove(&stored_name);
-            drop(ignored);
+            let (filename_ignored, stored_name_ignored) = {
+                let mut ignored = ignored.borrow_mut();
+                (ignored.remove(&filename), ignored.remove(&stored_name))
+            };
             if filename_ignored || stored_name_ignored {
                 return Ok(Ok(()));
             }

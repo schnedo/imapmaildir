@@ -7,8 +7,9 @@
 //! falls back to deleting or uploading the mail, if the other one does not respond in time.
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -52,7 +53,7 @@ pub struct MoveLink {
     peers: Arc<HashMap<String, MTx<mpsc::List<Offer>>>>,
     inbox: AsyncRx<mpsc::List<Offer>>,
     /// Offers received before the arrival of their mail got handled, by cookie
-    pending: Mutex<HashMap<u32, (Offer, Instant)>>,
+    pending: RefCell<HashMap<u32, (Offer, Instant)>>,
 }
 
 impl std::fmt::Debug for MoveLink {
@@ -86,7 +87,7 @@ impl MoveLink {
                     mailbox: mailbox.clone(),
                     peers: peers.clone(),
                     inbox,
-                    pending: Mutex::new(HashMap::new()),
+                    pending: RefCell::new(HashMap::new()),
                 };
                 (mailbox, link)
             })
@@ -211,8 +212,7 @@ impl MoveLink {
             self.keep(offer);
         }
         self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .borrow_mut()
             .retain(|_, (_, received)| received.elapsed() < OFFER_MAX_AGE);
 
         incoming
@@ -220,8 +220,7 @@ impl MoveLink {
 
     fn keep(&self, offer: Offer) {
         self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .borrow_mut()
             .insert(offer.cookie, (offer, Instant::now()));
     }
 
@@ -233,10 +232,7 @@ impl MoveLink {
 
     /// Accepts the received offers for the `wanted` cookies. Others stay for later arrivals.
     fn accept_pending(&self, wanted: &mut HashMap<u32, String>, incoming: &mut Incoming) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = self.pending.borrow_mut();
         wanted.retain(|cookie, prefix| {
             let Some((Offer { accept, .. }, _)) = pending.remove(cookie) else {
                 return true;

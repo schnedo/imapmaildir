@@ -1297,15 +1297,12 @@ impl LocalWatcher {
 
     /// Starts watching the maildir for changes. Reports renames into or out of the maildir to
     /// `tap`.
-    pub async fn watch(
-        self,
-        tap: Option<MoveTap>,
-    ) -> Result<AsyncRx<Array<LocalEvent>>, maildir::Error> {
+    pub fn watch(self, tap: Option<MoveTap>) -> Result<AsyncRx<Array<LocalEvent>>, maildir::Error> {
         log::debug!("listening for maildir mail changes");
         let (changes_tx, changes_rx) = spsc::bounded_async(1);
         let size = 32;
         let track_prefixes = tap.is_some();
-        let rx = self.maildir.watch(size, tap).await?;
+        let rx = self.maildir.watch(size, tap)?;
 
         compio::runtime::spawn(async move {
             while let Ok(change) = rx.recv().await {
@@ -2294,7 +2291,7 @@ mod tests {
         let uid = repo_with_mail.mail.metadata().uid();
         let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
-        let events = assert_ok!(repo.local_watcher().watch(None).await);
+        let events = assert_ok!(repo.local_watcher().watch(None));
 
         assert_ok!(fs::rename(
             cur.join(tracked.filename()),

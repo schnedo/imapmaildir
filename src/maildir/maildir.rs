@@ -1,10 +1,11 @@
 use std::{
+    cell::RefCell,
     fmt::Debug,
     fs, io,
     os::unix::fs::DirBuilderExt as _,
     path::{Path, PathBuf},
+    rc::Rc,
     str::FromStr,
-    sync::Arc,
 };
 
 use compio::{BufResult, fs::DirBuilder, io::AsyncWriteAtExt as _};
@@ -13,7 +14,6 @@ use crossfire::{
     spsc::{self, Array},
 };
 use enumflags2::BitFlags;
-use futures::lock::Mutex;
 use rustix::{
     fs::{CWD, RenameFlags},
     path::Arg,
@@ -85,7 +85,7 @@ pub struct Maildir {
     new: PathBuf,
     cur: PathBuf,
     tmp: PathBuf,
-    watch: Arc<Mutex<Option<Watch>>>,
+    watch: Rc<RefCell<Option<Watch>>>,
 }
 
 impl Maildir {
@@ -145,7 +145,7 @@ impl Maildir {
             new,
             cur,
             tmp,
-            watch: Arc::new(Mutex::new(None)),
+            watch: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -194,16 +194,14 @@ impl Maildir {
 
     /// Starts watching for changes and returns a stream of them. Replaces an existing watch.
     /// Reports renames into or out of the maildir to `tap`.
-    pub async fn watch(
+    pub fn watch(
         self,
         buffer_size: usize,
         tap: Option<MoveTap>,
     ) -> Result<AsyncRx<Array<Change>>, Error> {
         let (change_tx, change_rx) = spsc::bounded_async(buffer_size);
         let (watch, rx) = Watch::new(self.new.clone(), &self.cur, buffer_size, tap)?;
-        let mut my_watch = self.watch.lock().await;
-        *my_watch = Some(watch);
-        drop(my_watch);
+        *self.watch.borrow_mut() = Some(watch);
         compio::runtime::spawn(async move {
             while let Ok(change) = rx.recv().await {
                 log::trace!("handling filechange {change:?}");
@@ -306,13 +304,8 @@ impl Maildir {
     ) -> Result<LocalMailMetadata, Error> {
         let old_to = to.filename();
         let to = to.set_uid(from.uid());
-        Self::rename_new_mail(
-            self.watch.lock().await.as_ref(),
-            &self.cur,
-            self.cur.join(old_to),
-            to,
-        )
-        .await
+        let watch = self.watch.borrow().clone();
+        Self::rename_new_mail(watch.as_ref(), &self.cur, self.cur.join(old_to), to).await
     }
 
     async fn send_new_structured_change(
@@ -329,7 +322,7 @@ impl Maildir {
     }
 
     async fn send_new_unstructured_change(
-        watch: &Arc<Mutex<Option<Watch>>>,
+        watch: &Rc<RefCell<Option<Watch>>>,
         cur: &Path,
         change_tx: &AsyncTx<Array<Change>>,
         filename: String,
@@ -368,7 +361,7 @@ impl Maildir {
         let file_path = self.tmp_path_of(mail);
         let new_path = self.get_path_of(mail);
         log::trace!("renaming {} to {}", file_path.display(), new_path.display());
-        let watch = self.watch.lock().await.clone();
+        let watch = self.watch.borrow().clone();
         Self::ignoring(
             watch.as_ref(),
             &new_path,
@@ -542,13 +535,13 @@ impl Maildir {
         operation: impl Future<Output = io::Result<T>>,
     ) -> io::Result<T> {
         if let Some(watch) = watch {
-            watch.ignore_next_update_for_file(file).await;
+            watch.ignore_next_update_for_file(file);
         }
         let result = operation.await;
         if result.is_err()
             && let Some(watch) = watch
         {
-            watch.unignore_file(file).await;
+            watch.unignore_file(file);
         }
 
         result
@@ -620,7 +613,7 @@ impl Maildir {
         let stem = entry.stem();
         let entry = entry.set_uid(new_uid);
         let new_mail = self.get_path_of(&entry);
-        let watch = self.watch.lock().await.clone();
+        let watch = self.watch.borrow().clone();
         match Self::rename(watch.as_ref(), current_mail.clone(), new_mail).await {
             Ok(_) => Ok((entry, current_mail)),
             Err(Error::Missing(missing)) => {
@@ -652,7 +645,7 @@ impl Maildir {
     ) -> Result<NewLocalMailMetadata, Error> {
         let current = self.get_path_of(&entry);
         let new_metadata = NewLocalMailMetadata::from(entry);
-        let watch = self.watch.lock().await.clone();
+        let watch = self.watch.borrow().clone();
         Self::rename(watch.as_ref(), current, self.get_path_of(&new_metadata)).await?;
 
         Ok(new_metadata)
@@ -670,7 +663,7 @@ impl Maildir {
         entry.set_flags(new_flags);
         let new_mail = self.get_path_of(entry);
 
-        let watch = self.watch.lock().await.clone();
+        let watch = self.watch.borrow().clone();
         match Self::rename(watch.as_ref(), current_mail.clone(), new_mail.clone()).await {
             Ok(renamed) => Ok(renamed.then_some(current_mail)),
             Err(Error::Missing(missing)) => {
@@ -696,7 +689,7 @@ impl Maildir {
 
     /// Returns the path of the deleted file or `None`, if it was already gone
     pub async fn delete(&self, entry: &impl MaildirFile) -> io::Result<Option<PathBuf>> {
-        let watch = self.watch.lock().await.clone();
+        let watch = self.watch.borrow().clone();
         let mut file_path = self.get_path_of(entry);
         loop {
             log::trace!("deleting {}", file_path.display());
@@ -749,13 +742,14 @@ impl Maildir {
     }
 
     async fn handle_new_unstructured_file(
-        watch: &Arc<Mutex<Option<Watch>>>,
+        watch: &Rc<RefCell<Option<Watch>>>,
         cur: &Path,
         filename: String,
     ) -> Result<NewLocalMailMetadata, Error> {
         let current = cur.join(&filename);
         let metadata = NewLocalMailMetadata::new(Flag::Seen.into(), filename);
-        Self::rename_new_mail(watch.lock().await.as_ref(), cur, current, metadata).await
+        let watch = watch.borrow().clone();
+        Self::rename_new_mail(watch.as_ref(), cur, current, metadata).await
     }
 }
 
@@ -1366,7 +1360,7 @@ mod tests {
         renamed.set_flags(Flag::Seen | Flag::Flagged);
         assert_ok!(fs::write(maildir.get_path_of(&entry), "content"));
         assert_ok!(fs::write(maildir.get_path_of(&renamed), "content"));
-        let changes = assert_ok!(maildir.clone().watch(8, None).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None));
 
         assert_ok!(maildir.update_flags(&mut entry, renamed.flags()).await);
 
@@ -1382,7 +1376,7 @@ mod tests {
         metadata: LocalMailMetadata,
     ) {
         let maildir = maildir.maildir;
-        let changes = assert_ok!(maildir.clone().watch(8, None).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None));
         assert_ok!(maildir.delete(&metadata).await);
 
         assert_ok!(fs::write(maildir.tmp.join("x"), "content"));
@@ -1402,7 +1396,7 @@ mod tests {
     #[awt]
     async fn test_watch_detects_mail_linked_into_new(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
-        let changes = assert_ok!(maildir.clone().watch(8, None).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None));
         // initially moving mails from new to cur would hide missing link events
         compio::time::sleep(Duration::from_millis(100)).await;
 
@@ -1424,7 +1418,7 @@ mod tests {
     #[awt]
     async fn test_watch_detects_mail_linked_into_cur(#[future] maildir: TestMaildir) {
         let maildir = maildir.maildir;
-        let changes = assert_ok!(maildir.clone().watch(8, None).await);
+        let changes = assert_ok!(maildir.clone().watch(8, None));
 
         assert_ok!(fs::write(maildir.tmp.join("copied"), "content"));
         assert_ok!(fs::hard_link(
