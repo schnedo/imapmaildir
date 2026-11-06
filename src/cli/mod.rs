@@ -104,6 +104,7 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
                     mailbox,
                     sync_args.idle,
                     tags.as_ref(),
+                    None,
                     &shutdown,
                 )?;
                 if shutdown.has_failed() {

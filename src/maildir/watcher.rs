@@ -18,6 +18,8 @@ use rustix::{
 };
 use thiserror::Error;
 
+use crate::maildir::MoveTap;
+
 /// Sender of changes detected by the watcher
 type ChangeTx = MAsyncTx<mpsc::Array<Change>>;
 
@@ -239,11 +241,13 @@ pub struct Watch {
     ignore_files: Arc<Mutex<HashSet<OsString>>>,
 }
 impl Watch {
-    /// Watches `cur` for changes and moves mail delivered to `new` into `cur`
+    /// Watches `cur` for changes and moves mail delivered to `new` into `cur`. Reports renames
+    /// into or out of `cur` to `tap`.
     pub fn new(
         new: PathBuf,
         cur: &Path,
         buffer_size: usize,
+        tap: Option<MoveTap>,
     ) -> Result<(Self, AsyncRx<mpsc::Array<Change>>), Error> {
         let (change_tx, change_rx) = mpsc::bounded_async(buffer_size);
         let ignore_files = Arc::new(Mutex::new(HashSet::new()));
@@ -294,8 +298,14 @@ impl Watch {
                     }
                     Some(Err(_)) => break,
                     None => {
-                        Self::handle_timeouts(&mut move_matches, &mut created, &change_tx, &ignored)
-                            .await
+                        Self::handle_timeouts(
+                            &mut move_matches,
+                            &mut created,
+                            &change_tx,
+                            &ignored,
+                            tap.as_ref(),
+                        )
+                        .await
                     }
                 };
                 match result {
@@ -320,6 +330,7 @@ impl Watch {
         created: &mut Created,
         change_tx: &ChangeTx,
         ignored: &Arc<Mutex<HashSet<OsString>>>,
+        tap: Option<&MoveTap>,
     ) -> Result<Result<(), SendError<Change>>, Error> {
         for filename in created.take_linked() {
             if let Err(e) =
@@ -344,6 +355,18 @@ impl Watch {
                 EventMask::MOVED_FROM => Change::Deletion,
                 _ => unreachable!("mask should only be defined values"),
             };
+            // renames without second half may be moves to or from other mailboxes. Our own, e.g.
+            // moving deliveries to `cur`, are not.
+            if let Some(tap) = tap
+                && !ignored.lock().await.contains(&filename)
+            {
+                let name = filename.to_string_lossy();
+                if mask == EventMask::MOVED_FROM {
+                    tap.moved_from(cookie, &name);
+                } else {
+                    tap.moved_to(cookie, &name);
+                }
+            }
             if let Err(e) = Self::send_unless_ignored(filename, ignored, change_tx, change).await? {
                 return Ok(Err(e));
             }

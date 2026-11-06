@@ -4,12 +4,16 @@ use crate::{
     },
     maildir::{
         ChangeRecorder, FlagChange, LocalChanges, LocalEvent, LocalMail, LocalWatcher, MailChange,
-        NewLocalMailMetadata, TagsError,
+        MaildirFile, NewLocalMailMetadata, TagsError,
     },
     notmuch::{self, TagSync},
     repository::KeywordSource,
-    repository::{ModSeq, SequenceSet, Uid, UidValidity},
-    sync::{ByteBudget, Config, Error, RepositoryHandle, Shutdown, task::Task},
+    repository::{Flag, ModSeq, SequenceSet, Uid, UidValidity},
+    sync::{
+        ByteBudget, Config, Detection, Error, MoveLink, RepositoryHandle, Shutdown,
+        moves::{Accepted, Detected, Incoming, Moves, Transfer},
+        task::Task,
+    },
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -25,6 +29,7 @@ use crossfire::{
     AsyncRx,
     mpsc::{self, Array},
 };
+use enumflags2::BitFlags;
 use futures::{
     FutureExt as _,
     future::{self, Either, OptionFuture},
@@ -37,6 +42,19 @@ use crate::{
 
 /// Syncs a mailbox between server and local maildir
 pub struct Syncer {}
+
+/// Flags to add and remove on the moved mails of a sequence set
+type ArrivalFlags = (SequenceSet, BitFlags<Flag>, BitFlags<Flag>);
+
+/// Outcome of agreeing with other mailboxes on moved mails
+struct Negotiated {
+    /// Moved mails, which stayed here due to remote changes
+    rejected: Vec<(Uid, Option<FlagChange>)>,
+    /// UIDs of the moved mails
+    taken: HashSet<Uid>,
+    /// Mails moving here, which are still due
+    incoming: Incoming,
+}
 
 /// Task that processes the requests for the maildir repository
 type TaskHandle = JoinHandle<Result<(), Error>>;
@@ -63,12 +81,13 @@ impl Syncer {
         config: Config,
         changes: Option<ChangeRecorder>,
         tags: Option<&TagSync>,
+        detection: Option<Detection>,
         shutdown: &Shutdown,
     ) -> Result<(), Error> {
         let tags = tags.map(TagSync::for_mailbox);
         let tags = tags.as_ref();
         let synced = Self::sync(
-            mailbox, mail_dir, state_dir, client, config, changes, tags, shutdown,
+            mailbox, mail_dir, state_dir, client, config, changes, tags, detection, shutdown,
         )
         .await;
         let Synced {
@@ -99,13 +118,14 @@ impl Syncer {
         config: Config,
         changes: Option<ChangeRecorder>,
         tags: Option<&TagSync>,
+        moves: Option<&MoveLink>,
         shutdown: &Shutdown,
     ) -> Result<(), Error> {
         let tags = tags.map(TagSync::for_mailbox);
         let tags = tags.as_ref();
         client.require_idle()?;
         let synced = Self::sync(
-            mailbox, mail_dir, state_dir, client, config, changes, tags, shutdown,
+            mailbox, mail_dir, state_dir, client, config, changes, tags, None, shutdown,
         )
         .await;
         let Synced {
@@ -122,7 +142,7 @@ impl Syncer {
 
         log::info!("listening for mail changes...");
         let folder = local_watcher.cur();
-        let local_change_rx = match local_watcher.watch().await {
+        let local_change_rx = match local_watcher.watch(moves.map(MoveLink::tap)).await {
             Ok(local_change_rx) => local_change_rx,
             Err(e) => {
                 return Err(Self::shut_down(e.into(), client, repository, task_handle).await);
@@ -172,11 +192,18 @@ impl Syncer {
         let session = async {
             // local changes during the sync, e.g. a long initial one, happened before watching
             let changes = repository.detect_changes().await?;
-            Self::handle_local(&mut client, &repository, changes, mailbox, config).await?;
+            Self::handle_local(&mut client, &repository, changes, mailbox, moves, config).await?;
             Self::sync_tag_changes(&mut client, &repository, mailbox, config).await?;
-            while Self::handle_idle(&mut client, &repository, mailbox, idle_timeout, config)
-                .await?
-                .is_continue()
+            while Self::handle_idle(
+                &mut client,
+                &repository,
+                mailbox,
+                idle_timeout,
+                moves,
+                config,
+            )
+            .await?
+            .is_continue()
             {}
 
             Ok(())
@@ -281,6 +308,7 @@ impl Syncer {
         repository: &RepositoryHandle,
         mailbox: &str,
         idle_timeout: Duration,
+        moves: Option<&MoveLink>,
         config: Config,
     ) -> Result<ControlFlow<()>, Error> {
         match client.idle(idle_timeout).await? {
@@ -308,7 +336,7 @@ impl Syncer {
                     log::warn!("rescanning maildir for local changes");
                     repository.detect_changes().await?
                 };
-                Self::handle_local(client, repository, changes, mailbox, config).await?;
+                Self::handle_local(client, repository, changes, mailbox, moves, config).await?;
             }
             IdleStopReason::Tags => {
                 log::info!("handling new tag changes");
@@ -333,11 +361,20 @@ impl Syncer {
         repository: &RepositoryHandle,
         changes: LocalChanges,
         mailbox: &str,
+        moves: Option<&MoveLink>,
         config: Config,
     ) -> Result<(), Error> {
         let highest_modseq = repository.highest_modseq().await?;
-        Self::handle_local_changes(client, changes, highest_modseq, mailbox, repository, config)
-            .await
+        Self::handle_local_changes(
+            client,
+            changes,
+            highest_modseq,
+            mailbox,
+            repository,
+            moves.map(Moves::Watched),
+            config,
+        )
+        .await
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -349,6 +386,7 @@ impl Syncer {
         config: Config,
         changes: Option<ChangeRecorder>,
         tags: Option<&TagSync>,
+        detection: Option<Detection>,
         shutdown: &Shutdown,
     ) -> Result<Synced, Error> {
         let mut client = client;
@@ -367,13 +405,23 @@ impl Syncer {
         let mailbox_maildir = mail_dir.join(mailbox);
         let mailbox_statedir = state_dir.join(mailbox);
 
-        let loaded = match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await {
-            Ok(maildir_repository) => {
-                let initial_sync_complete = maildir_repository.is_initial_sync_complete().await?;
-                Some((maildir_repository, initial_sync_complete))
-            }
-            Err(LoadError::Uninitialized) => None,
-            Err(e) => return Err(e.into()),
+        let (loaded, detected) = if let Some(Detection {
+            repository,
+            detected,
+        }) = detection
+        {
+            (Some((repository, true)), Some(detected))
+        } else {
+            let loaded = match MaildirRepository::load(&mailbox_maildir, &mailbox_statedir).await {
+                Ok(maildir_repository) => {
+                    let initial_sync_complete =
+                        maildir_repository.is_initial_sync_complete().await?;
+                    Some((maildir_repository, initial_sync_complete))
+                }
+                Err(LoadError::Uninitialized) => None,
+                Err(e) => return Err(e.into()),
+            };
+            (loaded, None)
         };
 
         // boxed, as the sync futures are large, but run only once per session
@@ -386,6 +434,7 @@ impl Syncer {
                     config,
                     changes,
                     tags,
+                    detected,
                     shutdown,
                 ))
                 .await
@@ -457,6 +506,7 @@ impl Syncer {
     }
 
     /// Stops with [`Error::ShutDown`], once the server does not respond while shutting down
+    #[expect(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn sync_existing(
         mut maildir_repository: MaildirRepository,
         client: AuthenticatedClient,
@@ -464,6 +514,7 @@ impl Syncer {
         config: Config,
         changes: Option<ChangeRecorder>,
         tags: Option<&TagSync>,
+        detected: Option<Detected>,
         shutdown: &Shutdown,
     ) -> Result<Synced, Error> {
         // detecting local changes may already recover interrupted downloads
@@ -490,12 +541,23 @@ impl Syncer {
                 .await?;
             Ok::<_, Error>((uid_validity, highest_modseq, keyword_source, selection))
         };
+        let detecting = async {
+            match detected {
+                // changes detected before already include moves to other mailboxes. Without
+                // them, the moved mails get deleted and uploaded.
+                Some(Detected { changes, moves }) => Ok((changes, moves.await.ok())),
+                None => maildir_repository
+                    .detect_changes()
+                    .await
+                    .map(|changes| (changes, None)),
+            }
+        };
         let (local_changes, selected) = futures::join!(
-            maildir_repository.detect_changes(),
+            detecting,
             Self::unless_abandoned(selecting, shutdown, config)
         );
         let (uid_validity, highest_modseq, keyword_source, selection) = selected?;
-        let mut local_changes = local_changes?;
+        let (mut local_changes, mut planned) = local_changes?;
         let Selection {
             mut client,
             mut remote_changes,
@@ -533,6 +595,10 @@ impl Syncer {
                 }
                 remote_changes = RemoteChanges { updates, deletions };
             }
+            // their files are gone, so their remote changes are not applicable here
+            if let Some(planned) = &planned {
+                planned.drop_remote_updates(&mut remote_changes.updates);
+            }
             let restored =
                 Self::handle_conflicts(&remote_changes, &mut local_changes, highest_modseq);
             if let Ok(restored) = SequenceSet::from_sorted(restored) {
@@ -554,6 +620,7 @@ impl Syncer {
                 highest_modseq,
                 mailbox,
                 &repository,
+                planned.take().map(Moves::Planned),
                 config,
             )
             .await?;
@@ -564,6 +631,8 @@ impl Syncer {
             Ok(())
         };
         let synced = Self::unless_abandoned(synced, shutdown, config).await;
+        // other mailboxes must not wait for this one to shut down, but fall back right away
+        drop(planned);
         if let Err(e) = synced {
             return Err(Self::shut_down(e, client, repository, task_handle).await);
         }
@@ -585,7 +654,7 @@ impl Syncer {
         config: Config,
     ) -> Result<(), Error> {
         let changes = repository.detect_tag_changes().await?;
-        Self::handle_local(client, repository, changes, mailbox, config).await
+        Self::handle_local(client, repository, changes, mailbox, None, config).await
     }
 
     async fn handle_local_changes(
@@ -594,32 +663,60 @@ impl Syncer {
         highest_modseq: ModSeq,
         mailbox: &str,
         repository: &RepositoryHandle,
+        moves: Option<Moves<'_>>,
         config: Config,
     ) -> Result<(), Error> {
         let LocalChanges {
-            updates,
-            deletions,
+            mut updates,
+            mut deletions,
+            deleted_prefixes,
             news,
             other_flags,
             tags_revision,
         } = local_changes;
+        let mut rejected = Vec::new();
+        let mut incoming = Incoming::default();
+        let negotiated = match moves {
+            Some(moves) => Some(
+                Self::negotiate_moves(
+                    client,
+                    moves,
+                    highest_modseq,
+                    (&mut deletions, &deleted_prefixes),
+                    &news,
+                    repository,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        if let Some(negotiated) = negotiated {
+            rejected = negotiated.rejected;
+            incoming = negotiated.incoming;
+            // flag changes of moved mails apply to their copy in the destination mailbox
+            for uid in negotiated.taken {
+                updates.remove(uid);
+            }
+        }
         // storing them first lets following flag changes rename the files without searching them
         if !other_flags.is_empty() {
             repository.update_other_flags(other_flags).await?;
         }
-        let mut news = news.into_iter();
-        let mut batch = Self::open_store_batch(&mut news, repository, config).await?;
-        while !batch.is_empty() {
-            let (stored, next_batch) = futures::join!(
-                client.store(mailbox, batch),
-                Self::open_store_batch(&mut news, repository, config)
-            );
-            let synced = stored?
-                .into_iter()
-                .map(|(uid, metadata)| (metadata, uid))
-                .collect();
-            repository.add_synced(synced).await?;
-            batch = next_batch?;
+        let (arriving, others): (Vec<_>, Vec<_>) = news
+            .into_iter()
+            .partition(|mail| incoming.contains(mail.fileprefix()));
+        // waiting for the sources to finish moving must not hold back uploads
+        let uid_validity = client.uid_validity();
+        let (stored, arrived) = futures::join!(
+            Self::store_news(client, others, mailbox, repository, config),
+            Self::receive_arrivals(repository, &mut incoming, arriving, uid_validity)
+        );
+        stored?;
+        let (arrival_flags, failed) = arrived?;
+        // mails whose move failed still need to get uploaded
+        Self::store_news(client, failed, mailbox, repository, config).await?;
+        if !arrival_flags.is_empty() {
+            client.change_flags(&arrival_flags).await?;
         }
         let updates = updates.build();
         let changes: Vec<(FlagChange, &SequenceSet)> = updates
@@ -635,7 +732,6 @@ impl Syncer {
             .collect();
         // at once, as e.g. merging tags may give each mail its own change
         let stored = client.store_flag_changes(highest_modseq, changes).await?;
-        let mut rejected = Vec::new();
         let mut applied = Vec::new();
         for (sequence_set, (rejected_uids, stored)) in sequence_sets.iter().zip(stored) {
             let accepted: Vec<Uid> = sequence_set
@@ -666,6 +762,192 @@ impl Syncer {
         }
 
         Ok(())
+    }
+
+    /// Uploads `news` in batches, overlapping reading mails with storing them
+    async fn store_news(
+        client: &mut SelectedClient,
+        news: Vec<NewLocalMailMetadata>,
+        mailbox: &str,
+        repository: &RepositoryHandle,
+        config: Config,
+    ) -> Result<(), Error> {
+        let mut news = news.into_iter();
+        let mut batch = Self::open_store_batch(&mut news, repository, config).await?;
+        while !batch.is_empty() {
+            let (stored, next_batch) = futures::join!(
+                client.store(mailbox, batch),
+                Self::open_store_batch(&mut news, repository, config)
+            );
+            let synced = stored?
+                .into_iter()
+                .map(|(uid, metadata)| (metadata, uid))
+                .collect();
+            repository.add_synced(synced).await?;
+            batch = next_batch?;
+        }
+
+        Ok(())
+    }
+
+    /// Agrees with the other mailboxes on mails that moved out of and into this mailbox, and
+    /// hands the accepted ones over to their destinations. Removes the moved mails from
+    /// `deletions`.
+    async fn negotiate_moves(
+        client: &mut SelectedClient,
+        moves: Moves<'_>,
+        highest_modseq: ModSeq,
+        (deletions, deleted_prefixes): (&mut Vec<Uid>, &HashMap<Uid, String>),
+        news: &[NewLocalMailMetadata],
+        repository: &RepositoryHandle,
+    ) -> Result<Negotiated, Error> {
+        let departing = moves.departing(deletions, deleted_prefixes);
+        let flags: HashMap<Uid, BitFlags<Flag>> = if departing.is_empty() {
+            HashMap::new()
+        } else {
+            repository
+                .flags(departing)
+                .await?
+                .into_iter()
+                .map(|(uid, (flags, _))| (uid, flags))
+                .collect()
+        };
+        let (accepted, incoming) = moves.agree(deleted_prefixes, news, &flags).await;
+        let mut rejected = Vec::new();
+        let taken = Self::move_accepted(client, highest_modseq, accepted, &mut rejected).await?;
+
+        Ok(Self::negotiated(deletions, rejected, taken, incoming))
+    }
+
+    /// Removes the moved mails from `deletions`, as they are gone from this mailbox
+    fn negotiated(
+        deletions: &mut Vec<Uid>,
+        rejected: Vec<(Uid, Option<FlagChange>)>,
+        taken: HashSet<Uid>,
+        incoming: Incoming,
+    ) -> Negotiated {
+        deletions.retain(|uid| !taken.contains(uid));
+
+        Negotiated {
+            rejected,
+            taken,
+            incoming,
+        }
+    }
+
+    /// Hands the mails the destination mailboxes accepted over, copying before moving, as moving
+    /// removes the mails from this mailbox. Returns the UIDs of the moved ones, and adds the
+    /// ones, which stayed here due to remote changes, to `rejected`.
+    async fn move_accepted(
+        client: &mut SelectedClient,
+        highest_modseq: ModSeq,
+        accepted: Vec<Accepted>,
+        rejected: &mut Vec<(Uid, Option<FlagChange>)>,
+    ) -> Result<HashSet<Uid>, Error> {
+        let mut by_destination: HashMap<(Transfer, String), Vec<Accepted>> = HashMap::new();
+        for mail in accepted {
+            by_destination
+                .entry((mail.transfer, mail.destination.clone()))
+                .or_default()
+                .push(mail);
+        }
+        let (copies, moves): (Vec<_>, Vec<_>) = by_destination
+            .into_iter()
+            .partition(|((transfer, _), _)| *transfer == Transfer::Copy);
+        let mut moved_uids = HashSet::new();
+        for ((transfer, destination), mut mails) in copies.into_iter().chain(moves) {
+            mails.sort_by_key(|mail| mail.departure.uid);
+            let Ok(set) = SequenceSet::from_sorted(mails.iter().map(|mail| mail.departure.uid))
+            else {
+                continue;
+            };
+            let result = match transfer {
+                Transfer::Copy => {
+                    log::info!("copying {set} to {destination}");
+                    client.copy_mails(&destination, &set).await?
+                }
+                Transfer::Move => {
+                    log::info!("moving {set} to {destination}");
+                    client
+                        .move_mails(highest_modseq, &destination, &set)
+                        .await?
+                }
+            };
+            let Some(uid_validity) = result.uid_validity else {
+                continue;
+            };
+            let destination_uids: HashMap<Uid, Uid> = result.moved.into_iter().collect();
+            for mail in mails {
+                if let Some(uid) = destination_uids.get(&mail.departure.uid) {
+                    if transfer == Transfer::Move {
+                        moved_uids.insert(mail.departure.uid);
+                    }
+                    mail.moved(uid_validity, *uid);
+                }
+            }
+            rejected.extend(result.rejected.into_iter().map(|uid| (uid, None)));
+        }
+
+        Ok(moved_uids)
+    }
+
+    /// Records mails moved here from other mailboxes with their new UIDs, instead of uploading
+    /// them. Returns the flag changes the server needs, as the moved mails kept the flags of the
+    /// source mailbox, but their files may differ, and the mails whose move failed.
+    async fn receive_arrivals(
+        repository: &RepositoryHandle,
+        incoming: &mut Incoming,
+        arriving: Vec<NewLocalMailMetadata>,
+        uid_validity: UidValidity,
+    ) -> Result<(Vec<ArrivalFlags>, Vec<NewLocalMailMetadata>), Error> {
+        let mut adopted = Vec::new();
+        let mut failed = Vec::new();
+        for mail in arriving {
+            match incoming.arrival(mail.fileprefix()).await {
+                Some(moved) if moved.uid_validity == u32::from(uid_validity) => {
+                    adopted.push((mail, moved));
+                }
+                moved => {
+                    log::warn!(
+                        "mail {} did not move here ({moved:?}). Uploading it",
+                        mail.fileprefix()
+                    );
+                    failed.push(mail);
+                }
+            }
+        }
+        if adopted.is_empty() {
+            return Ok((Vec::new(), failed));
+        }
+        let mut flag_changes: HashMap<_, Vec<Uid>> = HashMap::new();
+        for (mail, moved) in &adopted {
+            let added = mail.flags() & !moved.flags;
+            let removed = moved.flags & !mail.flags();
+            if !added.is_empty() || !removed.is_empty() {
+                flag_changes
+                    .entry((added, removed))
+                    .or_default()
+                    .push(moved.uid);
+            }
+        }
+        log::info!("{} mails moved here", adopted.len());
+        repository
+            .add_synced(
+                adopted
+                    .into_iter()
+                    .map(|(mail, moved)| (mail, moved.uid))
+                    .collect(),
+            )
+            .await?;
+        let flag_changes = flag_changes
+            .into_iter()
+            .filter_map(|((added, removed), mut uids)| {
+                uids.sort_unstable();
+                Some((SequenceSet::from_sorted(uids).ok()?, added, removed))
+            })
+            .collect();
+
+        Ok((flag_changes, failed))
     }
 
     async fn open_store_batch(

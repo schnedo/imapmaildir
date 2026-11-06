@@ -18,10 +18,12 @@ pub use crate::notmuch::{
 };
 pub use crate::sync::Error as SyncError;
 pub use crate::sync::IdleTimeout;
+pub use crate::sync::MoveLink;
 pub use crate::sync::Shutdown;
 pub use crate::sync::Syncer;
 pub use crate::sync::Transient;
 pub use crate::sync::reconnecting;
 pub use crate::sync::{
-    Batching, FailureHandler, HookError, HookFailure, batched_hook, failure_handler,
+    Batching, Detection, FailureHandler, HookError, HookFailure, MoveReporter, batched_hook,
+    failure_handler, planner,
 };

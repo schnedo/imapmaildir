@@ -690,6 +690,142 @@ impl SelectedClient {
         Ok(modified)
     }
 
+    /// UIDVALIDITY of the selected mailbox
+    #[must_use]
+    pub fn uid_validity(&self) -> UidValidity {
+        self.uid_validity
+    }
+
+    /// Adds and removes the flags of each of `changes` on its mails regardless of remote changes,
+    /// e.g. of mails just moved here, which were not stored from here and so have no known
+    /// modseq. Mails other sessions added are only known after the server reported them, so this
+    /// asks for that first.
+    pub async fn change_flags(
+        &mut self,
+        changes: &[(SequenceSet, BitFlags<Flag>, BitFlags<Flag>)],
+    ) -> Result<(), Error> {
+        // pipelined commands may run before the server reports the added mails
+        let noop = "NOOP";
+        log::debug!("{noop}");
+        self.connection
+            .send(noop.into(), &mut self.mailbox_handler)
+            .await?;
+        let mut commands = Vec::new();
+        for (sequence_set, added, removed) in changes {
+            for (operation, flags) in [("+FLAGS", added), ("-FLAGS", removed)] {
+                let Some(flags) = Flag::format(*flags) else {
+                    continue;
+                };
+                for chunk in sequence_set.chunks(MAX_SEQUENCE_SET_LEN) {
+                    commands.push(
+                        format!("UID STORE {chunk} {operation}.SILENT ({flags})").into_bytes(),
+                    );
+                }
+            }
+        }
+        while !commands.is_empty() {
+            let rest = commands.split_off(commands.len().min(MAX_PIPELINED_COMMANDS));
+            for command in &commands {
+                log::debug!("{}", String::from_utf8_lossy(command));
+            }
+            self.connection
+                .send_pipelined(commands, &mut self.mailbox_handler)
+                .await?;
+            commands = rest;
+        }
+
+        Ok(())
+    }
+
+    /// Moves mails to `mailbox` with `UID MOVE`, or copying and deleting them without MOVE. Mails
+    /// unchanged since `highest_modseq` are only deleted after copying, so remotely changed ones
+    /// stay in this mailbox and are returned as rejected. Mails the server refuses to move are
+    /// neither moved nor rejected.
+    pub async fn move_mails(
+        &mut self,
+        highest_modseq: ModSeq,
+        mailbox: &str,
+        sequence_set: &SequenceSet,
+    ) -> Result<MoveResult, Error> {
+        let use_move = self.mailbox_handler.capabilities.contains(Capability::Move);
+        let verb = if use_move { "MOVE" } else { "COPY" };
+        let mut result = self.transfer(verb, mailbox, sequence_set).await?;
+        if !use_move && !result.moved.is_empty() {
+            let mut copied: Vec<Uid> = result.moved.iter().map(|(uid, _)| *uid).collect();
+            copied.sort_unstable();
+            if let Ok(copied) = SequenceSet::from_sorted(copied) {
+                result
+                    .rejected
+                    .extend(self.delete(highest_modseq, &copied).await?);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Copies mails to `mailbox` with `UID COPY`, leaving them in this mailbox. Mails the server
+    /// refuses to copy are not part of the result.
+    pub async fn copy_mails(
+        &mut self,
+        mailbox: &str,
+        sequence_set: &SequenceSet,
+    ) -> Result<MoveResult, Error> {
+        self.transfer("COPY", mailbox, sequence_set).await
+    }
+
+    /// Sends `UID <verb>` for `sequence_set` in chunks and collects the `COPYUID` results
+    async fn transfer(
+        &mut self,
+        verb: &str,
+        mailbox: &str,
+        sequence_set: &SequenceSet,
+    ) -> Result<MoveResult, Error> {
+        let mailbox = encoding::mailbox(mailbox);
+        let chunks = sequence_set.chunks(MAX_SEQUENCE_SET_LEN);
+        let mut result = MoveResult::default();
+        for chunks in chunks.chunks(MAX_PIPELINED_COMMANDS) {
+            let commands: Vec<Vec<u8>> = chunks
+                .iter()
+                .map(|chunk| {
+                    let command = format!("UID {verb} {chunk} {mailbox}");
+                    log::debug!("{command}");
+                    command.into_bytes()
+                })
+                .collect();
+            let mut handler = Chain(CopyUidCollector::default(), &mut self.mailbox_handler);
+            let responses = self
+                .connection
+                .send_pipelined_each(commands, &mut handler)
+                .await?;
+            let mut collector = handler.0;
+            for (response, chunk) in responses.into_iter().zip(chunks) {
+                match response {
+                    Ok(response) => {
+                        if let Some(code) = response.unsafe_get_tagged_response_code() {
+                            collector.record(code)?;
+                        }
+                    }
+                    Err(transport::Error::No(reason)) => {
+                        log::warn!(
+                            "server refused to {verb} mails {chunk} ({}), uploading them instead",
+                            reason.as_deref().unwrap_or("NO")
+                        );
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            if collector.moved.is_empty() {
+                // moving without COPYUID cannot be linked to the mails in the destination
+                log::warn!("server did not respond to {verb} with COPYUID");
+                continue;
+            }
+            result.uid_validity = collector.uid_validity;
+            result.moved.extend(collector.moved);
+        }
+
+        Ok(result)
+    }
+
     /// Logs out and ends the session
     pub async fn logout(mut self) -> Result<(), Error> {
         let command = "LOGOUT";
@@ -1113,6 +1249,79 @@ impl OwnModSeqs {
                 )
             })
             .collect()
+    }
+}
+
+/// Mails moved to another mailbox
+#[derive(Debug, Default)]
+pub struct MoveResult {
+    /// UIDs of moved mails in the source and the destination mailbox
+    pub moved: Vec<(Uid, Uid)>,
+    /// UIDVALIDITY of the destination mailbox, if any mail got moved
+    pub uid_validity: Option<u32>,
+    /// Moved mails, which stayed in the source mailbox as they changed remotely, when copying them
+    pub rejected: HashSet<Uid>,
+}
+
+/// Collects UIDs of `COPYUID` response codes
+#[derive(Default)]
+struct CopyUidCollector {
+    uid_validity: Option<u32>,
+    moved: Vec<(Uid, Uid)>,
+}
+
+impl ResponseHandler for CopyUidCollector {
+    type Error = Error;
+
+    fn handle(
+        &mut self,
+        response: ResponseData,
+    ) -> impl Future<Output = Result<Option<ResponseData>, Self::Error>> {
+        std::future::ready(self.collect(response))
+    }
+}
+
+impl CopyUidCollector {
+    /// Takes untagged `OK [COPYUID]` responses, which MOVE sends before expunging
+    fn collect(&mut self, response: ResponseData) -> Result<Option<ResponseData>, Error> {
+        if let imap_proto::Response::Data {
+            status: imap_proto::Status::Ok,
+            outcome:
+                imap_proto::Outcome {
+                    code: Some(code @ imap_proto::ResponseCode::CopyUid(..)),
+                    ..
+                },
+        } = response.parsed()
+        {
+            self.record(code)?;
+            Ok(None)
+        } else {
+            Ok(Some(response))
+        }
+    }
+
+    fn record(&mut self, code: &imap_proto::ResponseCode<'_>) -> Result<(), Error> {
+        let imap_proto::ResponseCode::CopyUid(uid_validity, from, to) = code else {
+            return Ok(());
+        };
+        let from = Self::uids(from)?;
+        let to = Self::uids(to)?;
+        if from.len() != to.len() {
+            return Err(Error::InvalidUidSet(format!("{from:?} to {to:?}")));
+        }
+        self.uid_validity = Some(*uid_validity);
+        self.moved.extend(from.into_iter().zip(to));
+
+        Ok(())
+    }
+
+    fn uids(members: &[imap_proto::rfc4315::UidSetMember]) -> Result<Vec<Uid>, Error> {
+        let ranges = members
+            .iter()
+            .map(SequenceRange::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(ranges.into_iter().flatten().collect())
     }
 }
 
@@ -1768,6 +1977,33 @@ mod tests {
                 ("-X-GM-LABELS", "\"work\"".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn test_copy_uid_collector_collects_untagged_and_passes_on_others() {
+        let mut collector = CopyUidCollector::default();
+        let copied =
+            ResponseData::from_raw(b"* OK [COPYUID 38505 304,319:320 3956:3958] Moved\r\n");
+        let expunged = ResponseData::from_raw(b"* VANISHED 304,319:320\r\n");
+
+        assert!(collector.collect(copied).unwrap().is_none());
+        assert!(collector.collect(expunged).unwrap().is_some());
+
+        assert_eq!(collector.uid_validity, Some(38505));
+        let moved: Vec<(u32, u32)> = collector
+            .moved
+            .iter()
+            .map(|(from, to)| (u32::from(*from), u32::from(*to)))
+            .collect();
+        assert_eq!(moved, vec![(304, 3956), (319, 3957), (320, 3958)]);
+    }
+
+    #[test]
+    fn test_copy_uid_collector_rejects_mismatching_uid_sets() {
+        let mut collector = CopyUidCollector::default();
+        let copied = ResponseData::from_raw(b"* OK [COPYUID 38505 304,319 3956] Moved\r\n");
+
+        assert!(collector.collect(copied).is_err());
     }
 
     #[test]

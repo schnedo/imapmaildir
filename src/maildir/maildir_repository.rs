@@ -19,7 +19,7 @@ use crate::{
     imap::{RemoteMail, RemoteMailMetadata},
     maildir::{
         ChangeRecorder, FlagChange, LocalChanges, LocalFlagChangesBuilder, LocalMail,
-        LocalMailMetadata, MailChange, NewLocalMailMetadata, OtherFlags,
+        LocalMailMetadata, MailChange, MoveTap, NewLocalMailMetadata, OtherFlags,
         maildir::{self, Change, MaildirFile},
         state::{self, State},
     },
@@ -1167,6 +1167,7 @@ impl MaildirRepository {
         Ok(missing)
     }
 
+    #[expect(clippy::too_many_lines)]
     pub async fn detect_changes(&self) -> Result<LocalChanges, DetectChangesError> {
         self.maildir.move_new_to_cur().await?;
         let maildir_metadata = self.maildir.list_cur().await?;
@@ -1229,6 +1230,7 @@ impl MaildirRepository {
                 .await?;
         }
         let mut deletions = Vec::new();
+        let mut deleted_prefixes = HashMap::new();
         let mut recovered = Vec::new();
         for entry in missing {
             if self.maildir.recover_from_tmp(&entry).await? {
@@ -1245,6 +1247,7 @@ impl MaildirRepository {
                 };
                 recovered.push((entry, keywords));
             } else {
+                deleted_prefixes.insert(entry.uid(), entry.fileprefix().to_string());
                 deletions.push(entry.uid());
             }
         }
@@ -1267,7 +1270,8 @@ impl MaildirRepository {
             .try_collect()
             .await?;
 
-        let changes = LocalChanges::new(deletions, news, updates);
+        let changes =
+            LocalChanges::new(deletions, news, updates).with_deleted_prefixes(deleted_prefixes);
         log::trace!("{changes:?}");
 
         Ok(changes)
@@ -1291,15 +1295,22 @@ impl LocalWatcher {
         self.maildir.cur().to_path_buf()
     }
 
-    pub async fn watch(self) -> Result<AsyncRx<Array<LocalEvent>>, maildir::Error> {
+    /// Starts watching the maildir for changes. Reports renames into or out of the maildir to
+    /// `tap`.
+    pub async fn watch(
+        self,
+        tap: Option<MoveTap>,
+    ) -> Result<AsyncRx<Array<LocalEvent>>, maildir::Error> {
         log::debug!("listening for maildir mail changes");
         let (changes_tx, changes_rx) = spsc::bounded_async(1);
         let size = 32;
-        let rx = self.maildir.watch(size).await?;
+        let track_prefixes = tap.is_some();
+        let rx = self.maildir.watch(size, tap).await?;
 
         compio::runtime::spawn(async move {
             while let Ok(change) = rx.recv().await {
                 let mut deletions = Vec::new();
+                let mut deleted_prefixes = HashMap::new();
                 let mut news = Vec::new();
                 let mut updates = LocalFlagChangesBuilder::default();
                 let mut other_flags = Vec::new();
@@ -1308,6 +1319,9 @@ impl LocalWatcher {
                 let mut handle_change = |change| match change {
                     Change::Deletion(entry) => {
                         deletions.push(entry.uid());
+                        if track_prefixes {
+                            deleted_prefixes.insert(entry.uid(), entry.fileprefix().to_string());
+                        }
                     }
                     Change::New(mail) => {
                         news.push(mail);
@@ -1341,6 +1355,7 @@ impl LocalWatcher {
                         LocalEvent::Changes(LocalChanges {
                             updates,
                             deletions,
+                            deleted_prefixes,
                             news,
                             other_flags,
                             tags_revision: None,
@@ -2277,7 +2292,7 @@ mod tests {
         let uid = repo_with_mail.mail.metadata().uid();
         let tracked = assert_some!(assert_ok!(repo.state.get_by_id(uid).await));
         let cur = repo_with_mail.repo.mail_dir.path().join("cur");
-        let events = assert_ok!(repo.local_watcher().watch().await);
+        let events = assert_ok!(repo.local_watcher().watch(None).await);
 
         assert_ok!(fs::rename(
             cur.join(tracked.filename()),

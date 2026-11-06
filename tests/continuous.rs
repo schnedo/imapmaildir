@@ -4,6 +4,7 @@ use std::{
     collections::HashSet,
     fs::{self, File},
     io::Write as _,
+    path::PathBuf,
     time::Duration,
 };
 
@@ -468,5 +469,214 @@ async fn test_shutdown_finishes_syncing_detected_local_changes(#[future] mail_se
             .await
             .iter()
             .any(|mail| mail.content() == content)
+    );
+}
+
+fn client_uids(mail_setup: &MailSetup, mailbox: &str) -> HashSet<u64> {
+    let dir = mail_setup
+        .config()
+        .maildir_base_path()
+        .join(mailbox)
+        .join("cur");
+    assert_ok!(dir.read_dir())
+        .map(|entry| {
+            let name = assert_ok!(entry).file_name().to_string_lossy().into_owned();
+            let (_, rest) = assert_some!(name.split_once(",U="));
+            assert_ok!(assert_some!(rest.split(':').next()).parse())
+        })
+        .collect()
+}
+
+/// Waits until the server has `count` files in `mailbox`
+async fn wait_for_server_files(mail_setup: &MailSetup, mailbox: &str, count: usize) {
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            while server_files(mail_setup, mailbox).len() != count {
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+}
+
+type Syncs = [(compio::runtime::JoinHandle<()>, AsyncRx<Array<()>>); 2];
+
+/// Starts syncing INBOX and DRAFT, and moves or copies the first `count` mails of INBOX to DRAFT.
+/// Returns the new server files of DRAFT and the sync handles.
+async fn relocate_mails(
+    mail_setup: &MailSetup,
+    count: usize,
+    relocation: Relocation,
+) -> (Vec<PathBuf>, Syncs) {
+    age_server_mails(mail_setup);
+    let syncs = mail_setup.sync_continuous_both("INBOX", "DRAFT").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+    let inbox_before = server_files(mail_setup, "INBOX").len();
+    let draft_before: HashSet<_> = server_files(mail_setup, "DRAFT").into_iter().collect();
+    let client_mail = mail_setup.client_mail();
+    let client_inbox = client_mail.mailbox("INBOX");
+    for mail in client_inbox.mails().await.into_iter().take(count) {
+        mail_setup.relocate_client_mail(mail.path(), "DRAFT", relocation);
+    }
+
+    wait_for_server_files(mail_setup, "DRAFT", draft_before.len() + count).await;
+    // the deletions need to settle, too
+    let expected_inbox = if matches!(relocation, Relocation::Copy) {
+        inbox_before
+    } else {
+        inbox_before - count
+    };
+    wait_for_server_files(mail_setup, "INBOX", expected_inbox).await;
+    let added = server_files(mail_setup, "DRAFT")
+        .into_iter()
+        .filter(|file| !draft_before.contains(file))
+        .collect();
+
+    (added, syncs)
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_mail_between_mailboxes_moves_it_on_server(#[future] mail_setup: MailSetup) {
+    let (added, _syncs) = relocate_mails(&mail_setup, 1, Relocation::Move).await;
+
+    let added = assert_some!(added.first());
+    assert_eq!(
+        modified(added),
+        old_internal_date(),
+        "mail got uploaded instead of moved"
+    );
+    assert_eq!(client_uids(&mail_setup, "DRAFT"), HashSet::from([1, 2]));
+    assert_eq!(client_uids(&mail_setup, "INBOX").len(), 2);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_many_mails_between_mailboxes_moves_all_of_them(
+    #[future] mail_setup: MailSetup,
+) {
+    let (added, _syncs) = relocate_mails(&mail_setup, 3, Relocation::Move).await;
+
+    assert_len_eq_x!(&added, 3);
+    for file in &added {
+        assert_eq!(
+            modified(file),
+            old_internal_date(),
+            "mail got uploaded instead of moved"
+        );
+    }
+    assert_eq!(
+        client_uids(&mail_setup, "DRAFT"),
+        HashSet::from([1, 2, 3, 4])
+    );
+    assert_eq!(client_uids(&mail_setup, "INBOX").len(), 0);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_copying_mail_to_other_mailbox_uploads_it(#[future] mail_setup: MailSetup) {
+    let (added, _syncs) = relocate_mails(&mail_setup, 1, Relocation::Copy).await;
+
+    let added = assert_some!(added.first());
+    assert_ne!(
+        modified(added),
+        old_internal_date(),
+        "copied mail should be uploaded as new mail"
+    );
+    assert_eq!(client_uids(&mail_setup, "DRAFT"), HashSet::from([1, 2]));
+    assert_eq!(client_uids(&mail_setup, "INBOX").len(), 3);
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_moving_mail_with_unsynced_flag_stores_flag_in_destination(
+    #[future] mail_setup: MailSetup,
+) {
+    age_server_mails(&mail_setup);
+    let _syncs = mail_setup.sync_continuous_both("INBOX", "DRAFT").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+    let draft_before: HashSet<_> = server_files(&mail_setup, "DRAFT").into_iter().collect();
+    let client_mail = mail_setup.client_mail();
+    let client_inbox = client_mail.mailbox("INBOX");
+    let mut mail = assert_some!(
+        client_inbox
+            .mails()
+            .await
+            .into_iter()
+            .find(|mail| !mail.has_flag('F'))
+    );
+    assert!(mail.add_flag('F'));
+    mail_setup.relocate_client_mail(mail.path(), "DRAFT", Relocation::Move);
+
+    wait_for_server_files(&mail_setup, "DRAFT", draft_before.len() + 1).await;
+    let added = server_files(&mail_setup, "DRAFT")
+        .into_iter()
+        .find(|file| !draft_before.contains(file));
+    let added = assert_some!(added);
+    assert_eq!(modified(&added), old_internal_date());
+    let flagged = assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let name = server_files(&mail_setup, "DRAFT")
+                    .into_iter()
+                    .filter(|file| !draft_before.contains(file) || file == &added)
+                    .filter_map(|file| file.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .find(|name| {
+                        name.rsplit_once(":2,")
+                            .is_some_and(|(_, flags)| flags.contains('F'))
+                    });
+                if let Some(name) = name {
+                    break name;
+                }
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    );
+    assert!(flagged.contains('F'));
+}
+
+#[rstest]
+#[compio::test]
+#[awt]
+async fn test_mails_moving_to_each_other_move_both(#[future] mail_setup: MailSetup) {
+    age_server_mails(&mail_setup);
+    let _syncs = mail_setup.sync_continuous_both("INBOX", "DRAFT").await;
+    compio::time::sleep(Duration::from_secs(1)).await;
+    let inbox_before = server_files(&mail_setup, "INBOX").len();
+    let draft_before = server_files(&mail_setup, "DRAFT").len();
+    let client_mail = mail_setup.client_mail();
+    let client_inbox = client_mail.mailbox("INBOX");
+    let client_draft = client_mail.mailbox("DRAFT");
+    let inbox_mail = assert_some!(client_inbox.mails().await.into_iter().next());
+    let draft_mail = assert_some!(client_draft.mails().await.into_iter().next());
+    mail_setup.relocate_client_mail(inbox_mail.path(), "DRAFT", Relocation::Move);
+    mail_setup.relocate_client_mail(draft_mail.path(), "INBOX", Relocation::Move);
+
+    // moved mails get new UIDs, so the file names change
+    assert_ok!(
+        compio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let settled = server_files(&mail_setup, "INBOX").len() == inbox_before
+                    && server_files(&mail_setup, "DRAFT").len() == draft_before
+                    && ["INBOX", "DRAFT"].iter().all(|mailbox| {
+                        server_files(&mail_setup, mailbox)
+                            .iter()
+                            .all(|file| modified(file) == old_internal_date())
+                    })
+                    && client_uids(&mail_setup, "INBOX").len() == inbox_before
+                    && client_uids(&mail_setup, "DRAFT").len() == draft_before;
+                if settled {
+                    break;
+                }
+                compio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await,
+        "mails did not move"
     );
 }
