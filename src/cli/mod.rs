@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::{
     cli::nuke::nuke,
-    cli::sync::{exit_on_panic, handle_signals, sync_all, sync_mailbox},
+    cli::sync::{exit_on_panic, handle_signals, sync_all, sync_one},
 };
 
 #[derive(Parser)]
@@ -98,13 +98,12 @@ pub fn run(cli: &Cli) -> Result<(), Error> {
             let shutdown = handle_signals()?;
             if let Some(mailbox) = &sync_args.mailbox {
                 let tls = Tls::new(config.connection()).map_err(Error::Tls)?;
-                sync_mailbox(
+                sync_one(
                     &config,
                     &tls,
                     mailbox,
                     sync_args.idle,
                     tags.as_ref(),
-                    None,
                     &shutdown,
                 )?;
                 if shutdown.has_failed() {
@@ -152,6 +151,7 @@ impl Transient for Error {
             | Self::Nuke(_)
             | Self::Runtime(_)
             | Self::Signals(_)
+            | Self::HookRunner(_)
             | Self::HookFailed
             | Self::Spawn { .. }
             | Self::SyncAll(_) => false,
@@ -193,6 +193,8 @@ pub enum Error {
     Sync { mailbox: String, cause: SyncError },
     #[error("Cannot spawn sync thread for mailbox {mailbox}: {cause}")]
     Spawn { mailbox: String, cause: io::Error },
+    #[error("Cannot start hook runner: {0}")]
+    HookRunner(io::Error),
     #[error("on_local_change hook failed")]
     HookFailed,
     #[error("Syncing mailboxes {0:?} failed")]

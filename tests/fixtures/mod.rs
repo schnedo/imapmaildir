@@ -471,7 +471,7 @@ impl MailSetup {
     /// # Panics
     /// If logging in or syncing fails
     pub async fn sync_recording(&self, mailbox: &str) -> Vec<MailChange> {
-        let sink = Arc::new(RecordingSink::default());
+        let sink = std::rc::Rc::new(RecordingSink::default());
         self.sync_with_changes(mailbox, Some(ChangeRecorder::new(vec![sink.clone()])))
             .await;
 
@@ -715,7 +715,9 @@ impl MailSetup {
                 client,
                 idle_timout,
                 sync_config,
-                Some(ChangeRecorder::new(vec![Arc::new(NotifyingSink(call_tx))])),
+                Some(ChangeRecorder::new(vec![std::rc::Rc::new(NotifyingSink(
+                    call_tx,
+                ))])),
                 tags.as_ref(),
                 moves.as_ref(),
                 &Shutdown::new(),

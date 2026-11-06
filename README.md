@@ -157,6 +157,12 @@ stops syncing after finishing pending work, like when shutting down, and exits
 with an error. Set `onChangeFailure` (`on_local_change_failure`) to `"warn"` to
 only log a warning instead.
 
+The hooks of all mailboxes run one at a time, so a hook never overlaps with
+another one. A hook that hangs delays all others. Set `onChangeTimeoutSeconds`
+(`on_local_change_timeout`, e.g. `"30s"`) to kill hooks, together with the
+processes in their process group, that run longer, and treat them as failed.
+There is no limit by default.
+
 Example hook script:
 
 ```sh

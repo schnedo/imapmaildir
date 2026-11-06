@@ -1538,6 +1538,8 @@ mod tests {
     use rstest::*;
     use tempfile::TempDir;
 
+    use std::rc::Rc;
+
     use compio::{BufResult, io::AsyncReadAtExt as _};
 
     use crate::{imap::RemoteContent, maildir::ChangeSink};
@@ -1577,8 +1579,8 @@ mod tests {
         }
     }
 
-    fn record_changes(repo: &mut MaildirRepository) -> Arc<RecordingSink> {
-        let sink = Arc::new(RecordingSink::default());
+    fn record_changes(repo: &mut MaildirRepository) -> Rc<RecordingSink> {
+        let sink = Rc::new(RecordingSink::default());
         repo.record_changes(Some(ChangeRecorder::new(vec![sink.clone()])));
 
         sink
