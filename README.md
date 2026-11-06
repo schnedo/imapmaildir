@@ -131,7 +131,7 @@ Each line has the format
 | `uploaded`   | local mail now on remote, file renamed with UID | `uid=7 flags=S`           |
 | `deleted`    | mail deleted on remote, removed locally         | `uid=3`                   |
 | `flags`      | flags changed on remote, applied locally        | `uid=5 added=F removed=S` |
-| `overflow`   | changes were not tracked, rescan the mailbox    |                           |
+| `initial`    | initial sync, mails not listed, scan mailbox    |                           |
 
 - `path` is the absolute current path of the mail, or the removed one for
   `deleted`. `old_path` is the previous path for `uploaded` and `flags`, as
@@ -144,7 +144,8 @@ Each line has the format
   moving delivered mails from `new` to `cur`, are not, so paths of earlier
   lines may become stale, if other programs changed them before the hook fired.
 - The first download into an empty maildir gets reported as a single
-  `overflow` line instead of one line per mail.
+  `initial` line instead of one line per mail. So does an initial sync, that
+  got interrupted.
 - Syncing never waits for the hook. Batches queue up while it runs.
 
 Hooks run without the terminal in their own process group, so pressing Ctrl-C
@@ -172,7 +173,7 @@ Example hook script:
 while IFS="$(printf '\t')" read -r mailbox type path details old_path; do
     case "$type" in
         downloaded) notify-send "new mail in $mailbox" ;;
-        overflow) notmuch new ;;
+        initial) notmuch new ;;
     esac
 done
 ```

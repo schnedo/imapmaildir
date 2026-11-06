@@ -132,7 +132,7 @@ fn format_line(mailbox: &str, change: &MailChange) -> String {
             ),
             Some(from),
         ),
-        MailChange::Overflow => ("overflow", None, String::new(), None),
+        MailChange::Initial => ("initial", None, String::new(), None),
         MailChange::KeywordsChanged { .. } => {
             unreachable!("keyword changes should not be batched")
         }
@@ -155,18 +155,18 @@ fn uid_of(change: &MailChange) -> Option<Uid> {
         | MailChange::Deleted { uid, .. }
         | MailChange::FlagsChanged { uid, .. }
         | MailChange::KeywordsChanged { uid, .. } => Some(*uid),
-        MailChange::Overflow => None,
+        MailChange::Initial => None,
     }
 }
 
 /// Changes of a mailbox, merged per mail. Is full at `max_pending` changes. Reports a single
-/// overflow instead of its changes, if it got told so.
+/// initial sync instead of its changes, if it got told so.
 #[derive(Debug)]
 pub(super) struct ChangeBatch {
     changes: Vec<Option<MailChange>>,
     positions: HashMap<Uid, usize>,
     len: usize,
-    overflowed: bool,
+    initial: bool,
     max_pending: usize,
 }
 
@@ -176,13 +176,13 @@ impl ChangeBatch {
             changes: Vec::new(),
             positions: HashMap::new(),
             len: 0,
-            overflowed: false,
+            initial: false,
             max_pending,
         }
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        !self.overflowed && self.len == 0
+        !self.initial && self.len == 0
     }
 
     /// Whether the batch reached the limit of changes it should hold
@@ -190,8 +190,9 @@ impl ChangeBatch {
         self.len >= self.max_pending
     }
 
-    fn overflow(&mut self) {
-        self.overflowed = true;
+    /// Replaces all changes by the report of an initial sync
+    fn mark_initial(&mut self) {
+        self.initial = true;
         self.changes = Vec::new();
         self.positions = HashMap::new();
         self.len = 0;
@@ -199,11 +200,11 @@ impl ChangeBatch {
 
     /// Ignores keyword changes, as they are not part of the reported lines
     fn add(&mut self, change: MailChange) {
-        if self.overflowed || matches!(change, MailChange::KeywordsChanged { .. }) {
+        if self.initial || matches!(change, MailChange::KeywordsChanged { .. }) {
             return;
         }
         let Some(uid) = uid_of(&change) else {
-            self.overflow();
+            self.mark_initial();
             return;
         };
         // a mail keeps its slot, even if its changes cancel out, so that repeated changes of the
@@ -265,8 +266,8 @@ impl ChangeBatch {
     }
 
     pub(super) fn into_lines(self, mailbox: &str) -> String {
-        if self.overflowed {
-            format_line(mailbox, &MailChange::Overflow)
+        if self.initial {
+            format_line(mailbox, &MailChange::Initial)
         } else {
             self.changes
                 .iter()
@@ -642,7 +643,7 @@ mod tests {
         },
         "INBOX\tuploaded\t/m/cur/x,U=7:2,\tuid=7 flags=\t/m/cur/x:2,\n"
     )]
-    #[case::overflow(MailChange::Overflow, "INBOX\toverflow\t\t\t\n")]
+    #[case::initial(MailChange::Initial, "INBOX\tinitial\t\t\t\n")]
     fn test_format_line(#[case] change: MailChange, #[case] expected: &str) {
         assert_eq!(format_line("INBOX", &change), expected);
     }
@@ -754,14 +755,14 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_reports_overflow_instead_of_changes() {
+    fn test_batch_reports_initial_sync_instead_of_changes() {
         let mut batch = ChangeBatch::new(10);
 
         batch.add(downloaded(1));
-        batch.add(MailChange::Overflow);
+        batch.add(MailChange::Initial);
         batch.add(downloaded(2));
 
-        assert_eq!(batch.into_lines("INBOX"), "INBOX\toverflow\t\t\t\n");
+        assert_eq!(batch.into_lines("INBOX"), "INBOX\tinitial\t\t\t\n");
     }
 
     #[compio::test]

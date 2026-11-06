@@ -1489,10 +1489,10 @@ impl Syncer {
         error
     }
 
-    /// Reports mails stored by an initial sync, that ended before completing, as overflow
+    /// Reports mails stored by an initial sync, that ended before completing, as initial sync
     fn report_unrecorded(deferred_changes: Option<ChangeRecorder>, stored_unrecorded: bool) {
         if stored_unrecorded && let Some(changes) = deferred_changes {
-            changes.record(MailChange::Overflow);
+            changes.record(MailChange::Initial);
         }
     }
 
@@ -1529,7 +1529,7 @@ impl Syncer {
     }
 
     /// Starts recording changes with `deferred_changes` after completing the initial sync. Then
-    /// reports an overflow instead of every mail stored until then.
+    /// reports the initial sync instead of every mail stored until then.
     async fn process_tasks(
         maildir_repository: &MaildirRepository,
         task_rx: &AsyncRx<Array<Task>>,
@@ -1609,7 +1609,7 @@ impl Syncer {
                             && let Some(changes) = deferred_changes.take()
                         {
                             if stored_unrecorded {
-                                changes.record(MailChange::Overflow);
+                                changes.record(MailChange::Initial);
                             }
                             maildir_repository.record_changes(Some(changes));
                         }
@@ -1722,10 +1722,10 @@ mod tests {
     }
 
     #[compio::test]
-    async fn test_initial_sync_ending_before_completion_reports_overflow() {
+    async fn test_initial_sync_ending_before_completion_reports_initial() {
         let changes = process_initial_tasks([Task::NewMail(mail(1, 1))]).await;
 
-        assert_eq!(changes, [MailChange::Overflow]);
+        assert_eq!(changes, [MailChange::Initial]);
     }
 
     #[compio::test]

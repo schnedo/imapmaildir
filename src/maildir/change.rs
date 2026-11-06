@@ -35,8 +35,9 @@ pub enum MailChange {
         added: Keywords,
         removed: Keywords,
     },
-    /// Changes got dropped, so the mailbox needs to be rescanned
-    Overflow,
+    /// Mails of an initial sync got stored without recording each of them, so the mailbox needs
+    /// to be scanned
+    Initial,
 }
 
 /// Receiver of recorded mail changes, e.g. to forward them to hooks or notmuch
@@ -117,7 +118,7 @@ mod tests {
         let second = Rc::new(CountingSink::default());
         let recorder = ChangeRecorder::new(vec![first.clone(), second.clone()]);
 
-        recorder.record(MailChange::Overflow);
+        recorder.record(MailChange::Initial);
         recorder.flush();
 
         assert_eq!((first.recorded.get(), first.flushed.get()), (1, 1));
