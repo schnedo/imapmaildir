@@ -41,6 +41,10 @@ pub enum Error {
         mailbox: String,
         all_mail: Option<String>,
     },
+    #[error(
+        "Syncing tags requires the server to store new keywords (`\\*` in PERMANENTFLAGS) of {mailbox}"
+    )]
+    TagsRequireNewKeywords { mailbox: String },
     #[error("Remote uid validity {remote} differs from local {local}")]
     UidValidityMismatch {
         local: UidValidity,
