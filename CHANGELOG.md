@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/schnedo/imapmaildir/compare/v0.4.0...v0.5.0)
+
+### Features
+
+
+- [**breaking**] Batch hook changes per sync round and drop change_hook_throttle - ([821be8e](https://github.com/schnedo/imapmaildir/commit/821be8e7a572aacbc583fcc0d2657fde7f0206e9) (by @schnedo))
+- Run on_local_change hooks of all mailboxes one at a time - ([be1a647](https://github.com/schnedo/imapmaildir/commit/be1a647eec7a33480ecd23683214315381fbaddf) (by @schnedo))
+- Move mails between mailboxes with UID MOVE - ([e988772](https://github.com/schnedo/imapmaildir/commit/e988772612457f3c84e407b3801015a07be923c4) (by @schnedo))
+- Add processed_tag to skip new.tags of already indexed mails - ([a29e551](https://github.com/schnedo/imapmaildir/commit/a29e5517193392a4908077f93d3af6c92a46f904) (by @schnedo))
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate jiff to 0.2.41 - ([40ddaf1](https://github.com/schnedo/imapmaildir/commit/40ddaf1823fc250dd8801c13ef18936459d50486) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 0.2.40 - ([619f92e](https://github.com/schnedo/imapmaildir/commit/619f92ef4b8883039e5393b70e424f7af71a3eaf) (by @renovate[bot]))
+- *(deps)* Update rust crate toml to 1.2.1 - ([8584f60](https://github.com/schnedo/imapmaildir/commit/8584f607f3fc9ca7bad4addce19cd5a4810b4b6e) (by @renovate[bot]))
+- *(deps)* Update rust crate toml to 1.2.0 - ([0f137c7](https://github.com/schnedo/imapmaildir/commit/0f137c732db7978b9291df0eec545ffd47a831da) (by @renovate[bot]))
+- *(deps)* Update rust crate rustix to 1.1.6 - ([a5c85d4](https://github.com/schnedo/imapmaildir/commit/a5c85d4c8d5d0a525e4f4f2f9c33939e010cb10b) (by @renovate[bot]))
+- *(deps)* Update rust crate rusqlite to 0.41.1 - ([bba1469](https://github.com/schnedo/imapmaildir/commit/bba14697595451163eb7b86b874806b65a96d1f1) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 0.2.39 - ([62a0b04](https://github.com/schnedo/imapmaildir/commit/62a0b04d710e6fe96db7259481d30a32bf4f2829) (by @renovate[bot]))
+- *(deps)* Update rust crate log to 0.4.35 - ([92fdf08](https://github.com/schnedo/imapmaildir/commit/92fdf08d1f12fe7e8a0fde10dd5f22eb6ba9abd1) (by @renovate[bot]))
+- Check at mailbox select time, if user syncing user-defined keywords is supported by server - ([9a84c6e](https://github.com/schnedo/imapmaildir/commit/9a84c6e79c869fa296d326df334ce408eb2df7b4) (by @schnedo))
+- Flush maildir before reporting changes to on_local_change - ([cc0fa59](https://github.com/schnedo/imapmaildir/commit/cc0fa59afa21aa2f11bb1f1345e586284d35069a) (by @schnedo))
+
+### Chore
+
+
+- *(deps)* Lock file maintenance - ([7df73ea](https://github.com/schnedo/imapmaildir/commit/7df73ea9e36998bdf7fc4b36516d6352e4e6fd80) (by @renovate[bot]))
+- Add docstrings where missing - ([c91619b](https://github.com/schnedo/imapmaildir/commit/c91619bd2bbd5c90b8c152e61b240b2ce3d533f8) (by @schnedo))
+
+### Refactor
+
+
+- Merge queued hook batches per mailbox and log hook output on tasks - ([f94f56e](https://github.com/schnedo/imapmaildir/commit/f94f56e99de62dd0ecc318330f523eaa5a7e6f3f) (by @schnedo))
+- [**breaking**] Report initial syncs to change hooks as initial instead of overflow - ([ca6a99d](https://github.com/schnedo/imapmaildir/commit/ca6a99db57300d35f1b00d8bab3216fb82bfdbfa) (by @schnedo))
+- Replace mutexes used on a single thread by RefCell - ([ab19fa4](https://github.com/schnedo/imapmaildir/commit/ab19fa4231ea5ccf2a60abee1cf37fe1bf699bda) (by @schnedo))
+
+### Contributors
+
+* @renovate[bot]
+* @schnedo
+
 ## [0.4.0](https://github.com/schnedo/imapmaildir/compare/v0.3.0...v0.4.0)
 
 ### Features
