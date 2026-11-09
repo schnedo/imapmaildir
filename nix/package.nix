@@ -1,6 +1,5 @@
 {
   pkgs ? import <nixpkgs> { },
-  # syncing tags needs libnotmuch, which gets loaded at runtime
   withNotmuch ? true,
   ...
 }:
@@ -23,16 +22,21 @@ pkgs.rustPlatform.buildRustPackage {
     "--skip"
     "imap::transport::connection"
   ];
-  preCheck = pkgs.lib.optionalString withNotmuch ''
+  preCheck = ''
+    export LIBSQLITE3_SYS_USE_PKG_CONFIG=0
+  ''
+  + pkgs.lib.optionalString withNotmuch ''
     export LD_LIBRARY_PATH=${pkgs.lib.getLib pkgs.notmuch}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
   '';
-  # after shrinking the rpath, which drops libraries, that are not linked
   postFixup = pkgs.lib.optionalString withNotmuch ''
     patchelf --add-rpath ${pkgs.lib.getLib pkgs.notmuch}/lib $out/bin/imapmaildir
   '';
   buildInputs = with pkgs; [
     openssl.dev
   ];
+  preBuild = ''
+    export LIBSQLITE3_SYS_USE_PKG_CONFIG=0
+  '';
   nativeBuildInputs = with pkgs; [
     pkg-config
   ];
