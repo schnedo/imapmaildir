@@ -38,7 +38,7 @@ humantime-serde = "1.1.1"
 imap-proto = "0.17.0"
 include_dir = "0.7.4"
 inotify = { version = "0.11.5", default-features = false }
-jiff = "0.2.42"
+jiff = "0.2.43"
 libc = "0.2.191"
 log = { version = "0.4.35", features = [
   "kv",
