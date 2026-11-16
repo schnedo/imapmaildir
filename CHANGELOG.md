@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/schnedo/imapmaildir/compare/v0.5.0...v0.5.1)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate jiff to 0.2.46 - ([99a427c](https://github.com/schnedo/imapmaildir/commit/99a427caf4d4326e550a317a21a218ccd02489f6) (by @renovate[bot]))
+- *(deps)* Update rust crate rusqlite to 0.43.0 - ([fb5af34](https://github.com/schnedo/imapmaildir/commit/fb5af34d2c91c6daf16bd3aecd173ab9c97aef16) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 0.2.45 - ([8918c9a](https://github.com/schnedo/imapmaildir/commit/8918c9a9442d6f226b587667b9801f43fe5a90c1) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 0.2.44 - ([8775c1c](https://github.com/schnedo/imapmaildir/commit/8775c1ceeb81cc70af2c455fb1a8bf3c477f0e67) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 0.2.43 - ([b58c883](https://github.com/schnedo/imapmaildir/commit/b58c883a49ccfd3feef7a41bc36d0938921800c4) (by @renovate[bot]))
+- *(deps)* Update rust crate rusqlite to 0.42.0 - ([490e5da](https://github.com/schnedo/imapmaildir/commit/490e5da84b738b2d05205631455fbcc4819a11fb) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 0.2.42 - ([ce6f40a](https://github.com/schnedo/imapmaildir/commit/ce6f40a2c1a915f12fa64087c60123ec1b0e852e) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.5.0](https://github.com/schnedo/imapmaildir/compare/v0.4.0...v0.5.0)
 
 ### Features
