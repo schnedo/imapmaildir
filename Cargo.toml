@@ -31,7 +31,7 @@ crossfire = "3.1.23"
 derive-getters = { version = "0.5.0", features = ["auto_copy_getters"] }
 derive_builder = "0.20.2"
 enumflags2 = { version = "0.7.12", features = ["serde"] }
-env_logger = "0.11.11"
+env_logger = "0.11.12"
 futures = "0.3.34"
 futures-util = "0.3.34"
 humantime-serde = "1.1.1"
