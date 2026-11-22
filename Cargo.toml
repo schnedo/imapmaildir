@@ -66,7 +66,7 @@ allow_attributes = "warn"
 assertables = "=10.1.0"
 derivative = "=2.2.0"
 ring = "=0.17.14"
-rstest = "=0.28.0"
+rstest = "=0.29.0"
 tempfile = "=3.27.0"
 testcontainers = { version = "=0.28.0", features = ["blocking"] }
 
