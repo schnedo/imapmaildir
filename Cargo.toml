@@ -12,7 +12,7 @@ include = ["/src/**/*.rs", "/migrations/*", "/build.rs"]
 
 [dependencies]
 anstyle = "1.0.14"
-anyhow = "1.0.104"
+anyhow = "1.0.105"
 asynchronous-codec = "0.7.0"
 base64 = "0.23.1"
 bytes = "1.12.2"
