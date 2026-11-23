@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/schnedo/imapmaildir/compare/v0.5.1...v0.5.2)
+
+### Bug Fixes
+
+
+- *(deps)* Update rust crate jiff to 1.0.2 - ([57b650e](https://github.com/schnedo/imapmaildir/commit/57b650e6fb2179bade8879703b315a6413064a7d) (by @renovate[bot]))
+- *(deps)* Update rust crate toml to 1.2.2 - ([e85ee19](https://github.com/schnedo/imapmaildir/commit/e85ee191c62b474719b86c09439f9644bf526aa9) (by @renovate[bot]))
+- *(deps)* Update rust crate env_logger to 0.11.12 - ([a0c5fc0](https://github.com/schnedo/imapmaildir/commit/a0c5fc06a69d83edd3cd3b72f122ab3b533f4cd5) (by @renovate[bot]))
+- *(deps)* Update rust crate clap to 4.6.9 - ([8fcd026](https://github.com/schnedo/imapmaildir/commit/8fcd026835992c0edbf54c34e91489623364d87b) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to 1.0.1 - ([12f2888](https://github.com/schnedo/imapmaildir/commit/12f288883df30ea0c68a8a45f0cd869d5772be20) (by @renovate[bot]))
+- *(deps)* Update rust crate crossfire to 3.1.23 - ([1236870](https://github.com/schnedo/imapmaildir/commit/123687095fd587ec83aedc2061509c09be94bee7) (by @renovate[bot]))
+- *(deps)* Update rust crate bytes to 1.12.2 - ([ea5e7d1](https://github.com/schnedo/imapmaildir/commit/ea5e7d1d94314789efd4e3ecfd71b12df79d662c) (by @renovate[bot]))
+- *(deps)* Update rust crate clap to 4.6.8 - ([8f9a6b0](https://github.com/schnedo/imapmaildir/commit/8f9a6b010256e3bfb93dea6bc9d062b4c1c98511) (by @renovate[bot]))
+- *(deps)* Update rust crate jiff to v1 - ([3dc32ac](https://github.com/schnedo/imapmaildir/commit/3dc32ace75caf60bcf4a9c75491e2e212c522649) (by @renovate[bot]))
+
+### Chore
+
+
+- *(deps)* Lock file maintenance - ([d037813](https://github.com/schnedo/imapmaildir/commit/d03781338dcafc5ea60dc6d6e6e334c07c95e6d8) (by @renovate[bot]))
+- *(deps)* Update rust crate rstest to v0.29.0 - ([ffebd76](https://github.com/schnedo/imapmaildir/commit/ffebd7613d66e268975eba72a105b93280d4fa0e) (by @renovate[bot]))
+
+### Contributors
+
+* @renovate[bot]
+
 ## [0.5.1](https://github.com/schnedo/imapmaildir/compare/v0.5.0...v0.5.1)
 
 ### Bug Fixes
