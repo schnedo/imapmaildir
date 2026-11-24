@@ -577,7 +577,7 @@ impl Maildir {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 if try_exists(&new).await? {
                     log::warn!(
-                        "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to prior crash",
+                        "ignoring rename of {} to {}, because old file does not exist while new one does. May be due to a prior crash or another program having moved the file",
                         current.to_string_lossy(),
                         new.to_string_lossy()
                     );
