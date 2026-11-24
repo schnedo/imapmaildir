@@ -66,6 +66,11 @@ Configure using the home-manager module:
 
 ```nix
 {
+    # Optional package override, e.g. to build without notmuch support
+    services.imapmaildir.package =
+        imapmaildir.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir.override {
+            withNotmuch = false;
+        };
     accounts.email.accounts.<name>.imapmaildir = {
         enable = true;
         # List the mailboxes you want to sync. Currently, there is no autodiscover.

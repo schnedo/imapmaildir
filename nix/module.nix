@@ -9,6 +9,14 @@
   ...
 }:
 {
+  options.services.imapmaildir.package = lib.mkOption {
+    type = lib.types.package;
+    default = self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir;
+    defaultText = lib.literalExpression "imapmaildir.packages.\${pkgs.stdenv.hostPlatform.system}.imapmaildir";
+    example = lib.literalExpression "imapmaildir.packages.\${pkgs.stdenv.hostPlatform.system}.imapmaildir.override { withNotmuch = false; }";
+    description = "The imapmaildir package to use";
+  };
+
   options.accounts.email.accounts = lib.mkOption {
     type = lib.types.attrsOf (
       lib.types.submodule (
@@ -154,6 +162,7 @@
 
   config =
     let
+      cfg = config.services.imapmaildir;
       accounts =
         let
           inherit (config.accounts.email) accounts;
@@ -191,9 +200,7 @@
                 # imapmaildir finishes pending changes and hooks on SIGTERM, so they must not get
                 # killed alongside it
                 KillMode = "mixed";
-                ExecStart = "${
-                  lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.imapmaildir
-                } --account ${name} sync${lib.optionalString idle.enable " --idle"}";
+                ExecStart = "${lib.getExe cfg.package} --account ${name} sync${lib.optionalString idle.enable " --idle"}";
               };
             }
           ];
