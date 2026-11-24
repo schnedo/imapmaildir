@@ -183,6 +183,8 @@
             {
               Unit = {
                 Description = "mail sync via imapmaildir for account ${name}";
+                # changes the unit on config changes, so home-manager restarts it
+                X-Restart-Triggers = [ "${mkConfigFile name account}" ];
               };
               Service = {
                 Type = "exec";
@@ -219,68 +221,62 @@
           };
         };
 
-      mkConfig =
+      mkConfigFile =
         name: account:
         let
           toml = pkgs.formats.toml { };
           toCmd = cmd: if builtins.isList cmd then cmd else [ cmd ];
           inherit (account.imapmaildir) oauth2 notmuch;
+          inherit (account.imap) port;
         in
-        {
-          "imapmaildir/accounts/${name}.toml" = {
-            source =
-              let
-                inherit (account.imap) port;
-              in
-              toml.generate "${name}.toml" (
+        toml.generate "${name}.toml" (
+          {
+            inherit (account.imap) host;
+            # todo: assert use tls
+            port = if builtins.isNull port then 993 else port;
+            inherit (account.imapmaildir) mailboxes;
+            idle_timeout = "${builtins.toString account.imapmaildir.idle.timeoutSeconds}s";
+            on_local_change = account.imapmaildir.onChange;
+            on_local_change_failure = account.imapmaildir.onChangeFailure;
+            maildir_base_path = account.maildir.absPath;
+            auth =
+              if oauth2.enable then
                 {
-                  inherit (account.imap) host;
-                  # todo: assert use tls
-                  port = if builtins.isNull port then 993 else port;
-                  inherit (account.imapmaildir) mailboxes;
-                  idle_timeout = "${builtins.toString account.imapmaildir.idle.timeoutSeconds}s";
-                  on_local_change = account.imapmaildir.onChange;
-                  on_local_change_failure = account.imapmaildir.onChangeFailure;
-                  maildir_base_path = account.maildir.absPath;
-                  auth =
-                    if oauth2.enable then
-                      {
-                        type = "OAuth2";
-                        user = account.userName;
-                        token_cmd = toCmd (
-                          if builtins.isNull oauth2.tokenCommand then
-                            account.passwordCommand
-                          else
-                            oauth2.tokenCommand
-                        );
-                      }
-                    else
-                      {
-                        type = "Plain";
-                        user = account.userName;
-                        # todo: assert passwordCommand not null
-                        password_cmd = toCmd account.passwordCommand;
-                      };
+                  type = "OAuth2";
+                  user = account.userName;
+                  token_cmd = toCmd (
+                    if builtins.isNull oauth2.tokenCommand then account.passwordCommand else oauth2.tokenCommand
+                  );
                 }
-                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.onChangeTimeoutSeconds) {
-                  on_local_change_timeout = "${builtins.toString account.imapmaildir.onChangeTimeoutSeconds}s";
-                }
-                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookMaxPending) {
-                  change_hook_max_pending = account.imapmaildir.changeHookMaxPending;
-                }
-                // lib.optionalAttrs (!builtins.isNull account.imapmaildir.shutdownTimeoutSeconds) {
-                  shutdown_timeout = "${builtins.toString account.imapmaildir.shutdownTimeoutSeconds}s";
-                }
-                // lib.optionalAttrs notmuch.enable {
-                  notmuch = lib.filterAttrs (_: v: v != null) {
-                    inherit (notmuch) tags config profile;
-                    ignore_tags = notmuch.ignoreTags;
-                    processed_tag = notmuch.processedTag;
-                  };
-                }
-              );
-          };
-        };
+              else
+                {
+                  type = "Plain";
+                  user = account.userName;
+                  # todo: assert passwordCommand not null
+                  password_cmd = toCmd account.passwordCommand;
+                };
+          }
+          // lib.optionalAttrs (!builtins.isNull account.imapmaildir.onChangeTimeoutSeconds) {
+            on_local_change_timeout = "${builtins.toString account.imapmaildir.onChangeTimeoutSeconds}s";
+          }
+          // lib.optionalAttrs (!builtins.isNull account.imapmaildir.changeHookMaxPending) {
+            change_hook_max_pending = account.imapmaildir.changeHookMaxPending;
+          }
+          // lib.optionalAttrs (!builtins.isNull account.imapmaildir.shutdownTimeoutSeconds) {
+            shutdown_timeout = "${builtins.toString account.imapmaildir.shutdownTimeoutSeconds}s";
+          }
+          // lib.optionalAttrs notmuch.enable {
+            notmuch = lib.filterAttrs (_: v: v != null) {
+              inherit (notmuch) tags config profile;
+              ignore_tags = notmuch.ignoreTags;
+              processed_tag = notmuch.processedTag;
+            };
+          }
+        );
+
+      mkConfig = name: account: {
+        "imapmaildir/accounts/${name}.toml".source = mkConfigFile name account;
+      };
 
       mapAccounts = f: lib.mkMerge (builtins.attrValues (builtins.mapAttrs f accounts));
     in
