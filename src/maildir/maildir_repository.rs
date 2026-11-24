@@ -583,6 +583,12 @@ impl MaildirRepository {
             (Err(state::InitError::Missing(_)), Ok(mail)) if mail.is_empty()? => {
                 Err(LoadError::Uninitialized)
             }
+            (Err(state::InitError::Missing(state_file)), Ok(_)) => {
+                Err(LoadError::StateMissingForNonEmptyMaildir {
+                    state_file,
+                    mail_dir: mail_dir.to_path_buf(),
+                })
+            }
             (Ok(state), Err(maildir_error)) => match maildir_error {
                 maildir::LoadError::Missing(_) => {
                     log::warn!(
@@ -1462,6 +1468,17 @@ pub enum LoadError {
     Maildir(maildir::LoadError),
     #[error("{0}")]
     State(state::InitError),
+    #[error(
+        "State file {} is missing, but maildir {} already contains mails. \
+        Refusing to sync to avoid duplicating or losing mails. \
+        Restore the state file, or move the maildir's contents away to resync from scratch",
+        state_file.display(),
+        mail_dir.display()
+    )]
+    StateMissingForNonEmptyMaildir {
+        state_file: PathBuf,
+        mail_dir: PathBuf,
+    },
 }
 
 impl From<io::Error> for LoadError {
@@ -1724,6 +1741,20 @@ mod tests {
         assert_ok!(
             MaildirRepository::try_init(uid_validity, mail_dir.path(), state_dir.path()).await
         );
+    }
+
+    #[rstest]
+    #[compio::test]
+    async fn test_load_errors_on_non_empty_maildir_without_state(
+        mail_dir: TempDir,
+        state_dir: TempDir,
+    ) {
+        assert_ok!(Maildir::try_init(mail_dir.path()).await);
+        assert_ok!(fs::write(mail_dir.path().join("cur/mail:2,S"), "mail"));
+
+        let result = assert_err!(MaildirRepository::load(mail_dir.path(), state_dir.path()).await);
+
+        assert_matches!(result, LoadError::StateMissingForNonEmptyMaildir { .. });
     }
 
     #[rstest]
